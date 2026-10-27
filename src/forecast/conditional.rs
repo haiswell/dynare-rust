@@ -412,7 +412,7 @@ pub fn conditional_forecast_command(
     // `trend` of run.m (declaration order): the levels added to the deviations
     let (resolved, init, dates, trend) = if set == "calibration" {
         // estimated_model = 0: current M_.params (the estimation's point if any), start from
-        // the steady state (no histval support yet).
+        // M_.endo_histval (e.g. set by smoother2histval), else from the steady state.
         let (dsge, x) = match st {
             Some(s) => (&s.dsge, s.current().to_vec()),
             None => {
@@ -427,7 +427,21 @@ pub fn conditional_forecast_command(
         let n = r.dr.ghx.nrows();
         // ys = log_variable(1:endo_nbr, dr.ys, M_) under loglinear (logged_steady_state)
         let trend = simult_constant(dsge, &r.steady_state);
-        (r, vec![0.0; n], (0..=periods).map(|h| h.to_string()).collect::<Vec<_>>(), trend)
+        // InitState = y0(order_var) - ys(order_var), y0 = M_.endo_histval (levels); under
+        // loglinear only the nonzero entries of M_.endo_histval are logged, the others stay 0
+        let init = match crate::analysis::stochastic_histval_of(&mf.model, &mf.histval) {
+            Some(h) => {
+                let y0: Vec<f64> = if dsge.loglinear {
+                    let lv = crate::analysis::q2::log_variable(&mf.model, &h);
+                    h.iter().zip(&lv).map(|(&v, &l)| if v != 0.0 { l } else { 0.0 }).collect()
+                } else {
+                    h
+                };
+                (0..n).map(|k| y0[r.dr.order_var[k]] - trend[r.dr.order_var[k]]).collect()
+            }
+            None => vec![0.0; n],
+        };
+        (r, init, (0..=periods).map(|h| h.to_string()).collect::<Vec<_>>(), trend)
     } else {
         let s = st.ok_or_else(|| anyhow!("conditional_forecast: parameter_set = {set} needs a previous estimation"))?;
         if s.data.prefilter_mean.is_some() {

@@ -26,6 +26,9 @@ All notable changes to this project are documented here. The format follows
   Changes results at the rounding level.
 - MH files are read without an extra copy of their draws; the progress viewer shows a
   separate "MCMC diagnostics and posterior densities" phase.
+- `conditional_forecast(parameter_set=calibration)` starts from `M_.endo_histval` when a
+  `histval` is set (e.g. by `smoother2histval`), as Dynare's `conditional_forecasts.run`,
+  instead of always from the steady state.
 
 ## [0.1.0] - 2026-10-22
 
