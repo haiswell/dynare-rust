@@ -14,10 +14,8 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use super::{ProposalDist, SamplerOptions, Stepper, chol_se, randperm, strictly_inside};
-use crate::estimation::optim::minimize::{key_values, kv_num};
-use crate::estimation::{
-    Bounds, CsminwelOptions, Evaluation, GradientMethod, NewratOptions, Objective, csminwel, hessian, newrat,
-};
+use crate::estimation::optim::minimize::{initial_inverse_hessian, key_values, kv_num, numgrad_algorithm};
+use crate::estimation::{Bounds, CsminwelOptions, Evaluation, NewratOptions, Objective, csminwel, hessian, newrat};
 use crate::linalg::{Mat, chol_upper, solve};
 
 /// `TaRB_optimizer_wrapper.m`: the objective as a function of one block.
@@ -50,7 +48,8 @@ impl Objective for BlockObjective<'_> {
 }
 
 /// `dynare_minimize_objective(@TaRB_optimizer_wrapper, ..., tarb.mode_compute, ...)`
-/// with `silent_optimizer = 1` and `optim_opt = tarb.optim`.
+/// with `silent_optimizer = 1` and `optim_opt = tarb.optim` (the estimation's `optim` unless
+/// the sampler has its own).
 fn block_minimize(
     obj: &dyn Objective,
     x0: &[f64],
@@ -68,14 +67,12 @@ fn block_minimize(
                     "MaxIter" => o.nit = kv_num(k, v)? as usize,
                     "TolFun" => o.crit = kv_num(k, v)?,
                     "NumgradAlgorithm" => {
-                        o.gradient_method = match kv_num(k, v)? as i32 {
-                            2 => GradientMethod::Forward,
-                            3 => GradientMethod::Central,
-                            5 => GradientMethod::FivePoint,
-                            m => bail!("csminwel: NumgradAlgorithm {m} is not available"),
+                        if let Some(m) = numgrad_algorithm(k, v, o.analytic)? {
+                            o.gradient_method = m;
                         }
                     }
                     "NumgradEpsilon" => o.gradient_epsilon = kv_num(k, v)?,
+                    "InitialInverseHessian" => initial_inverse_hessian(&mut o, v, x0.len())?,
                     "verbosity" | "SaveFiles" => {}
                     other => println!("WARNING: csminwel: Unknown option ({other})!"),
                 }

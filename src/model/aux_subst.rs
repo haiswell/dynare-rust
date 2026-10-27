@@ -82,7 +82,11 @@ impl Subst<'_> {
         let endo = st.pass == Pass::EndoLead;
         match self.dag.node(id) {
             Node::Endo(..) | Node::Exo(..) => self.create_lead_aux(st, id),
-            Node::Num(_) | Node::Param(_) | Node::SteadyState(..) => id,
+            Node::Num(_)
+            | Node::Param(_)
+            | Node::SteadyState(..)
+            | Node::SteadyStateParamDeriv(..)
+            | Node::SteadyStateParam2ndDeriv(..) => id,
             // `AbstractExternalFunctionNode::substitute*`: recurse into the arguments
             Node::External(c) => {
                 let args = self.dag.ext_call(c).args.clone();
@@ -250,7 +254,13 @@ pub(crate) fn name_exprs(
             Some(p) => p[i as usize].clone(),
             None => format!("params({})", i + 1),
         },
-        Node::Num(_) | Node::SteadyState(..) | Node::Unary(..) | Node::Binary(..) | Node::External(_) => String::new(),
+        Node::Num(_)
+        | Node::SteadyState(..)
+        | Node::SteadyStateParamDeriv(..)
+        | Node::SteadyStateParam2ndDeriv(..)
+        | Node::Unary(..)
+        | Node::Binary(..)
+        | Node::External(_) => String::new(),
     };
     for (a, &rhs) in aux_vars.iter_mut().zip(aux_rhs.iter()) {
         a.orig_expr = dag.to_string(rhs, &namef);

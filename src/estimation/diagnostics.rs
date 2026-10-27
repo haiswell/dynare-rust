@@ -306,17 +306,18 @@ pub fn print_geweke(res: &[GewekeChain], names: &[String], opts: &GewekeOptions)
 /// `MDIAG` of `mcmc_diagnostics.m`: the Brooks–Gelman criteria (80% interval, m2, m3;
 /// pooled and mean within-chain) of the log posterior kernel, on the windows
 /// `Origin:StepSize:NumberOfDraws` (Origin 1000). Needs all draws stored and two chains.
-pub fn brooks_gelman_multivariate(chains: &[Chain], mh_drop: f64) -> Option<(Vec<usize>, Vec<[f64; 6]>)> {
+pub fn brooks_gelman_multivariate(chains: &[Chain], mh_drop: f64, slice: bool) -> Option<(Vec<usize>, Vec<[f64; 6]>)> {
     let nblck = chains.len();
     if nblck < 2 || chains.iter().any(|c| c.first_stored != 0) {
         return None;
     }
     let ndraws = chains[0].total_draws;
-    let origin = 1000;
+    // mcmc_diagnostics.m:218-223: slice with fewer than 2000 draws uses Origin = StepSize = 1
+    let (origin, step) =
+        if slice && ndraws < 2000 { (1, 1) } else { (1000, (ndraws - 1000.min(ndraws)).div_ceil(100).max(1)) };
     if ndraws < origin {
         return None;
     }
-    let step = (ndraws - origin).div_ceil(100).max(1);
     let iterations: Vec<usize> = (origin..=ndraws).step_by(step).collect();
     let mut tmp: Vec<(f64, u32, u32)> = Vec::with_capacity(ndraws * nblck);
     for (b, c) in chains.iter().enumerate() {

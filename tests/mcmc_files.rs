@@ -246,7 +246,7 @@ fn reads_and_continues_dynare_files() {
 
 /// hssmc and dime_mcmc on the linear NK model: posterior means within 3 posterior sd of the
 /// RW Metropolis–Hastings ones, the hssmc log marginal density close to the MHM one, and
-/// model_comparison reads the SMC marginal density from the Laplace-free results file.
+/// model_comparison finds no Laplace/MHM estimate in the SMC results file (as in Dynare).
 #[test]
 fn smc_samplers_on_the_linear_model() {
     let d = scratch("smc");
@@ -267,7 +267,8 @@ fn smc_samplers_on_the_linear_model() {
             assert!((lmd - mhm).abs() < 1.0, "hssmc {lmd} vs MHM {mhm}");
             assert!(r.get("log_data_density_laplace").is_none());
             let est = dynare::estimation::model_comparison::Estimator::LaplaceApproximation;
-            assert_eq!(dynare::estimation::model_comparison::read_log_density(&r, est), Some(lmd));
+            // model_comparison.m only reads MarginalDensity.<estimator>: an SMC run has none of them
+            assert_eq!(dynare::estimation::model_comparison::read_log_density(&r, est), None);
         }
     }
     let _ = std::fs::remove_dir_all(&d);

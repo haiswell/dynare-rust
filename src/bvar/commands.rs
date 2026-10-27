@@ -12,11 +12,11 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use super::{BvarOptions, ChaChaNormals, Identification, density, forecast, irf, toolbox};
-use crate::data::Table;
+use crate::data::{DataOptions, Table};
 use crate::graphics::{self, Color, Figure, GraphFormat, GraphOptions, LineStyle, Panel, Series};
 use crate::linalg::Mat;
 use crate::modfile::{Command, ModFile, OptValue, Options, RAW_ARGS_KEY};
@@ -34,7 +34,7 @@ pub struct Session {
     sticky_nobs: Option<(usize, usize)>,
 }
 
-pub(crate) fn command_parts(c: &Command) -> (&str, &Options) {
+pub fn command_parts(c: &Command) -> (&str, &Options) {
     match c {
         Command::Steady(o) => ("steady", o),
         Command::Check(o) => ("check", o),
@@ -96,7 +96,19 @@ impl BvarOptions {
                     }
                     "first_obs" => {
                         if let Some(x) = n {
-                            o.first_obs = x as usize
+                            o.first_obs = Some(x as usize)
+                        }
+                    }
+                    "xls_sheet" => {
+                        o.xls.0 = match v {
+                            OptValue::Num(k) => Some(format!("{k}")),
+                            OptValue::Str(s) => Some(s.clone()),
+                            _ => None,
+                        }
+                    }
+                    "xls_range" => {
+                        if let OptValue::Str(s) = v {
+                            o.xls.1 = Some(s.clone())
                         }
                     }
                     "nobs" => {
@@ -123,6 +135,11 @@ impl BvarOptions {
                     "irf" => o.irf = n.unwrap_or(o.irf as f64) as usize,
                     _ => {}
                 }
+            }
+            // dynare_estimation_init.m: `if isnan(options_.first_obs) options_.first_obs=1; end`,
+            // kept in the global options_ by estimation and calib_smoother (evaluate_smoother)
+            if matches!(name, "estimation" | "calib_smoother") && o.first_obs.is_none() {
+                o.first_obs = Some(1);
             }
         }
         (o, nobs_at)
@@ -169,26 +186,49 @@ fn graph_options(commands: &[Command], upto: usize, dir: &Path, fname: &str) -> 
     GraphOptions { enabled, formats, dir: graphics::graph_dir(dir, fname) }
 }
 
-fn resolve_datafile(dir: &Path, f: &str) -> Result<PathBuf> {
-    for cand in [dir.join(f), dir.join(format!("{f}.csv"))] {
-        if cand.is_file() {
-            return Ok(cand);
+/// Port of `read_variables.m` (also used by `sbvar` and the `ms_*` commands): the datafile
+/// `f`, relative to the folder of the .mod file, is looked for with the extensions `.m`, `.mat`,
+/// `.xls`, `.xlsx` then `.csv` when it has none (`options_.xls_sheet`/`xls_range` apply to
+/// spreadsheets). Returns every observation of the variables `names`, in that order.
+pub fn read_variables(dir: &Path, f: &str, names: &[String], xls: &DataOptions) -> Result<Mat> {
+    let given = dir.join(f);
+    let path = match given.extension() {
+        Some(_) => given,
+        None => {
+            let base = given.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            ["m", "mat", "xls", "xlsx", "csv"]
+                .iter()
+                .map(|e| given.with_file_name(format!("{base}.{e}")))
+                .find(|p| p.is_file())
+                .ok_or_else(|| anyhow!("Can't find datafile: {base}.{{m,mat,xls,xlsx,csv}}"))?
         }
+    };
+    let fullname = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.to_string());
+    if !path.is_file() {
+        bail!("Can't find datafile: {fullname}");
     }
-    bail!("bvar: datafile {f} not found next to the .mod file (only .csv is supported)")
+    let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+    if !matches!(ext.as_str(), "m" | "mat" | "xls" | "xlsx" | "csv") {
+        bail!("Unsupported extension for datafile: .{ext}");
+    }
+    let table = Table::read(&path, xls)?;
+    let cols = names
+        .iter()
+        .map(|v| table.column(v.trim()).ok_or_else(|| anyhow!("{} not found in {fullname}", v.trim())))
+        .collect::<Result<Vec<usize>>>()?;
+    let data = Mat::from_fn(table.values.nrows(), cols.len(), |i, j| table.values[(i, cols[j])]);
+    println!("Loading {} observations from {fullname}", data.nrows());
+    Ok(data)
 }
 
 /// Reads the whole dataset (all rows, columns in `varobs` order).
 pub fn load_dataset(dir: &Path, o: &BvarOptions, varobs: &[String]) -> Result<Mat> {
     let f = o.datafile.as_deref().ok_or_else(|| anyhow!("bvar: the datafile option is missing"))?;
-    let path = resolve_datafile(dir, f)?;
-    let table = Table::read_csv(&path)?;
-    let shown = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.to_string());
-    println!("Loading {} observations from {shown}", table.values.nrows());
     if varobs.is_empty() {
         bail!("bvar: varobs must be declared");
     }
-    table.sample(varobs, 1, None).with_context(|| "bvar: reading the observed variables")
+    let xls = DataOptions { xls_sheet: o.xls.0.clone(), xls_range: o.xls.1.clone() };
+    read_variables(dir, f, varobs, &xls)
 }
 
 fn rows_json(m: &Mat) -> Value {
@@ -220,8 +260,8 @@ pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str, seed: u64
     let out_dir = dir.join(fname).join("Output");
     let gopts = graph_options(&mf.commands, k, dir, fname);
     let dataset = load_dataset(dir, &o, &mf.varobs)?;
-    if o.nobs.is_none() {
-        session.sticky_nobs = Some((k, (dataset.nrows() + 1).saturating_sub(o.first_obs)));
+    if let (None, Some(first_obs)) = (o.nobs, o.first_obs) {
+        session.sticky_nobs = Some((k, (dataset.nrows() + 1).saturating_sub(first_obs)));
     }
     let varobs = &mf.varobs;
     let parse_lags = |s: Option<&String>| -> Result<usize> {

@@ -81,6 +81,13 @@ pub fn run(mf: &ModFile, raw: &[String], ctx: &Ctx, seed: u64) -> Result<()> {
 
 /// `options_.prior_mc` (20000) as set by an earlier command.
 fn prior_mc(mf: &ModFile) -> usize {
+    if mf.options.active {
+        // the estimations run so far (options_ is global, later commands have not run)
+        return match crate::modfile::opt(&mf.options.estimation, "prior_mc") {
+            Some(crate::modfile::OptValue::Num(v)) => *v as usize,
+            _ => 20000,
+        };
+    }
     for c in mf.commands.iter().rev() {
         if let crate::modfile::Command::Other(_, o) | crate::modfile::Command::Estimation(o, _) = c
             && let Some(crate::modfile::OptValue::Num(v)) = crate::modfile::opt(o, "prior_mc")

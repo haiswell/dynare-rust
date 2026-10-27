@@ -63,12 +63,23 @@ fn draw_series(
         inv[v] = k;
     }
     let ys = &sm.steady_state;
-    let level = |m: &Mat| Mat::from_fn(nobs, norig, |t, v| m[(inv[v], t)] + ys[v]);
+    // + trend_addition for the observables (one period ahead for the filtered variables)
+    let trend_at = |ahead: bool, v: usize, t: usize| match (&sm.trend, dsge.varobs.iter().position(|&o| o == v)) {
+        (Some((tr, tr1)), Some(i)) => {
+            if ahead {
+                tr1[(i, t)]
+            } else {
+                tr[(i, t)]
+            }
+        }
+        _ => 0.0,
+    };
+    let level = |m: &Mat, ahead: bool| Mat::from_fn(nobs, norig, |t, v| m[(inv[v], t)] + ys[v] + trend_at(ahead, v, t));
     let mut last = vec![0.0; sm.order_var.len()];
     for (k, &v) in sm.order_var.iter().enumerate() {
         last[v] = sm.alphahat[(k, nobs - 1)];
     }
-    Ok((level(&sm.alphahat), sm.etahat.transpose(), Some(level(&sm.filtered)), last))
+    Ok((level(&sm.alphahat, false), sm.etahat.transpose(), Some(level(&sm.filtered, true)), last))
 }
 
 /// `occbin.forecast` from the smoothed last state `last` (deviations, declaration order) at `x`:

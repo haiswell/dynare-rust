@@ -96,7 +96,8 @@ pub struct TarbOptions {
     pub mode_compute: i32,
     /// `new_block_probability` (0.25).
     pub new_block_probability: f64,
-    /// `optim`: optimizer options for the block optimizer.
+    /// `optim`: optimizer options for the block optimizer (`options_.optim_opt` of the
+    /// estimation when not given, see [`SamplerOptions::with_estimation_optim`]).
     pub optim: Option<OptValue>,
 }
 
@@ -287,6 +288,16 @@ impl SamplerOptions {
     /// Supplies the priors (see [`SamplerOptions::priors`]).
     pub fn with_priors(mut self, priors: &[Prior]) -> Self {
         self.priors = Some(priors.to_vec());
+        self
+    }
+
+    /// The estimation's `optim` (`options_.optim_opt`): posterior_sampler.m replaces it by the
+    /// TaRB sampler's own `optim` only when that one is non-empty, so the block optimizer
+    /// (`posterior_sampler_iteration.m`) runs with the estimation's options otherwise.
+    pub fn with_estimation_optim(mut self, optim: Option<&OptValue>) -> Self {
+        if self.tarb.optim.is_none() {
+            self.tarb.optim = optim.cloned();
+        }
         self
     }
 

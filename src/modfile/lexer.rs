@@ -58,12 +58,16 @@ const PUNCT: [&str; 26] = [
     "<", ">", "!", ".",
 ];
 
-/// Tokenizes the macro processor output. A `verbatim; ... end;` block becomes the three
-/// tokens `verbatim`, its MATLAB source as a string, `;` (see `super::verbatim`).
+/// Tokenizes the macro processor output. Comments (`//`, `%`, `/* */`) are removed here, as
+/// in `DynareFlex.ll` (the macro processor leaves them). A `verbatim; ... end;` block becomes
+/// the three tokens `verbatim`, its MATLAB source as a string (comments included), `;` (see
+/// `super::verbatim`).
 pub fn tokenize(lines: &[SrcLine]) -> Result<Vec<Token>> {
     let mut out = Vec::new();
     let mut in_verbatim = false;
     let mut verbatim_src = String::new();
+    // where the `/* */` comment open at the end of the previous line started
+    let mut comment_start: Option<Loc> = None;
     for l in lines {
         let loc = Loc { file: l.file.clone(), line: l.line };
         let t = l.text.trim();
@@ -79,17 +83,65 @@ pub fn tokenize(lines: &[SrcLine]) -> Result<Vec<Token>> {
             }
             continue;
         }
+        let mut in_comment = comment_start.is_some();
+        let text = strip_comments(&l.text, &mut in_comment);
+        match (in_comment, &comment_start) {
+            (false, _) => comment_start = None,
+            (true, None) => comment_start = Some(loc.clone()),
+            (true, Some(_)) => {}
+        }
+        let t = text.trim();
         if t.starts_with("verbatim") && t[8..].trim_start().starts_with(';') {
             in_verbatim = true;
             out.push(Token { tok: Tok::Ident("verbatim".into()), raw: "verbatim".into(), loc });
             continue;
         }
-        lex_line(&l.text, &loc, &mut out)?;
+        lex_line(&text, &loc, &mut out)?;
+    }
+    if let Some(start) = comment_start {
+        bail!("{start}: unterminated comment: `/*` without a closing `*/`");
     }
     if in_verbatim {
         bail!("unterminated verbatim block");
     }
     Ok(out)
+}
+
+/// Removes the `//`, `%` and `/* */` comments of one line, keeping quoted strings intact (a
+/// closed `/* */` comment becomes a blank); `in_comment` carries an open `/* */` comment from
+/// one line to the next.
+fn strip_comments(s: &str, in_comment: &mut bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        if *in_comment {
+            if c == '*' && it.peek() == Some(&'/') {
+                it.next();
+                *in_comment = false;
+                out.push(' ');
+            }
+            continue;
+        }
+        match c {
+            '/' if it.peek() == Some(&'/') => break,
+            '%' => break,
+            '/' if it.peek() == Some(&'*') => {
+                it.next();
+                *in_comment = true;
+            }
+            '\'' | '"' => {
+                out.push(c);
+                for d in it.by_ref() {
+                    out.push(d);
+                    if d == c {
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn lex_line(s: &str, loc: &Loc, out: &mut Vec<Token>) -> Result<()> {
@@ -203,6 +255,39 @@ mod tests {
             ]
         );
         assert_eq!(lex("x $\\alpha$ 2."), vec![Tok::Ident("x".into()), Tok::Tex("\\alpha".into()), Tok::Num(2.0)]);
+    }
+
+    #[test]
+    fn comments() {
+        let lines: Vec<SrcLine> = ["a = 1; // c", "/* x", "y */ b = 'x//y'; % tail", "verbatim;", "% m", "end;", "/*"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| SrcLine { file: Arc::from("t.mod"), line: i + 1, text: t.to_string() })
+            .collect();
+        let e = tokenize(&lines).unwrap_err().to_string();
+        assert!(e.contains("t.mod:7: unterminated comment"), "{e}");
+        let t = tokenize(&lines[..6]).unwrap();
+        let toks: Vec<Tok> = t.into_iter().map(|t| t.tok).collect();
+        assert_eq!(
+            toks,
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Punct("="),
+                Tok::Num(1.0),
+                Tok::Punct(";"),
+                Tok::Ident("b".into()),
+                Tok::Punct("="),
+                Tok::Str("x//y".into()),
+                Tok::Punct(";"),
+                Tok::Ident("verbatim".into()),
+                Tok::Str(
+                    "% m
+"
+                    .into()
+                ),
+                Tok::Punct(";"),
+            ]
+        );
     }
 
     #[test]

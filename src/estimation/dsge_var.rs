@@ -98,6 +98,10 @@ pub struct DsgeVarPosterior<'a> {
     pub moments: &'a VarMoments,
     pub weight: PriorWeight,
     pub bounds: &'a Bounds,
+    /// `options_.qz_criterium` / `options_.lyapunov_complex_threshold` for `lyapunov_symm`
+    /// (dsge_var_likelihood.m:180).
+    pub qz_criterium: f64,
+    pub lyapunov_complex_threshold: f64,
 }
 
 /// MATLAB det (LU).
@@ -188,8 +192,7 @@ impl DsgeVarPosterior<'_> {
             .map(|&v| if self.dsge.loglinear { res.steady_state[v].ln() } else { res.steady_state[v] })
             .collect();
         let rqr = mul(&mul(&res.r, false, &res.q, false), false, &res.r, true);
-        let opts = crate::kalman::KalmanOptions::default();
-        let mut tmp0 = lyapunov_symm(&res.t, &rqr, opts.qz_criterium, opts.lyapunov_complex_threshold)
+        let mut tmp0 = lyapunov_symm(&res.t, &rqr, self.qz_criterium, self.lyapunov_complex_threshold)
             .map_err(|_| EvalFailure { info: 50, penalty: 0.1 })?;
         let mf = &idx.mf;
         let cc = Mat::from_fn(nv, nv, |i, j| constant[i] * constant[j]);

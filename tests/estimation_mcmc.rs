@@ -136,7 +136,7 @@ fn mhm_on_small_gaussian_is_accurate() {
     eprintln!("n=5 log marginal: true {truth:.5}, MHM {:.5}", stats.mhm.log_marginal);
     assert!((stats.mhm.log_marginal - truth).abs() < 0.02);
     assert!((laplace_approximation(&obj.p, obj.c) - truth).abs() < 1e-10);
-    let bg = brooks_gelman(&res.chains, 0.5).unwrap();
+    let bg = brooks_gelman(&res.chains, 0.5, false).unwrap();
     // pooled and within-chain interval lengths agree for converged chains
     let last = bg.udiag[0].last().unwrap();
     assert!((last[0] / last[1] - 1.0).abs() < 0.05, "{last:?}");

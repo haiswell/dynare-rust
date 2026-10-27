@@ -7,8 +7,8 @@
 //!   starts from `R Q R'`, the conditional likelihood);
 //! - 4: the steady state of the Riccati equation, `kalman_steady_state(T', RQR', Z', H)`
 //!   (prediction-error form `P = T (P - P Z' (Z P Z' + H)^-1 Z P) T' + RQR'`, solved here by
-//!   iterating the filter recursion to convergence; Dynare switches to
-//!   `lik_init = 1` when it cannot be solved);
+//!   iterating the filter recursion to convergence; `dsge_likelihood.m` switches to
+//!   `lik_init = 1` when it cannot be solved, `DsgeSmoother.m` errors);
 //! - 5: the Lyapunov covariance on the variables that do not load on unit roots, and
 //!   `Harvey_scale_factor` on the diagonal elsewhere.
 
@@ -53,13 +53,11 @@ pub fn initial_pstar(
         }
         4 => match kalman_steady_state(t, &rqr, mf, h) {
             Ok(p) => Ok(p),
+            // DsgeSmoother.m calls kalman_steady_state without a try/catch
+            Err(e) if smoother => Err(e),
             Err(e) => {
-                if !smoother {
-                    println!("{e}");
-                    println!(
-                        "dsge_likelihood:: I am not able to solve the Riccati equation, so I switch to lik_init=1!"
-                    );
-                }
+                println!("{e}");
+                println!("dsge_likelihood:: I am not able to solve the Riccati equation, so I switch to lik_init=1!");
                 lyapunov_solver(t, r, q, qz_criterium, lyapunov_complex_threshold)
             }
         },

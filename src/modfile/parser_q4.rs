@@ -330,18 +330,25 @@ impl<'a> Parser<'a> {
                 self.q4_flags.found[k] = true;
             }
         }
+        if !sel.iter().any(|s| tags.iter().any(|t| has(t, s))) {
+            // no equation selected: nothing removed (ModelTree::includeExcludeEquations)
+            return Ok(());
+        }
         let removal: Vec<Vec<(String, String)>> = if include {
             let mut r = Vec::new();
-            for (i, t) in tags.iter().enumerate() {
-                if !sel.iter().any(|s| has(t, s)) {
-                    if t.is_empty() {
-                        bail!(
-                            "include_eqs: equation {} of the model block has no tag (dynare-rust removes equations by their tags)",
-                            i + 1
-                        );
-                    }
+            for t in &tags {
+                if !t.is_empty() && !sel.iter().any(|s| has(t, s)) {
                     r.push(t.clone());
                 }
+            }
+            if tags.iter().any(Vec::is_empty) {
+                // the equations without tags are removed too: they get a tag to be removed by
+                let tag = ("#untagged".to_string(), String::new());
+                self.b.tag_untagged_equations(&tag);
+                for (_, _, t) in self.original.equations.iter_mut().filter(|(_, _, t)| t.is_empty()) {
+                    t.push(tag.clone());
+                }
+                r.push(vec![tag]);
             }
             r
         } else {
@@ -409,12 +416,15 @@ impl<'a> Parser<'a> {
         };
         self.initval.retain_mut(|(k, _)| fix_endo(k));
         self.endval.retain_mut(|(k, _)| fix_endo(k));
-        self.histval.retain_mut(|(exo, k, _, _)| {
-            if *exo {
+        // histval entries are (endogenous?, index, lag, value); the variable's own entries stay,
+        // on the exogenous variable it becomes (Dynare's histval keeps the symbol id)
+        self.histval.iter_mut().for_each(|(endo, k, _, _)| {
+            if !*endo {
                 fix_exo(k);
-                true
-            } else {
-                fix_endo(k)
+            } else if *k == j {
+                (*endo, *k) = (false, p);
+            } else if *k > j {
+                *k -= 1;
             }
         });
         self.predetermined.retain_mut(fix_endo);

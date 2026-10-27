@@ -124,12 +124,8 @@ pub fn one_sided_hp_filter(y: &Mat, lambda: f64) -> (Mat, Mat) {
 /// Port of dseries' `baxter_king_filter_.m`: the filtered observations `K+1..T-K`
 /// ((T - 2K) x n). `high`/`low` are the periodicities of `options_.bandpass.passband`.
 pub fn baxter_king_filter(y: &Mat, high: f64, low: f64, k: usize) -> Result<Mat> {
-    if high < 2.0 {
-        bail!("dseries::baxter_king_filter: Second argument must be greater than 2!");
-    }
-    if high > low {
-        bail!("dseries::baxter_king_filter: Second argument must be smaller than the third argument!");
-    }
+    // baxter_king_filter_.m checks `high >= 2` and `high <= low` only inside `if nargin<4 ||
+    // isempty(K)`; get_filtered_time_series.m always passes `options_.bandpass.K`
     let (t, n) = y.shape();
     if t < 2 * k + 1 {
         bail!("dseries::baxter_king_filter: the sample is too short ({t} observations, K = {k})");

@@ -78,7 +78,7 @@ fn sw07_gsa_draws_ill_conditioned_filter() {
         .unwrap();
     let mut dsge = DsgeModel::new(&mf, None).unwrap();
     dsge.set_solver_options(dynare::solver::SolverOptions {
-        qz_criterium: gsa::qz_criterium(&o),
+        qz_criterium: gsa::qz_criterium(&o, true),
         ..Default::default()
     });
     let data = gsa::rmse::likelihood_data(&mf, &tmp, &o, "sw07_obs.csv").unwrap();

@@ -28,10 +28,9 @@ pub mod sbvar_extra;
 
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
-use crate::data::Table;
 use crate::linalg::Mat;
 use crate::matfile::{self, MatOut};
 use crate::modfile::{BLOCK_BODY_KEY, Command, ModFile, OptValue, Options, opt};
@@ -250,36 +249,42 @@ pub fn handles(name: &str) -> bool {
     matches!(name, "sbvar" | "markov_switching" | "svar" | "svar_identification") || ms_commands::handles(name)
 }
 
-/// `sbvar` options (`options_.ms.*` after `initialize_ms_sbvar_options.m`).
+/// The options read by `sbvar` and the `ms_*` commands: `options_.ms.*` (defaults of
+/// `initialize_ms_sbvar_options.m`), `options_.datafile`, `options_.xls_sheet`/`xls_range` and
+/// `options_.forecast`.
 #[derive(Clone, Debug)]
 pub struct SbvarOptions {
     pub datafile: Option<String>,
+    /// `options_.xls_sheet` / `options_.xls_range` (spreadsheet datafiles).
+    pub xls: crate::data::DataOptions,
     pub freq: usize,
     pub initial_year: Option<usize>,
     pub initial_subperiod: usize,
     pub final_year: Option<usize>,
     pub final_subperiod: Option<usize>,
-    pub nlags: Option<usize>,
+    pub nlags: usize,
     pub mu: [f64; 6],
     pub bayesian_prior: bool,
     pub contemp_reduced_form: bool,
     pub cross_restrictions: bool,
+    /// `options_.forecast` (years; `sbvar` uses 4 when it is 0).
     pub forecast: usize,
     pub restriction_fname: Option<String>,
     /// `vlistlog`: observed variables in logs (growth-rate files and graphs).
     pub vlistlog: Vec<String>,
 }
 
-impl SbvarOptions {
-    pub fn from_options(o: &Options) -> Result<SbvarOptions> {
+impl Default for SbvarOptions {
+    fn default() -> Self {
         let mut s = SbvarOptions {
             datafile: None,
+            xls: Default::default(),
             freq: 4,
             initial_year: None,
             initial_subperiod: 1,
             final_year: None,
             final_subperiod: None,
-            nlags: None,
+            nlags: 1,
             mu: [1.0, 1.0, 0.1, 1.2, 1.0, 1.0],
             bayesian_prior: true,
             contemp_reduced_form: false,
@@ -288,32 +293,117 @@ impl SbvarOptions {
             restriction_fname: None,
             vlistlog: Vec::new(),
         };
+        s.initialize_ms_sbvar_options();
+        s
+    }
+}
+
+impl SbvarOptions {
+    /// The fields that `initialize_ms_sbvar_options.m` resets (the others keep their value).
+    fn initialize_ms_sbvar_options(&mut self) {
+        self.mu = [1.0, 1.0, 0.1, 1.2, 1.0, 1.0];
+        self.freq = 4;
+        self.initial_subperiod = 1;
+        self.final_subperiod = None;
+        self.nlags = 1;
+        self.cross_restrictions = false;
+        self.contemp_reduced_form = false;
+        self.bayesian_prior = true;
+        self.initial_year = None;
+        self.final_year = None;
+    }
+
+    /// The options of the command `o` alone, over the defaults.
+    pub fn from_options(o: &Options) -> Result<SbvarOptions> {
+        let mut s = SbvarOptions::default();
+        s.apply("sbvar", o)?;
+        s.check()?;
+        Ok(s)
+    }
+
+    /// The options in force when the command `o` (an element of `mf.commands`) runs: Dynare's
+    /// global `options_` as the preprocessed driver leaves it. In file order,
+    /// `svar_identification` sets `options_.ms.nlags` to the largest lag of its restrictions
+    /// (`ident_nlags`), every `ms_*` command first calls `initialize_ms_sbvar_options` (and
+    /// `ms_estimation` clears `options_.datafile`), the options of `sbvar` and of the `ms_*`
+    /// commands set `options_.ms.*`, and those of any command set `options_.datafile`,
+    /// `options_.xls_sheet`/`xls_range` and `options_.forecast`. No
+    /// `initialize_ms_sbvar_options` precedes `sbvar`, so it sees what the earlier commands
+    /// left. When `o` is not one of the commands, the options are those of an `sbvar` command
+    /// with options `o` right after the declarations.
+    pub fn in_force(mf: &ModFile, o: &Options, ident_nlags: Option<usize>) -> Result<SbvarOptions> {
+        use crate::bvar::commands::command_parts;
+        let none = Options::new();
+        let cmds: Vec<(&str, &Options)> = match mf.commands.iter().position(|c| std::ptr::eq(command_parts(c).1, o)) {
+            Some(k) => mf.commands[..=k].iter().map(command_parts).collect(),
+            None => vec![("svar_identification", &none), ("sbvar", o)],
+        };
+        let mut s = SbvarOptions::default();
+        for (name, opts) in cmds {
+            if name == "svar_identification" {
+                if let Some(l) = ident_nlags {
+                    s.nlags = l;
+                }
+            } else if ms_commands::handles(name) {
+                s.initialize_ms_sbvar_options();
+                if name == "ms_estimation" {
+                    s.datafile = None;
+                }
+            }
+            s.apply(name, opts)?;
+        }
+        s.check()?;
+        Ok(s)
+    }
+
+    /// The assignments to `options_` made by the options `o` of the command `name`.
+    fn apply(&mut self, name: &str, o: &Options) -> Result<()> {
+        let ms = name == "sbvar" || ms_commands::handles(name);
         let flag = |v: &OptValue| !matches!(num(v), Some(0.0));
         for (k, v) in o {
             match k.as_str() {
-                "datafile" => {
-                    s.datafile = Some(match v {
+                // method_of_moments sets options_mom_.datafile
+                "datafile" if name != "method_of_moments" => {
+                    self.datafile = Some(match v {
                         OptValue::Str(x) => x.clone(),
-                        _ => bail!("sbvar: datafile must be a file name"),
+                        _ => bail!("{name}: datafile must be a file name"),
                     })
                 }
+                "xls_sheet" => {
+                    self.xls.xls_sheet = match v {
+                        OptValue::Num(k) => Some(format!("{k}")),
+                        OptValue::Str(x) => Some(x.clone()),
+                        _ => None,
+                    }
+                }
+                "xls_range" => {
+                    if let OptValue::Str(x) = v {
+                        self.xls.xls_range = Some(x.clone())
+                    }
+                }
+                "forecast" if ms => self.forecast = int(v, "sbvar: forecast")?,
+                "forecast" => {
+                    if let Ok(x) = int(v, "forecast") {
+                        self.forecast = x
+                    }
+                }
+                _ if !ms => {}
                 "freq" => {
-                    s.freq = match v {
+                    self.freq = match v {
                         OptValue::Str(x) if x.eq_ignore_ascii_case("monthly") => 12,
                         OptValue::Str(x) if x.eq_ignore_ascii_case("quarterly") => 4,
                         OptValue::Str(x) if x.eq_ignore_ascii_case("yearly") => 1,
                         _ => int(v, "sbvar: freq")?,
                     }
                 }
-                "initial_year" => s.initial_year = Some(int(v, "sbvar: initial_year")?),
-                "initial_subperiod" => s.initial_subperiod = int(v, "sbvar: initial_subperiod")?,
-                "final_year" => s.final_year = Some(int(v, "sbvar: final_year")?),
-                "final_subperiod" => s.final_subperiod = Some(int(v, "sbvar: final_subperiod")?),
-                "nlags" => s.nlags = Some(int(v, "sbvar: nlags")?),
-                "forecast" => s.forecast = int(v, "sbvar: forecast")?,
-                "no_bayesian_prior" => s.bayesian_prior = !flag(v),
-                "contemp_reduced_form" => s.contemp_reduced_form = flag(v),
-                "cross_restrictions" => s.cross_restrictions = flag(v),
+                "initial_year" => self.initial_year = Some(int(v, "sbvar: initial_year")?),
+                "initial_subperiod" => self.initial_subperiod = int(v, "sbvar: initial_subperiod")?,
+                "final_year" => self.final_year = Some(int(v, "sbvar: final_year")?),
+                "final_subperiod" => self.final_subperiod = Some(int(v, "sbvar: final_subperiod")?),
+                "nlags" => self.nlags = int(v, "sbvar: nlags")?,
+                "no_bayesian_prior" => self.bayesian_prior = !flag(v),
+                "contemp_reduced_form" => self.contemp_reduced_form = flag(v),
+                "cross_restrictions" => self.cross_restrictions = flag(v),
                 "vlistlog" => {
                     fn names(v: &OptValue, out: &mut Vec<String>) {
                         match v {
@@ -322,29 +412,34 @@ impl SbvarOptions {
                             _ => {}
                         }
                     }
-                    names(v, &mut s.vlistlog);
+                    self.vlistlog.clear();
+                    names(v, &mut self.vlistlog);
                 }
                 "restriction_fname" => {
                     if let OptValue::Str(x) = v {
-                        s.restriction_fname = Some(x.trim_matches('\'').to_string())
+                        self.restriction_fname = Some(x.trim_matches('\'').to_string())
                     }
                 }
                 "coefficients_prior_hyperparameters" => {
                     let x = nums(v)
                         .filter(|x| x.len() == 6)
                         .ok_or_else(|| anyhow!("sbvar: coefficients_prior_hyperparameters needs 6 values"))?;
-                    s.mu.copy_from_slice(&x);
+                    self.mu.copy_from_slice(&x);
                 }
                 _ => {} // data / vlist / forecast-band / conditional-forecast options of the TZ code: unused here
             }
         }
-        if s.freq < 1 {
+        Ok(())
+    }
+
+    fn check(&self) -> Result<()> {
+        if self.freq < 1 {
             bail!("sbvar: freq must be a positive integer");
         }
-        if s.nlags == Some(0) {
+        if self.nlags == 0 {
             bail!("sbvar: nlags must be a positive integer");
         }
-        Ok(s)
+        Ok(())
     }
 }
 
@@ -364,7 +459,7 @@ pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str, seed: u64
     let res = sbvar::sbvar(&p.z, &p.settings, &p.restr)?;
     let opts = p.opts.clone();
     let nvar = res.nvar;
-    println!("\nSBVAR: {} variables, {} lags, {} effective observations", nvar, opts.nlags.unwrap_or(1), res.fss);
+    println!("\nSBVAR: {} variables, {} lags, {} effective observations", nvar, opts.nlags, res.fss);
     println!("Posterior mode objective (fhat): {:.8}", res.fhat);
     println!("A0 (posterior mode):");
     for i in 0..nvar {
@@ -456,18 +551,15 @@ pub struct Prepared {
     pub settings: sbvar::SbvarSettings,
 }
 
+/// `o`: the options of the `sbvar` or `ms_estimation` command, an element of `mf.commands`
+/// (see [`SbvarOptions::in_force`]).
 pub fn prepare_sample(mf: &ModFile, o: &Options, dir: &Path) -> Result<Prepared> {
-    let mut opts = SbvarOptions::from_options(o)?;
     let decl = MsDecl::from_modfile(mf)?;
     let ident = decl.identification.clone().unwrap_or_default();
+    let opts = SbvarOptions::in_force(mf, o, ident.max_lag())?;
     let f = opts.datafile.clone().ok_or_else(|| anyhow!("Must set datafile option"))?;
     let iy = opts.initial_year.ok_or_else(|| anyhow!("Must set initial_year option"))?;
-    let path = [dir.join(&f), dir.join(format!("{f}.csv"))]
-        .into_iter()
-        .find(|p| p.is_file())
-        .ok_or_else(|| anyhow!("sbvar: datafile {f} not found next to the .mod file (only .csv is supported)"))?;
-    let table = Table::read_csv(&path)?;
-    let data = table.sample(&mf.varobs, 1, None).context("sbvar: reading the observed variables")?;
+    let data = crate::bvar::commands::read_variables(dir, &f, &mf.varobs, &opts.xls)?;
     let nobs = data.nrows();
     let freq = opts.freq;
     // check_datafile_years_assigned
@@ -496,8 +588,7 @@ pub fn prepare_sample(mf: &ModFile, o: &Options, dir: &Path) -> Result<Prepared>
             None => bail!("sbvar: no identification: add a svar_identification block"),
         }
     };
-    let nlags = opts.nlags.or(ident.max_lag()).unwrap_or(1);
-    opts.nlags = Some(nlags);
+    let nlags = opts.nlags;
     let nvar = mf.varobs.len();
     let restr = ident.restrictions_for_cross(kind, nvar, nlags, 1, opts.cross_restrictions)?;
     if !restr.cross.is_empty() && opts.contemp_reduced_form {

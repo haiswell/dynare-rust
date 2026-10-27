@@ -29,6 +29,64 @@ All notable changes to this project are documented here. The format follows
 - `conditional_forecast(parameter_set=calibration)` starts from `M_.endo_histval` when a
   `histval` is set (e.g. by `smoother2histval`), as Dynare's `conditional_forecasts.run`,
   instead of always from the steady state.
+- Parity with Dynare 7.2, from an audit of every module against the 7.2 sources and the 7.2
+  preprocessor (about 160 divergences fixed, `tests/parity_*.rs`):
+  - The driver runs the .mod file as Dynare's `driver.m` does. `shocks`, deterministic shocks,
+    `shock_paths`, controlled paths, `initval`, `histval` and `endval` take effect where they
+    stand. Each `histval` block replaces the previous one, and `endval` saves the initial
+    steady state only once.
+  - Options persist between commands as in Dynare's global `options_`: estimation options,
+    `forecast(periods, conf_sig)`, `loglinear` (taken per command, also from `stoch_simul`),
+    `solve_algo`, homotopy and the heterogeneity options. `mode_compute` defaults to 5.
+    Estimation selects `qz_criterium` as `select_qz_criterium_value.m` does.
+  - The estimated point becomes `M_.params`/`M_.Sigma_e` for every later command, and a later
+    parameter assignment overrides it. Parameters set in `steady_state_model` reach the
+    likelihood, identification and the method of moments, and `osr` writes its parameters back.
+    Steady states and Jacobians are evaluated at `oo_.exo_steady_state`. `forecast` uses the
+    stored `oo_.dr`.
+  - One port of `DsgeSmoother.m` for every smoother: observation trends, `lik_init` 2/4/5,
+    `lyapunov`, `filter_initial_state`, and `prefilter`/`loglinear`/`first_obs` for
+    `calib_smoother`. Forecasts and conditional forecasts add the trends. Posterior forecasts
+    use `log(ss)` under `loglinear`, and add the prefilter mean and the trend. New posterior
+    objects: `Init_State`, `StateUncertainty`, `InitStateUncertainty`, `FilterCovariance`, and
+    the variance decompositions with measurement errors.
+  - `smoother2histval` after an MCMC uses the posterior mean of the smoothed draws.
+  - Macro processor and parser:
+    - a `-D` define can be overridden by `@#define`;
+    - `@#for` keeps its variable and handles `when` as Dynare does;
+    - fractional ranges, `mod`, `[1:3]` and bool/real typing follow the preprocessor, and
+      `savemacro` drops empty lines;
+    - an invalid `shocks` entry is a syntax error, and `==` binds looser than `<`;
+    - `include_eqs` handles equations that have no tag.
+  - Derivatives: `STEADY_STATE()` terms have parameter derivatives, so identification accepts
+    such models and analytic derivatives include them. A parameter exponent differentiates
+    through `getPowerDeriv`.
+  - Estimation and samplers: per-parameter `jscale`; the H check and the info 71/72 checks;
+    TaRB inherits `optim`; NumgradAlgorithm 13/15; analytic gradients in the mode finders.
+  - OccBin: `filter_initial_state`, observation trends, `lyapunov`, `endogenous_prior` and
+    `lik_init` 2/4/5. The conditional smoother starts from all `nspred` states.
+  - Identification and method of moments:
+    - identification strength uses the analytic `dsge_likelihood` Hessian;
+    - simulations start from histval and drop `options_.drop`;
+    - SMM adds the calibrated measurement errors, and accepts estimated ones.
+  - Policy:
+    - LQ welfare at order 2;
+    - conditional welfare from histval and the period-1 deterministic shocks;
+    - `osr(maxit, tolf)`;
+    - `ramsey_constraints` are ignored in the Ramsey steady state, as in 7.2.
+  - Nonlinear and GSA:
+    - the online filter runs at orders 1 and 3 and starts from the steady state;
+    - particle-filter `qz_criterium`;
+    - GSA centres `neighborhood_width` on the mode file and samples from the mode with
+      `pprior=0`.
+  - Other modules:
+    - `simul_backward_model` starts from histval;
+    - BVAR, sbvar and MS-SBVAR read the data like `read_variables`, and `ms_estimation`
+      defaults to `nlags=1`;
+    - controlled paths follow `stack_solve_algo` 1/6/7;
+    - histval covers the lags of `diff()` auxiliaries;
+    - the pruned state space rejects roots above `2-qz_criterium`.
+  - Remaining known differences are listed in docs/REFERENCES.md.
 
 ## [0.1.0] - 2026-10-22
 

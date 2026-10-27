@@ -75,10 +75,17 @@ pub trait Objective: Sync {
     /// `(fval, info)`.
     fn eval(&self, x: &[f64]) -> (f64, i32);
 
-    /// Analytic gradient of the objective, if available (method of moments with
-    /// `analytic_jacobian`); `None` means the optimizer uses its numerical gradient.
+    /// Analytic gradient of the objective (method of moments with `analytic_jacobian`);
+    /// `None` when [`Objective::has_gradient`] is false or the evaluation fails.
     fn gradient(&self, _x: &[f64]) -> Option<Vec<f64>> {
         None
+    }
+
+    /// `options_.mom.analytic_jacobian == 1`: the objective returns its gradient
+    /// ([`Objective::gradient`]), and `dynare_minimize_objective.m` runs fmincon, fminunc,
+    /// csminwel and solvopt with analytic gradients, as under `analytic_derivation`.
+    fn has_gradient(&self) -> bool {
+        false
     }
 
     /// Evaluation with Dynare's `info(4)` and, if `contributions` is true and
@@ -116,6 +123,9 @@ impl<T: Objective + ?Sized> Objective for &T {
     }
     fn gradient(&self, x: &[f64]) -> Option<Vec<f64>> {
         (**self).gradient(x)
+    }
+    fn has_gradient(&self) -> bool {
+        (**self).has_gradient()
     }
     fn eval_full(&self, x: &[f64], contributions: bool) -> Evaluation {
         (**self).eval_full(x, contributions)

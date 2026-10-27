@@ -209,7 +209,8 @@ pub fn before_parse(path: &Path, ro: &RunOptions) -> Result<bool> {
     if c.savemacro.is_some() {
         let mut s = String::new();
         let mut last: Option<(&str, usize)> = None;
-        for l in &lines {
+        // the preprocessor's output has no empty lines (whitespace-only ones stay)
+        for l in lines.iter().filter(|l| !l.text.is_empty()) {
             if c.linemacro && last.is_none_or(|(f, n)| f != &*l.file || n + 1 != l.line) {
                 s += &format!("@#line \"{}\" {}\n", l.file, l.line);
             }

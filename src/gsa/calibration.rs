@@ -35,6 +35,9 @@ pub struct Restrictions {
     pub irf: Vec<Restriction>,
     pub moment: Vec<Restriction>,
     pub relative_irf: bool,
+    /// The `options_` that `th_autocovariances` sees (`hp_filter`, `bandpass`, ... left by earlier
+    /// `stoch_simul` / `estimation` commands), see [`persistent_moment_options`].
+    pub moment_options: crate::analysis::moments::MomentOptions,
 }
 
 impl Restrictions {
@@ -146,8 +149,28 @@ pub fn parse_entry(s: &str, irf: bool) -> Result<Restriction> {
 }
 
 /// The restrictions in force at command `upto` (the last block of each kind before it).
+/// The global `options_` as the commands before `upto` leave them, for `th_autocovariances`
+/// (`endogenous_prior_restrictions.m`, `+gsa/th_moments.m`): the options of every earlier
+/// `stoch_simul` and `estimation` (`hp_filter`, `bandpass_filter`, `filtered_theoretical_moments_grid`,
+/// ...). `qz_criterium` keeps the moment default (GSA's own criterium is not carried here).
+pub fn persistent_moment_options(mf: &ModFile, upto: usize) -> crate::analysis::moments::MomentOptions {
+    let mut so = crate::analysis::StochSimulOptions::default();
+    for c in mf.commands.iter().take(upto) {
+        match c {
+            Command::StochSimul(o, _) | Command::Estimation(o, _) => {
+                so.apply(o);
+            }
+            _ => {}
+        }
+    }
+    crate::analysis::moments::MomentOptions {
+        qz_criterium: crate::analysis::moments::MomentOptions::default().qz_criterium,
+        ..so.moment_options()
+    }
+}
+
 pub fn restrictions_before(mf: &ModFile, upto: usize) -> Result<Restrictions> {
-    let mut r = Restrictions::default();
+    let mut r = Restrictions { moment_options: persistent_moment_options(mf, upto), ..Default::default() };
     for c in mf.commands.iter().take(upto) {
         if let Command::Other(name, o) = c {
             let irf = name == "irf_calibration";
@@ -264,7 +287,7 @@ pub fn endogenous_prior_restrictions(
         let mo = crate::analysis::moments::MomentOptions {
             ar: ntmin.unsigned_abs().max(ntmax as u64) as usize,
             nodecomposition: true,
-            ..Default::default()
+            ..r.moment_options.clone()
         };
         let th = crate::analysis::moments::th_autocovariances(dr, sigma_e, &ivar, &mo)?;
         out.info_moment = vec![[1.0, 1.0]; r.moment.len()];

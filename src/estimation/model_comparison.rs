@@ -10,7 +10,10 @@
 //! |---|---|
 //! | Laplace (`marginal_density = laplace`, default) | `MarginalDensity.LaplaceApproximation`, `log_data_density_laplace` |
 //! | Modified harmonic mean (`= modifiedharmonicmean`) | `MarginalDensity.ModifiedHarmonicMean`, `mcmc.log_data_density_mhm` |
-//! | either, for an SMC run (no Laplace, no MHM) | `MarginalDensity.dsmh`, `MarginalDensity.hssmc` |
+//!
+//! A model without the requested estimate (an SMC run only has `MarginalDensity.dsmh` or
+//! `MarginalDensity.hssmc`) stops the comparison with Dynare's "I can't find" message and no
+//! output, as `model_comparison.m`'s `catch` branch does.
 //!
 //! Output: `oo_.Model_Comparison` as `<fname>/Output/<fname>_model_comparison.json`
 //! (`{"estimator": .., "models": {NAME: {"Prior", "Log_Marginal_Density", "Bayes_Ratio",
@@ -114,16 +117,7 @@ pub fn read_log_density(results: &Value, est: Estimator) -> Option<f64> {
         Estimator::LaplaceApproximation => results.get("log_data_density_laplace").and_then(Value::as_f64),
         Estimator::ModifiedHarmonicMean => results.pointer("/mcmc/log_data_density_mhm").and_then(Value::as_f64),
     };
-    // an SMC run (dsmh, hssmc) has neither: its own estimate of the marginal
-    // density (`oo_.MarginalDensity.<sampler>`) stands in for both.
-    v.filter(|x| x.is_finite()).or_else(|| smc_log_density(results).map(|(_, d)| d))
-}
-
-/// The log marginal density of an SMC sampler run, `MarginalDensity.{dsmh,hssmc}`.
-pub fn smc_log_density(results: &Value) -> Option<(&'static str, f64)> {
-    ["dsmh", "hssmc"]
-        .into_iter()
-        .find_map(|k| results.pointer(&format!("/MarginalDensity/{k}")).and_then(Value::as_f64).map(|v| (k, v)))
+    v.filter(|x| x.is_finite())
 }
 
 /// Splits the raw tokens of `model_comparison m1(0.7) dir/m2.mod(0.3)` into (name, prior).
@@ -174,7 +168,9 @@ pub fn parse_models(tokens: &[String]) -> Result<Vec<(String, f64)>> {
 }
 
 /// Driver entry point: `model_comparison[(marginal_density = ...)] NAME[(PRIOR)] ...;`.
-pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str) -> Result<Comparison> {
+/// `None` when a model has no estimate of the requested marginal density (Dynare prints a
+/// message and returns).
+pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str) -> Result<Option<Comparison>> {
     let Command::Other(_, o) = c else { bail!("model_comparison: unexpected command") };
     let k = mf.commands.iter().position(|x| std::ptr::eq(x, c)).unwrap_or(mf.commands.len() - 1);
     // options_ is global: `marginal_density` and `TeX` persist from earlier commands
@@ -198,21 +194,17 @@ pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str) -> Result
         let txt = std::fs::read_to_string(&p).with_context(|| format!("model_comparison: reading {}", p.display()))?;
         let v: Value =
             serde_json::from_str(&txt).with_context(|| format!("model_comparison: parsing {}", p.display()))?;
-        if let Some((k, _)) = smc_log_density(&v)
-            && v.pointer(&format!("/MarginalDensity/{}", est.key())).is_none()
-        {
-            println!("model_comparison: model {n} was estimated with {k}: its {k} log marginal density is used.");
-        }
-        let d = read_log_density(&v, est).ok_or_else(|| {
-            anyhow!(
-                "MODEL_COMPARISON: I can't find the {} associated to model {n} in {}",
+        // try MarginalLogDensity(i) = mstruct.oo_.MarginalDensity.(type); catch: disp, return
+        let Some(d) = read_log_density(&v, est) else {
+            println!(
+                "MODEL_COMPARISON: I cant't find the {} associated to model {n}",
                 match est {
                     Estimator::LaplaceApproximation => "Laplace approximation",
                     Estimator::ModifiedHarmonicMean => "modified harmonic mean estimate",
-                },
-                p.display()
-            )
-        })?;
+                }
+            );
+            return Ok(None);
+        };
         dens.push(d);
     }
     let r = compare(&names, &priors, &dens);
@@ -258,7 +250,7 @@ pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str) -> Result
             6,
         )?;
     }
-    Ok(r)
+    Ok(Some(r))
 }
 
 /// `dyntable(options_, title, headers, labels, values, 0, 15, 6)`.

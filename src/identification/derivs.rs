@@ -88,6 +88,8 @@ impl ParamSet {
 pub struct ModelParamDerivs {
     n: usize,
     n_exo: usize,
+    /// `oo_.exo_steady_state`: where the derivatives are evaluated.
+    x_ss: Vec<f64>,
     n_par: usize,
     /// Static model: outputs are `d f_i / d p` for the entries in `rp_entries`.
     static_tape: Tape,
@@ -167,16 +169,13 @@ impl ModelParamDerivs {
                 }
                 let mut el = Vec::new();
                 dag.collect_leaves(e, &mut el);
-                let mut items: Vec<(DiffVar, usize, bool)> = Vec::new();
+                // parameters: STEADY_STATE(y) depends on all of them (`ss_param_deriv`)
+                let mut items: Vec<(DiffVar, usize, bool)> =
+                    dag.param_deps(e).into_iter().map(|q| (DiffVar::Param(q), q as usize, true)).collect();
                 for &l in &el {
-                    match l {
-                        Node::Param(q) => items.push((DiffVar::Param(q), q as usize, true)),
-                        _ => {
-                            if let Some((v2, c2)) = col_of(l) {
-                                if c2 < 3 * n {
-                                    items.push((v2, c2, false));
-                                }
-                            }
+                    if let Some((v2, c2)) = col_of(l) {
+                        if c2 < 3 * n {
+                            items.push((v2, c2, false));
                         }
                     }
                 }
@@ -203,14 +202,31 @@ impl ModelParamDerivs {
         let mut roots = g1p_nodes;
         roots.extend(g2_nodes);
         let dyn_tape = Tape::compile(&dag, &roots, &dyn_y, &x0);
-        ModelParamDerivs { n, n_exo, n_par, static_tape, rp_entries, dyn_tape, g1p_entries, g2_entries }
+        ModelParamDerivs {
+            n,
+            n_exo,
+            x_ss: vec![0.0; n_exo],
+            n_par,
+            static_tape,
+            rp_entries,
+            dyn_tape,
+            g1p_entries,
+            g2_entries,
+        }
+    }
+
+    /// Evaluates the static and dynamic derivatives at the exogenous steady state `x_ss`
+    /// (`oo_.exo_steady_state`, zero by default).
+    pub fn at_exo_steady_state(mut self, x_ss: &[f64]) -> Self {
+        self.x_ss = x_ss.to_vec();
+        self
     }
 
     /// `rp_static` (static residual derivatives w.r.t. all parameters) at `ys`.
     pub fn static_param_jacobian(&self, ys: &[f64], params: &[f64]) -> Mat {
-        let x = vec![0.0; self.n_exo];
+        let x = &self.x_ss;
         let mut s = vec![0.0; self.static_tape.scratch_len()];
-        self.static_tape.eval(ys, &x, params, &mut s);
+        self.static_tape.eval(ys, x, params, &mut s);
         let mut rp = Mat::zeros(self.n, self.n_par);
         for (k, &(i, q)) in self.rp_entries.iter().enumerate() {
             rp[(i, q)] += self.static_tape.output(k, &s);
@@ -224,8 +240,7 @@ impl ModelParamDerivs {
     /// `dg1 = g1p + g2 * dyy0` (part (1) + part (2)).
     pub fn eval(&self, model: &Model, ys: &[f64], params: &[f64], qz_criterium: f64) -> Result<ModelDerivs> {
         let n = self.n;
-        let x = vec![0.0; self.n_exo];
-        let g1s = model.static_jacobian(ys, &x, params);
+        let g1s = model.static_jacobian(ys, &self.x_ss, params);
         let rp = self.static_param_jacobian(ys, params);
         // MATLAB's `\` returns Inf/NaN for an exactly singular static Jacobian (unit roots),
         // which sends Dynare to the Schur branch; LU rounding can leave a tiny non-zero pivot
@@ -271,8 +286,10 @@ impl ModelParamDerivs {
         for _ in 0..3 {
             y3.extend_from_slice(ys);
         }
+        // dynamic_params_derivs(y3n, exo, params, ys, dys, d2ys)
+        let pext = model.params_with_steady_state_derivs(params, ys, &dys, None);
         let mut s = vec![0.0; self.dyn_tape.scratch_len()];
-        self.dyn_tape.eval(&y3, &x, params, &mut s);
+        self.dyn_tape.eval(&y3, &self.x_ss, &pext, &mut s);
         let ncol = 3 * n + self.n_exo;
         let neq = model.n_equations();
         let mut dg1 = vec![Mat::zeros(neq, ncol); self.n_par];

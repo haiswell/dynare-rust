@@ -59,7 +59,13 @@ pub fn run_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str) -> Result
         "write_latex_steady_state_model" => write_steady_state_model(mf, dir, fname)?,
         "write_latex_definitions" => write_latex_definitions(mf, dir, fname)?,
         "write_latex_parameter_table" => write_latex_parameter_table(mf, &mf.model.params, dir, fname)?,
-        "write_latex_prior_table" => match write_latex_prior_table(mf, dir, fname, 0.0)? {
+        "write_latex_prior_table" => match write_latex_prior_table(
+            mf,
+            dir,
+            fname,
+            mf.options.prior_trunc.unwrap_or(0.0), // options_.prior_trunc as earlier commands left it
+            mf.options.prior_interval.unwrap_or(0.9),
+        )? {
             Some(p) => p,
             None => return Ok(()),
         },
@@ -388,7 +394,13 @@ pub fn priors_of(mf: &ModFile) -> Result<Option<(Vec<EstimatedParam>, Vec<Prior>
 }
 
 /// Port of `write_latex_prior_table.m`: `<fname>_priors_table.tex`.
-pub fn write_latex_prior_table(mf: &ModFile, dir: &Path, fname: &str, prior_trunc: f64) -> Result<Option<PathBuf>> {
+pub fn write_latex_prior_table(
+    mf: &ModFile,
+    dir: &Path,
+    fname: &str,
+    prior_trunc: f64,
+    prior_interval: f64,
+) -> Result<Option<PathBuf>> {
     let Some((est, priors)) = priors_of(mf)? else {
         println!("\nwrite_latex_prior_table:: No prior distributions detected. Skipping table creation.");
         return Ok(None);
@@ -422,7 +434,7 @@ pub fn write_latex_prior_table(mf: &ModFile, dir: &Path, fname: &str, prior_trun
         );
     }
     s.push_str("\\bottomrule\n\\endlastfoot\n");
-    let interval = (1.0 - 0.90) / 2.0;
+    let interval = (1.0 - prior_interval) / 2.0; // options_.prior_interval
     let num = |v: f64| fmt_f(v, 6, 4);
     for (e, p) in est.iter().zip(&priors) {
         let (lb, ub) = p.bounds(prior_trunc);

@@ -59,7 +59,7 @@ fn options_of(c: &Value) -> BvarOptions {
         v => v.as_f64().unwrap_or_else(|| panic!("option {k}: {v}")),
     };
     BvarOptions {
-        first_obs: c["first_obs"].as_f64().unwrap() as usize,
+        first_obs: Some(c["first_obs"].as_f64().unwrap() as usize),
         nobs: c["nobs"].as_f64().map(|x| x as usize),
         presample: g("presample") as usize,
         prefilter: g("prefilter") != 0.0,
@@ -100,7 +100,7 @@ fn bvar_density_matches_dynare() {
 
 fn forecast_options(f: &Value) -> BvarOptions {
     BvarOptions {
-        first_obs: f["first_obs"].as_f64().unwrap() as usize,
+        first_obs: Some(f["first_obs"].as_f64().unwrap() as usize),
         nobs: Some(f["nobs"].as_f64().unwrap() as usize),
         tau: f["bvar_prior_tau"].as_f64().unwrap(),
         train: f["bvar_prior_train"].as_f64().unwrap() as usize,

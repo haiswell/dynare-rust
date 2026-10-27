@@ -188,7 +188,9 @@ pub fn dsmh(
                     a
                 })
                 .sum();
-            let acpt = acc as f64 / (o.g * o.k) as f64;
+            // `acpt = acpt + 1/(opts.G*opts.K)` at every acceptance
+            let step = 1.0 / (o.g * o.k) as f64;
+            let acpt = (0..acc).fold(0.0, |s, _| s + step);
             attempt += 1;
             if o.alpha0 <= acpt && acpt <= o.alpha1 {
                 break acpt;
@@ -200,9 +202,7 @@ pub fn dsmh(
             } else {
                 5.0 * c
             };
-            if attempt > 200 {
-                break acpt; // (dsmh.m loops forever; give up tuning after 200 attempts)
-            }
+            // (no cap on the attempts: dsmh.m loops until the rate is in [alpha0, alpha1])
         };
         // mutation_DSMH
         let levels_idx: Vec<usize> = (1..o.m).map(|k| k * o.n * o.g / o.m).collect();

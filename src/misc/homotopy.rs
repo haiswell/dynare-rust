@@ -244,6 +244,20 @@ pub fn before_steady(mf: &mut ModFile, det: Option<&mut DetState>, o: &Options) 
         };
         values.push((t, start.unwrap_or_else(|| get(&st, t)), *end));
     }
+    // steady.m: homotopy_setup(from_initval_to_endval) adds the path from
+    // oo_.initial_exo_steady_state to oo_.exo_steady_state for every exogenous variable the
+    // block does not list (not overwriting the user's entries)
+    if mf.homotopy_from_initval_to_endval {
+        let Some(d) = det.as_ref().filter(|d| d.initial_exo_steady_state.is_some()) else {
+            bail!("HOMOTOPY_SETUP: the from_initval_to_endval option cannot be used without an endval block");
+        };
+        let initial = d.initial_exo_steady_state.as_ref().unwrap();
+        for k in 0..m.n_exo() {
+            if !values.iter().any(|&(t, _, _)| t == Target::Exo(k)) {
+                values.push((Target::Exo(k), initial[k], d.exo_steady_state[k]));
+            }
+        }
+    }
     let mut opts = match &det {
         Some(d) => d.steady_opts,
         None => crate::dsge::steady_options(mf),

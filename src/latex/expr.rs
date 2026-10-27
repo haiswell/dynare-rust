@@ -50,7 +50,7 @@ fn prec(e: &E) -> u8 {
             BinaryOp::Add | BinaryOp::Sub => 2,
             BinaryOp::Mul => 3,
             // \frac{}{} and {}^{} are self-delimiting, functions too
-            BinaryOp::Div | BinaryOp::Max | BinaryOp::Min => 10,
+            BinaryOp::Div | BinaryOp::Max | BinaryOp::Min | BinaryOp::PowerDeriv(_) => 10,
             BinaryOp::Pow => 5,
         },
     }
@@ -199,6 +199,9 @@ fn from_dag(d: &Dag, id: NodeId, ctx: &Ctx) -> E {
         }),
         // stream PP: STEADY_STATE(x), as the preprocessor's LaTeX output (`\bar{x}`)
         Node::SteadyState(j, _) => E::Leaf(format!("\\bar{{{}}}", super::endo_tex(mf, j as usize))),
+        Node::SteadyStateParamDeriv(..) | Node::SteadyStateParam2ndDeriv(..) => {
+            unreachable!("parameter derivatives of STEADY_STATE are not part of the model equations")
+        }
         Node::Unary(op, a) => E::Un(op, Box::new(from_dag(d, a, ctx))),
         Node::Binary(op, a, b) => E::Bin(op, Box::new(from_dag(d, a, ctx)), Box::new(from_dag(d, b, ctx))),
         Node::External(c) => {

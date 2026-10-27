@@ -126,13 +126,26 @@ fn zero_block(m: &mut Mat, r0: usize, nr: usize, c0: usize, nc: usize) {
     m.view_mut((r0, c0), (nr, nc)).fill(0.0);
 }
 
-/// Port of `pruned_state_space_system(M_, options_, dr, indy, nlags, useautocorr, 0)` at
-/// `order = dr.order` (2 or 3). `indy`: selected variables as DR positions (0-based).
+/// [`pruned_state_space_system_qz`] with `options_.qz_criterium` empty (Dynare's default
+/// `1+1e-6`).
 pub fn pruned_state_space_system(
     dr: &KOrderDr,
     sigma_e: &Mat,
     indy: &[usize],
     nlags: usize,
+) -> Result<PrunedStateSpace> {
+    pruned_state_space_system_qz(dr, sigma_e, indy, nlags, 1.0 + 1e-6)
+}
+
+/// Port of `pruned_state_space_system(M_, options_, dr, indy, nlags, useautocorr, 0)` at
+/// `order = dr.order` (2 or 3) and `options_.qz_criterium = qz_criterium`. `indy`: selected
+/// variables as DR positions (0-based).
+pub fn pruned_state_space_system_qz(
+    dr: &KOrderDr,
+    sigma_e: &Mat,
+    indy: &[usize],
+    nlags: usize,
+    qz_criterium: f64,
 ) -> Result<PrunedStateSpace> {
     let order = dr.order;
     let f = &dr.first;
@@ -147,7 +160,10 @@ pub fn pruned_state_space_system(
     let gu = rows(&f.ghu, indy);
     let e_uu = sigma_e.clone();
     let vec_euu = vec_of(&e_uu);
-    if crate::linalg::eig_general(&hx).iter().any(|z| z.norm() >= 1.0 - 1e-10) {
+    // lyapunov_symm(A = hx, ...) of the first-order system: unit roots are the eigenvalues
+    // with |e| > 2-qz_criterium (none for a single state, solved as b/(1-a^2)); a non-empty
+    // Schur_u is an error at order > 1
+    if x_nbr > 1 && crate::linalg::eig_general(&hx).iter().any(|z| z.norm() > 2.0 - qz_criterium) {
         bail!(
             "pruned_state_space_system: the pruned state space currently does not support unit roots at higher order."
         );

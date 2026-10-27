@@ -37,6 +37,9 @@ pub struct IrfSetup {
 pub struct SmmSetup {
     /// `options_mom_.mom.shock_series`: `(long + burnin) x exo_nbr` standard normals.
     pub shock_series: Mat,
+    /// `options_mom_.mom.ME_shock_series`: `long x length(M_.H)` standard normals for the
+    /// measurement errors, drawn after `shock_series` from the same stream.
+    pub me_shock_series: Mat,
     pub long: usize,
 }
 
@@ -53,11 +56,20 @@ pub struct MomProblem {
     pub names: Vec<String>,
     pub base_params: Vec<f64>,
     pub base_sigma_e: Mat,
+    /// `M_.H` (`nobs x nobs`, varobs order) and `M_.Correlation_matrix_ME` from the `shocks` block.
+    pub base_h: Mat,
+    pub base_corr_h: Mat,
+    /// `estim_params_.calibrated_covariances_ME` (row, column, value).
+    pub cal_cov_h: Vec<(usize, usize, f64)>,
+    /// Rows of `M_.H` (varobs positions) of each estimated measurement-error entry.
+    pub me_rows: Vec<Option<(usize, usize)>>,
     pub steady_opts: SteadyOptions,
     /// `steady_state_model` block, if any (stream D's closed-form steady state).
     pub ssm: Option<crate::deterministic::SteadyStateModel>,
     /// `oo_.steady_state` at the initial parameters (guess of every steady-state solve).
     pub ys_guess: Vec<f64>,
+    /// `oo_.exo_steady_state`: the steady state and the Jacobians are evaluated there.
+    pub exo_ss: Vec<f64>,
     /// `BoundsInfo`.
     pub bounds: Bounds,
     /// Observed variables (endogenous indices, varobs order).
@@ -152,6 +164,7 @@ impl MomProblem {
         );
         let deriv = (order >= 2).then(|| model.dynamic_derivatives(order));
         let n = estimated.len();
+        let nobs = varobs.len();
         MomProblem {
             method,
             model: model.clone(),
@@ -164,9 +177,14 @@ impl MomProblem {
             names,
             base_params: model.params.clone(),
             base_sigma_e: sigma_e.clone(),
+            base_h: Mat::zeros(nobs, nobs),
+            base_corr_h: Mat::identity(nobs, nobs),
+            cal_cov_h: Vec::new(),
+            me_rows: vec![None; n],
             steady_opts,
             ssm: None,
             ys_guess,
+            exo_ss: vec![0.0; model.n_exo()],
             bounds: Bounds::unbounded(n),
             varobs,
             rows: Vec::new(),
@@ -208,10 +226,9 @@ impl MomProblem {
                     q[(i, i)] = v * v;
                 }
                 EstimatedKind::Corr(i, j) => corrs.push((i, j, v)),
-                EstimatedKind::MeStdErr(_)
-                | EstimatedKind::MeCorr(..)
-                | EstimatedKind::Skew(_)
-                | EstimatedKind::InitState(_) => unreachable!("rejected by mom::run"),
+                // M_.H: see set_measurement_errors
+                EstimatedKind::MeStdErr(_) | EstimatedKind::MeCorr(..) => {}
+                EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => unreachable!("rejected by mom::run"),
             }
         }
         for (i, j, c) in corrs {
@@ -220,6 +237,42 @@ impl MomProblem {
             q[(j, i)] = cov;
         }
         (params, q)
+    }
+
+    /// The `M_.H` part of `set_all_parameters.m`: with an estimated stderr or corr of a
+    /// measurement error, `H = diag(sqrt(diag(H))) * Correlation_matrix_ME * diag(sqrt(diag(H)))`
+    /// with the calibrated covariances restored; otherwise the calibrated `M_.H`.
+    pub fn set_measurement_errors(&self, x: &[f64]) -> Mat {
+        let mut h = self.base_h.clone();
+        let mut c = self.base_corr_h.clone();
+        let mut set = false;
+        for ((e, &v), me) in self.estimated.iter().zip(x).zip(&self.me_rows) {
+            match (e.kind, me) {
+                (EstimatedKind::MeStdErr(_), Some((i, _))) => {
+                    h[(*i, *i)] = v * v;
+                    set = true;
+                }
+                (EstimatedKind::MeCorr(..), Some((i, j))) => {
+                    c[(*i, *j)] = v;
+                    c[(*j, *i)] = v;
+                    set = true;
+                }
+                _ => {}
+            }
+        }
+        if set {
+            let var: Vec<f64> = (0..h.nrows()).map(|i| h[(i, i)]).collect();
+            for i in 0..h.nrows() {
+                for j in 0..h.ncols() {
+                    h[(i, j)] = if i == j { var[i] } else { c[(i, j)] * (var[i] * var[j]).sqrt() };
+                }
+            }
+            for &(i, j, v) in &self.cal_cov_h {
+                h[(i, j)] = v;
+                h[(j, i)] = v;
+            }
+        }
+        h
     }
 
     /// `check_bounds_and_definiteness_estimation.m`.
@@ -240,16 +293,44 @@ impl MomProblem {
                 return Err(fail(43, neg.abs()));
             }
         }
+        // `ncn > 0` or calibrated covariances of the measurement errors: ispd on
+        // H(H_entries_to_check_for_positive_definiteness) (get_matrix_entries_for_psd_check.m)
+        if self.estimated.iter().any(|e| matches!(e.kind, EstimatedKind::MeCorr(..))) || !self.cal_cov_h.is_empty() {
+            let h = self.set_measurement_errors(x);
+            let mut rows: Vec<usize> =
+                (0..self.base_h.nrows()).filter(|&i| self.base_h.row(i).iter().any(|&v| v != 0.0)).collect();
+            for (e, me) in self.estimated.iter().zip(&self.me_rows) {
+                if let (EstimatedKind::MeStdErr(_), Some((i, _))) = (e.kind, me) {
+                    rows.push(*i);
+                }
+            }
+            rows.sort_unstable();
+            rows.dedup();
+            let sub = Mat::from_fn(rows.len(), rows.len(), |i, j| h[(rows[i], rows[j])]);
+            if !rows.is_empty() && chol_upper(&sub).is_none() {
+                let (ev, _) = sym_eig(&sub);
+                return Err(fail(44, ev.iter().filter(|&&v| v < 0.0).map(|v| -v).sum()));
+            }
+        }
         Ok(())
     }
 
-    /// Steady state and decision rules at `x` (`compute_decision_rules.m`).
+    /// Steady state and decision rules at `x` (`compute_decision_rules.m`); the returned
+    /// parameters are `M_.params` as updated by a `steady_state_model` block that assigns
+    /// parameters (`[dr, info, M_.params] = compute_decision_rules(...)`).
     pub fn solve(&self, x: &[f64]) -> Result<(Vec<f64>, Mat, Solution), Fail> {
         let (params, sigma_e) = self.set_all_parameters(x);
         self.check_bounds(x, &sigma_e)?;
-        let ys = crate::dsge::solve_steady(&self.model, self.ssm.as_ref(), &params, &self.ys_guess, &self.steady_opts)
-            .map_err(|e| solver_fail(e.info, e.info2))?;
-        let x0 = vec![0.0; self.model.n_exo()];
+        let (ys, params) = crate::identification::steady_state_with_params(
+            &self.model,
+            self.ssm.as_ref(),
+            &params,
+            &self.ys_guess,
+            &self.exo_ss,
+            &self.steady_opts,
+        )
+        .map_err(|e| solver_fail(e.info, e.info2))?;
+        let x0 = self.exo_ss.clone();
         let g1 = self.model.dynamic_jacobian(&ys, &x0, &params);
         // at order 3 Dynare uses k_order_solver, whose failures are all info 9
         let dr1 = self
@@ -287,15 +368,17 @@ impl MomProblem {
                     .map_err(|_| fail(9, 0.1))
             }
             Solution::Higher(k) => {
-                let p = korder::pruned::pruned_state_space_system(k, sigma_e, &indy, self.nlags)
+                let p = korder::pruned::pruned_state_space_system_qz(k, sigma_e, &indy, self.nlags, self.qz_criterium)
                     .map_err(|_| fail(9, 0.1))?;
                 Ok(StateSpaceMoments { e_y: p.e_y, var_y: p.var_y, var_yi: p.var_yi })
             }
         }
     }
 
-    /// SMM: simulated observables (`long x nobs`, varobs order) with the fixed shocks.
-    pub fn simulate(&self, sol: &Solution, sigma_e: &Mat) -> Result<Mat, Fail> {
+    /// SMM: simulated observables (`long x nobs`, varobs order) with the fixed shocks, plus the
+    /// measurement errors `ME_shock_series * chol(H)` (on the observables with non-zero
+    /// variance) when `diag(M_.H)` is not zero.
+    pub fn simulate(&self, sol: &Solution, sigma_e: &Mat, h: &Mat) -> Result<Mat, Fail> {
         let smm = self.smm.as_ref().expect("SMM setup");
         let scaled = scale_shocks(&smm.shock_series, sigma_e).ok_or(fail(180, 0.1))?;
         let dr = sol.first();
@@ -308,7 +391,11 @@ impl MomProblem {
         if sim.iter().any(|v| !v.is_finite()) {
             return Err(fail(180, 0.1));
         }
-        Ok(Mat::from_fn(smm.long, self.varobs.len(), |t, j| sim[(self.varobs[j], nc - smm.long + t)]))
+        let mut y = Mat::from_fn(smm.long, self.varobs.len(), |t, j| sim[(self.varobs[j], nc - smm.long + t)]);
+        if (0..h.nrows()).any(|i| h[(i, i)] != 0.0) {
+            y += scale_shocks(&smm.me_shock_series, h).ok_or(fail(180, 0.1))?;
+        }
+        Ok(y)
     }
 
     /// Moments of a `T x nobs` series of the observables as `get_data_moments` on the raw
@@ -409,7 +496,8 @@ impl MomProblem {
                 Ok((gmm_model_moments(&ss, &self.rows, &|v| self.obs_pos(v), self.prefilter), None))
             }
             Method::Smm => {
-                let y = self.simulate(&sol, &sigma_e)?;
+                let y = self.simulate(&sol, &sigma_e, &self.set_measurement_errors(x))?;
+
                 Ok((self.series_moments(&y, self.prefilter).0, None))
             }
             Method::IrfMatching => {
@@ -522,6 +610,9 @@ impl Objective for MomObjective<'_> {
         } else {
             None
         }
+    }
+    fn has_gradient(&self) -> bool {
+        self.analytic && self.p.method == Method::Gmm
     }
     fn eval_full(&self, x: &[f64], _contributions: bool) -> Evaluation {
         match self.p.evaluate(x, self.data, self.w) {

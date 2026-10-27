@@ -30,8 +30,11 @@ pub use commands::{Session, handles, run_command};
 #[derive(Clone, Debug, PartialEq)]
 pub struct BvarOptions {
     pub datafile: Option<String>,
-    /// 1-based. Dynare's default is NaN (the user must set it); here 1.
-    pub first_obs: usize,
+    /// `options_.xls_sheet` / `options_.xls_range` (spreadsheet datafiles).
+    pub xls: (Option<String>, Option<String>),
+    /// 1-based. `None` is Dynare's default NaN: no command has set it yet (an `estimation` or
+    /// `calib_smoother` without `first_obs` sets it to 1), and the toolbox fails.
+    pub first_obs: Option<usize>,
     /// `None` = up to the end of the data (`set_default_option(options_,'nobs',...)`).
     pub nobs: Option<usize>,
     pub presample: usize,
@@ -58,7 +61,8 @@ impl Default for BvarOptions {
     fn default() -> Self {
         BvarOptions {
             datafile: None,
-            first_obs: 1,
+            xls: (None, None),
+            first_obs: None,
             nobs: None,
             presample: 0,
             prefilter: false,
@@ -116,7 +120,10 @@ pub struct Toolbox {
 /// `varobs` order), before any transformation.
 pub fn toolbox(dataset: &Mat, nlags: usize, o: &BvarOptions) -> Result<Toolbox> {
     let (nrows, ny) = (dataset.nrows(), dataset.ncols());
-    let first_obs = o.first_obs;
+    // with first_obs = NaN, Dynare's idx = NaN:NaN fails when it indexes the dataset
+    let first_obs = o.first_obs.ok_or_else(|| {
+        anyhow!("bvar: first_obs is not set (NaN): Array indices must be positive integers or logical values.")
+    })?;
     if first_obs == 0 || first_obs > nrows {
         bail!("bvar: first_obs = {first_obs} is outside the data (1..={nrows})");
     }

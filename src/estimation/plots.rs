@@ -468,12 +468,14 @@ pub fn mcmc_figures(
     fname: &str,
     gopts: &crate::graphics::GraphOptions,
     conv: &super::convergence::ConvergenceOptions, // options_.convergence
+    xmode: Option<&[f64]>, // oo_.posterior_mode.parameters (None: smc or mh_posterior_mode_estimation)
 ) -> anyhow::Result<()> {
     use super::diagnostics::{brooks_gelman_multivariate, geweke, posterior_densities, print_geweke};
     let dyn_names: Vec<String> = names.iter().map(|s| dynare_param_name(s)).collect();
     if diagnostics && !chains.is_empty() {
         let ndraws = chains[0].total_draws;
-        if ndraws <= 2000 {
+        // mcmc_diagnostics.m:110: the 2000-draw cutoff does not apply to the slice sampler
+        if !conv.slice && ndraws <= 2000 {
             println!(
                 "\nWARNING: MCMC convergence diagnostics are not computed because the total number of iterations is not bigger than 2000!"
             );
@@ -491,10 +493,10 @@ pub fn mcmc_figures(
                 println!("Univariate convergence diagnostic, Brooks and Gelman (1998):");
                 let t = std::time::Instant::now();
                 let mut k = 0;
-                if let Some(bg) = super::posterior::brooks_gelman(chains, mh_drop) {
+                if let Some(bg) = super::posterior::brooks_gelman(chains, mh_drop, conv.slice) {
                     k += save_figures(&udiag_figures_rows(&bg, names, conv.brooks_gelman_plotrows), fname, gopts)?;
                 }
-                if let Some((it, md)) = brooks_gelman_multivariate(chains, mh_drop) {
+                if let Some((it, md)) = brooks_gelman_multivariate(chains, mh_drop, conv.slice) {
                     k += save_figures(&[mdiag_figure(&it, &md)], fname, gopts)?;
                 }
                 println!(
@@ -507,7 +509,7 @@ pub fn mcmc_figures(
     }
     if gopts.enabled && !chains.is_empty() {
         let dens = posterior_densities(chains, stats.first_draw);
-        let figs = priors_and_posteriors_figures(priors, names, &dens, Some(&stats.mode));
+        let figs = priors_and_posteriors_figures(priors, names, &dens, xmode);
         let k = save_figures(&figs, fname, gopts)?;
         println!("{k} figures ({fname}_PriorsAndPosteriors*) written to {}.", gopts.dir.display());
     }

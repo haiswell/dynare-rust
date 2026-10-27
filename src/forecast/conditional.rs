@@ -108,6 +108,10 @@ pub struct CondSettings<'a> {
     /// Levels added to the deviations (run.m's `trend`), declaration order: the steady state,
     /// its log under `loglinear`.
     pub ys: &'a [f64],
+    /// `observation_trends` of the estimated model (run.m's `trend_addition(:, gend:end)` added
+    /// to the constant of the observed variables): n_endo x (periods+1), declaration order,
+    /// column 0 the last sample period; None without trends.
+    pub trend: Option<&'a Mat>,
     /// Initial state, DR order, deviation from `ys` (`InitState`).
     pub init: &'a [f64],
     pub sigma_e: &'a Mat,
@@ -223,18 +227,18 @@ pub fn conditional_forecasts(s: &CondSettings) -> Result<(Distribution, Distribu
         );
     }
     let cv: Vec<usize> = c.vars.iter().map(|&v| dr.inv_order_var[v]).collect();
-    let target = Mat::from_fn(n1, cl, |i, t| c.paths[(i, t)] - s.ys[c.vars[i]]);
+    // trend(v, t): the level of variable v in forecast period t (column 0 = InitState's period)
+    let level = |v: usize, t: usize| s.ys[v] + s.trend.map_or(0.0, |tr| tr[(v, t)]);
+    // constrained paths in deviations; "trend includes last actual data point and therefore we
+    // need to start in period 2"
+    let target = Mat::from_fn(n1, cl, |i, t| c.paths[(i, t)] - level(c.vars[i], t + 1));
     let mut blocks = Vec::with_capacity(cl);
     for t in 0..cl {
         let k: Vec<usize> = (0..n1).filter(|&i| c.paths[(i, t)].is_finite()).collect();
         let m = Mat::from_fn(k.len(), k.len(), |a, b| dr.ghu[(cv[k[a]], s.instruments[k[b]])]);
-        let inv = m.clone().try_inverse().filter(|i| i.iter().all(|v| v.is_finite())).ok_or_else(|| {
-            anyhow!(
-                "conditional_forecast: in period {}, the controlled shocks have no contemporaneous effect that can \
-                 move the constrained variables (singular impact matrix)",
-                t + 1
-            )
-        })?;
+        // get_shock_paths.m: MATLAB's inv() of a singular matrix only warns and returns Inf; the
+        // run then ends with 'controlling of variables was not successful'
+        let inv = m.try_inverse().unwrap_or_else(|| Mat::from_element(k.len(), k.len(), f64::INFINITY));
         blocks.push((k, inv));
     }
     let k2: Vec<usize> = dr.state_var.iter().map(|&v| dr.inv_order_var[v]).collect();
@@ -252,7 +256,7 @@ pub fn conditional_forecasts(s: &CondSettings) -> Result<(Distribution, Distribu
         let mut out = vec![0.0; (h + 1) * nv];
         for t in 0..=h {
             for (j, &r) in rows.iter().enumerate() {
-                out[t * nv + j] = forcs[t][r] + s.ys[s.vars[j]];
+                out[t * nv + j] = forcs[t][r] + level(s.vars[j], t);
             }
         }
         out
@@ -285,11 +289,15 @@ pub fn conditional_forecasts(s: &CondSettings) -> Result<(Distribution, Distribu
         let shocks = draw(&mut rng);
         let mut e = vec![0.0; cl * n1];
         let y = simulate(cl, &shocks, &mut e);
+        // run.m compares FORCS1(:, 1+t) with trend(:, t) + constrained_paths(:, t) (the paths
+        // in deviations from trend(:, 1+t)): with a time-varying trend the check is off by one
+        // trend increment, as in Dynare
         for (i, &v) in c.vars.iter().enumerate() {
             if let Some(j) = s.vars.iter().position(|&w| w == v) {
                 for t in 0..cl {
                     if c.paths[(i, t)].is_finite() {
-                        worst = worst.max((y[(t + 1) * nv + j] - c.paths[(i, t)]).abs());
+                        let want = level(v, t) + p.target[(i, t)];
+                        worst = worst.max((y[(t + 1) * nv + j] - want).abs());
                     }
                 }
             }
@@ -410,7 +418,7 @@ pub fn conditional_forecast_command(
 
     let own;
     // `trend` of run.m (declaration order): the levels added to the deviations
-    let (resolved, init, dates, trend) = if set == "calibration" {
+    let (resolved, init, dates, trend, trend_addition) = if set == "calibration" {
         // estimated_model = 0: current M_.params (the estimation's point if any), start from
         // M_.endo_histval (e.g. set by smoother2histval), else from the steady state.
         let (dsge, x) = match st {
@@ -441,7 +449,7 @@ pub fn conditional_forecast_command(
             }
             None => vec![0.0; n],
         };
-        (r, init, (0..=periods).map(|h| h.to_string()).collect::<Vec<_>>(), trend)
+        (r, init, (0..=periods).map(|h| h.to_string()).collect::<Vec<_>>(), trend, None)
     } else {
         let s = st.ok_or_else(|| anyhow!("conditional_forecast: parameter_set = {set} needs a previous estimation"))?;
         if s.data.prefilter_mean.is_some() {
@@ -458,13 +466,26 @@ pub fn conditional_forecast_command(
         // constant = log(ys) under loglinear: every variable logged, exogenous aux variables
         // included (unlike log_variable in the calibration branch)
         let trend: Vec<f64> = sm.ys().iter().map(|&y| if s.dsge.loglinear { y.ln() } else { y }).collect();
-        (sm.resolved, init, dates, trend)
+        // trend part: trend_addition over gend+periods observations, kept from period gend on
+        // (the last data point), added to the constant of the observed variables
+        let trend_addition =
+            s.dsge.trend_addition(&sm.resolved.params, s.data.first_obs, nobs + periods, false).map(|tr| {
+                let mut m = Mat::zeros(trend.len(), periods + 1);
+                for (i, &v) in s.dsge.varobs.iter().enumerate() {
+                    for t in 0..=periods {
+                        m[(v, t)] += tr[(i, nobs - 1 + t)];
+                    }
+                }
+                m
+            });
+        (sm.resolved, init, dates, trend, trend_addition)
     };
     let n_orig = mf.model.orig_endo_nbr;
     let vars: Vec<usize> = (0..n_orig).collect();
     let settings = CondSettings {
         dr: &resolved.dr,
         ys: &trend,
+        trend: trend_addition.as_ref(),
         init: &init,
         sigma_e: &resolved.q,
         constrained: paths,

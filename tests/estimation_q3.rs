@@ -102,6 +102,8 @@ fn check_points(stage: usize) {
                 moments: m,
                 weight: *w,
                 bounds: &s.dsge.bounds,
+                qz_criterium: q3x.lyap.0,
+                lyapunov_complex_threshold: q3x.lyap.1,
             };
             let e = dv.evaluate(&x).unwrap();
             let rel = |a: &Mat, b: &Mat| (a - b).amax() / b.amax();

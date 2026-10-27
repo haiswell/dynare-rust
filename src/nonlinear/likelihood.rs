@@ -15,9 +15,11 @@ use anyhow::{Result, bail};
 /// The model, data and filter settings of a nonlinear estimation.
 pub struct NonlinearModel {
     pub dsge: DsgeModel,
-    /// Approximation order (2 or 3).
+    /// Approximation order: 2 or 3 (`non_linear_dsge_likelihood.m`), or 1 for the online
+    /// filter (`solve_model_for_online_filter.m`'s `order < 2` branch).
     pub order: usize,
-    deriv: DynamicDerivatives,
+    /// Second (and third) derivatives of the dynamic model (`None` at order 1).
+    deriv: Option<DynamicDerivatives>,
     pub particle: ParticleOptions,
     /// Observations, pp x T (varobs order, not demeaned).
     pub y: Mat,
@@ -25,6 +27,9 @@ pub struct NonlinearModel {
     pub presample: usize,
     /// Seed of the per-evaluation random stream.
     pub seed: u64,
+    /// `options_.qz_criterium` (`select_qz_criterium_value.m`), used by the first-order solver
+    /// (`resol`) and by the Lyapunov equation of `initialization = 1`; see
+    /// [`Self::set_qz_criterium`].
     pub qz_criterium: f64,
     pub lyapunov_complex_threshold: f64,
 }
@@ -38,7 +43,9 @@ pub struct NlEvaluated {
 }
 
 impl NonlinearModel {
-    /// `y`: pp x T observations (varobs order).
+    /// `y`: pp x T observations (varobs order). `options_.qz_criterium` is Dynare's default for
+    /// the filter ([`Self::set_qz_criterium`] without a user value); order 1 only serves the
+    /// online filter.
     pub fn new(
         dsge: DsgeModel,
         order: usize,
@@ -47,8 +54,10 @@ impl NonlinearModel {
         presample: usize,
         seed: u64,
     ) -> Result<Self> {
-        if !(2..=3).contains(&order) {
-            bail!("non_linear_dsge_likelihood: order must be 2 or 3 (got {order})");
+        if !(1..=3).contains(&order) {
+            // Dynare 7.2 runs order > 3 through the k-order solver (`use_k_order_solver`); the
+            // k-order rules of dynare-rust stop at order 3
+            bail!("non_linear_dsge_likelihood: dynare-rust supports order 2 or 3 (got {order})");
         }
         let pp = dsge.varobs.len();
         if y.nrows() != pp {
@@ -57,8 +66,8 @@ impl NonlinearModel {
         if y.iter().any(|v| v.is_nan()) {
             bail!("non_linear_dsge_likelihood: the nonlinear filters do not handle missing observations");
         }
-        let deriv = dsge.model.dynamic_derivatives(order);
-        Ok(NonlinearModel {
+        let deriv = (order >= 2).then(|| dsge.model.dynamic_derivatives(order));
+        let mut nm = NonlinearModel {
             dsge,
             order,
             deriv,
@@ -68,7 +77,21 @@ impl NonlinearModel {
             seed,
             qz_criterium: 1.0 + 1e-6,
             lyapunov_complex_threshold: 1e-15,
-        })
+        };
+        nm.set_qz_criterium(None)?;
+        Ok(nm)
+    }
+
+    /// `options_.qz_criterium` after `select_qz_criterium_value.m` (`user`: the
+    /// `qz_criterium` option), given to `resol` (Blanchard-Kahn conditions) and to the
+    /// ergodic variance of `initialization = 1`. At order 1 (online filter) Dynare takes the
+    /// linear-filter branch (`options_.particle.status` is false, `lik_init = 1`).
+    pub fn set_qz_criterium(&mut self, user: Option<f64>) -> Result<()> {
+        let init = (self.order > 1).then_some(self.particle.initialization);
+        self.qz_criterium = super::select_qz_criterium_value(user, init, 1.0)?;
+        self.dsge
+            .set_solver_options(crate::solver::SolverOptions { qz_criterium: self.qz_criterium, ..Default::default() });
+        Ok(())
     }
 
     /// `M_.H` at parameter vector `x`.
@@ -78,26 +101,42 @@ impl NonlinearModel {
     }
 
     /// The `ReducedForm` of `non_linear_dsge_likelihood.m` at `x` (after `resol`), including the
-    /// initial state distribution; `draws` is only used by `initialization = 2`.
+    /// initial state distribution; `draws` is only used by `initialization = 2`. At order 1,
+    /// the `order < 2` branch of `solve_model_for_online_filter.m`: `constant = steadystate`
+    /// and zero `ghxx`, `ghuu`, `ghxu`.
     pub fn reduced_form(&self, x: &[f64]) -> Result<ReducedForm, EvalFailure> {
         let res = self.dsge.resolve(x)?;
         let model = &self.dsge.model;
-        let x_ss = vec![0.0; model.n_exo()];
-        let g1 = model.dynamic_jacobian(&res.steady_state, &x_ss, &res.params);
-        let vals = self.deriv.eval(&res.steady_state, &x_ss, &res.params);
-        let kdr = korder::solve(&res.dr, &model.lead_lag_incidence, &g1, &self.deriv, &vals, &res.q, self.order)
-            .map_err(|_| EvalFailure { info: 9, penalty: 0.1 })?;
+        let kdr = match &self.deriv {
+            Some(deriv) => {
+                let x_ss = vec![0.0; model.n_exo()];
+                let g1 = model.dynamic_jacobian(&res.steady_state, &x_ss, &res.params);
+                let vals = deriv.eval(&res.steady_state, &x_ss, &res.params);
+                let kdr = korder::solve(&res.dr, &model.lead_lag_incidence, &g1, deriv, &vals, &res.q, self.order)
+                    .map_err(|_| EvalFailure { info: 9, penalty: 0.1 })?;
+                Some(kdr)
+            }
+            None => None,
+        };
         let idx = &self.dsge.ss_index;
         let rv = &idx.restrict_var_list;
-        let dr = &kdr.first;
+        let dr = kdr.as_ref().map_or(&res.dr, |k| &k.first);
         let rows = |m: &Mat| -> Mat { super::linalg::select_rows(m, rv) };
         let steadystate: Vec<f64> = rv.iter().map(|&k| dr.ys[dr.order_var[k]]).collect();
-        let ghs2: Vec<f64> = rv.iter().map(|&k| kdr.ghs2[(k, 0)]).collect();
+        let ghs2: Vec<f64> = match &kdr {
+            Some(k) => rv.iter().map(|&j| k.ghs2[(j, 0)]).collect(),
+            None => vec![0.0; rv.len()],
+        };
         let constant: Vec<f64> = steadystate.iter().zip(&ghs2).map(|(s, g)| s + 0.5 * g).collect();
         let mf0 = idx.mf0.clone();
         let state_ss: Vec<f64> = mf0.iter().map(|&j| steadystate[j]).collect();
         let empty = Mat::zeros(rv.len(), 0);
         let o3 = self.order == 3;
+        // order >= 2 terms (zero matrices of the right width at order 1)
+        let (nx, nu) = (dr.ghx.ncols(), dr.ghu.ncols());
+        let higher = |f: fn(&korder::KOrderDr) -> &Mat, cols: usize| -> Mat {
+            kdr.as_ref().map_or_else(|| Mat::zeros(rv.len(), cols), |k| rows(f(k)))
+        };
         let mut rf = ReducedForm {
             order: self.order,
             steadystate,
@@ -110,16 +149,16 @@ impl NonlinearModel {
             mf1: idx.mf.clone(),
             ghx: rows(&dr.ghx),
             ghu: rows(&dr.ghu),
-            ghxx: rows(&kdr.ghxx),
-            ghuu: rows(&kdr.ghuu),
-            ghxu: rows(&kdr.ghxu),
+            ghxx: higher(|k| &k.ghxx, nx * nx),
+            ghuu: higher(|k| &k.ghuu, nu * nu),
+            ghxu: higher(|k| &k.ghxu, nx * nu),
             ghs2,
-            ghxxx: if o3 { rows(&kdr.ghxxx) } else { empty.clone() },
-            ghuuu: if o3 { rows(&kdr.ghuuu) } else { empty.clone() },
-            ghxxu: if o3 { rows(&kdr.ghxxu) } else { empty.clone() },
-            ghxuu: if o3 { rows(&kdr.ghxuu) } else { empty.clone() },
-            ghxss: if o3 { rows(&kdr.ghxss) } else { empty.clone() },
-            ghuss: if o3 { rows(&kdr.ghuss) } else { empty },
+            ghxxx: if o3 { higher(|k| &k.ghxxx, 0) } else { empty.clone() },
+            ghuuu: if o3 { higher(|k| &k.ghuuu, 0) } else { empty.clone() },
+            ghxxu: if o3 { higher(|k| &k.ghxxu, 0) } else { empty.clone() },
+            ghxuu: if o3 { higher(|k| &k.ghxuu, 0) } else { empty.clone() },
+            ghxss: if o3 { higher(|k| &k.ghxss, 0) } else { empty.clone() },
+            ghuss: if o3 { higher(|k| &k.ghuss, 0) } else { empty },
             state_variance: Mat::zeros(0, 0),
         };
         let ns = mf0.len();
@@ -132,14 +171,47 @@ impl NonlinearModel {
             }
             2 => {
                 // Monte Carlo estimate of the ergodic variance (simult, 5000 periods, 3000 kept)
+                // order 1 (online filter): simult of the first-order rule, i.e. the order-2
+                // recursion with zero second-order terms
+                let first_order = || {
+                    let (n, nx, nu) = (res.dr.ghx.nrows(), res.dr.ghx.ncols(), res.dr.ghu.ncols());
+                    let zeros = |c: usize| Mat::zeros(n, c);
+                    korder::KOrderDr {
+                        order: 2,
+                        first: res.dr.clone(),
+                        n_exo: nu,
+                        ghxx: zeros(nx * nx),
+                        ghxu: zeros(nx * nu),
+                        ghuu: zeros(nu * nu),
+                        ghs2: zeros(1),
+                        ghxxx: zeros(0),
+                        ghxxu: zeros(0),
+                        ghxuu: zeros(0),
+                        ghuuu: zeros(0),
+                        ghxss: zeros(0),
+                        ghuss: zeros(0),
+                        derivs: Vec::new(),
+                    }
+                };
+                let kdr1;
+                let kdr = match &kdr {
+                    Some(k) => k,
+                    None => {
+                        kdr1 = first_order();
+                        &kdr1
+                    }
+                };
                 let mut draws = SeededDraws::new(self.seed.wrapping_add(0x5157));
                 let nu = res.q.nrows();
                 let cq = super::linalg::chol_upper(&res.q).ok_or(EvalFailure { info: 201, penalty: 0.1 })?;
                 let ex = draws.randn_mat(5000, nu) * cq;
-                let sim = korder::simulate::simult(&kdr, &res.steady_state, &ex, self.particle.pruning);
+                let sim = korder::simulate::simult(kdr, &res.steady_state, &ex, self.particle.pruning);
                 let decl: Vec<usize> = mf0.iter().map(|&j| dr.order_var[rv[j]]).collect();
                 let cols: Vec<usize> = (2000..5000).collect();
-                if cols.iter().any(|&c| decl.iter().any(|&d| !sim[(d, c)].is_finite())) && !self.particle.pruning {
+                // `any(isnan(y_)) || any(isinf(y_)) && ~options_.pruning`: && binds tighter than
+                // ||, so a NaN always fails and pruning only excuses an Inf
+                let any = |f: fn(f64) -> bool| cols.iter().any(|&c| decl.iter().any(|&d| f(sim[(d, c)])));
+                if initial_states_fail(any(f64::is_nan), any(f64::is_infinite), self.particle.pruning) {
                     return Err(EvalFailure { info: 202, penalty: 0.1 });
                 }
                 let nk = cols.len() as f64;
@@ -232,6 +304,34 @@ impl Objective for NonlinearPosterior<'_> {
                 Evaluation { fval: e.fval, info: 0, info4: 0.0, contributions }
             }
             Err(f) => Evaluation { fval: f64::INFINITY, info: f.info, info4: f.penalty, contributions: None },
+        }
+    }
+}
+
+/// `any(any(isnan(y_))) || any(any(isinf(y_))) && ~options_.pruning` of
+/// `non_linear_dsge_likelihood.m` (`initialization = 2`): `&&` binds tighter than `||`, so a NaN
+/// always fails and pruning only excuses an Inf.
+pub fn initial_states_fail(any_nan: bool, any_inf: bool, pruning: bool) -> bool {
+    any_nan || (any_inf && !pruning)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initial_states_fail;
+
+    #[test]
+    fn initialization_two_failure_follows_matlab_precedence() {
+        // (nan, inf, pruning) -> info 202
+        for (nan, inf, pruning, fail) in [
+            (false, false, false, false),
+            (false, false, true, false),
+            (true, false, false, true),
+            (true, false, true, true),
+            (false, true, false, true),
+            (false, true, true, false),
+            (true, true, true, true),
+        ] {
+            assert_eq!(initial_states_fail(nan, inf, pruning), fail, "nan={nan} inf={inf} pruning={pruning}");
         }
     }
 }

@@ -1154,11 +1154,15 @@ impl DecompositionState {
     }
 
     /// Records `options_.parameter_set` from a command's options; returns the set to use.
-    fn parameter_set(&mut self, st: Option<&EstimationState>, o: &Options) -> String {
+    /// `who` names the command in Dynare's error when there is no default.
+    fn parameter_set(&mut self, st: Option<&EstimationState>, o: &Options, who: &str) -> Result<String> {
         if let Some(OptValue::Str(s)) = opt(o, "parameter_set") {
             self.parameter_set = Some(s.clone());
         }
-        self.parameter_set.clone().unwrap_or_else(|| default_parameter_set(st).to_string())
+        match &self.parameter_set {
+            Some(s) => Ok(s.clone()),
+            None => Ok(default_parameter_set(st, who)?.to_string()),
+        }
     }
 
     /// Row of the stored decompositions for declaration index `v` (None if squeezed out).
@@ -1229,7 +1233,7 @@ pub fn shock_decomposition_command(
     out_dir: &Path,
 ) -> Result<()> {
     state.check_not_squeezed("shock_decomposition")?;
-    let set = state.parameter_set(st, o);
+    let set = state.parameter_set(st, o, "shock_decomposition")?;
     if let Some(OptValue::Str(t)) = opt(o, "forecast_type") {
         return forecast_shock_decomposition(mf, st, o, vars, state, &set, t, dir, fname, out_dir);
     }
@@ -1300,17 +1304,25 @@ fn forecast_shock_decomposition(
     // forecast levels per i_var: (fl, closure t -> value)
     let (fl, fvals): (usize, Vec<Vec<f64>>) = match ftype {
         "unconditional" => {
-            if !matches!(set, "calibration" | "mle_mode") {
-                println!(
-                    "WARNING: shock_decomposition(forecast_type=unconditional, parameter_set={set}): Dynare uses \
-                     oo_.MeanForecast here (posterior mean forecast), which dynare-rust does not keep; using oo_.forecast."
-                );
-            }
-            let uf = match &state.forecast {
-                Some(f) => f.clone(),
-                None => st.map(|s| estimation_forecast(mf, s)).transpose()?.flatten().ok_or_else(|| {
-                    anyhow!("Can't find unconditional forecasts in oo_.forecasts. Did you run the forecast command?")
-                })?,
+            // shock_decomposition.m: calibration / mle_mode use oo_.forecast, every Bayesian
+            // parameter set oo_.MeanForecast (the posterior mean forecast)
+            let uf = if matches!(set, "calibration" | "mle_mode") {
+                match &state.forecast {
+                    Some(f) => f.clone(),
+                    None => st.map(|s| estimation_forecast(mf, s)).transpose()?.flatten().ok_or_else(|| {
+                        anyhow!(if set == "mle_mode" {
+                            "Can't find unconditional forecasts in oo_.forecasts. Did you run ML estimation with the forecast option?"
+                        } else {
+                            "Can't find unconditional forecasts in oo_.forecasts. Did you run the forecast command?"
+                        })
+                    })?,
+                }
+            } else {
+                st.and_then(|s| s.mean_forecast.clone()).ok_or_else(|| {
+                    anyhow!(
+                        "Can't find unconditional forecasts in oo_.MeanForecast. Did you run Bayesian estimation with the forecast option?"
+                    )
+                })?
             };
             let h = uf.mean.nrows();
             let cols = i_var
@@ -1354,9 +1366,12 @@ fn forecast_shock_decomposition(
     let mut eps = Mat::zeros(ns, gend);
     eps.columns_mut(0, gs).copy_from(&sm.out.etahat);
     if ftype == "conditional" {
-        // Dynare reads cf.controlled_exo_variables.Mean of every shock (and errors unless all
-        // shocks are controlled); uncontrolled shocks have mean zero over the forecast.
+        // shock_decomposition.m reads cf.controlled_exo_variables.Mean.(M_.exo_names{i}) of
+        // every shock: MATLAB errors on the first shock that is not controlled
         let cf = state.conditional_forecast.as_ref().unwrap();
+        if let Some(k) = (0..ns).find(|k| !cf.instruments.contains(k)) {
+            bail!("Reference to non-existent field '{}'.", mf.model.exo_names[k]);
+        }
         for (j, &k) in cf.instruments.iter().enumerate() {
             for t in 0..cf.exo.mean.nrows() {
                 eps[(k, gs + t)] = cf.exo.mean[(t, j)];
@@ -1476,7 +1491,7 @@ pub fn realtime_shock_decomposition_command(
 ) -> Result<()> {
     let t0 = std::time::Instant::now();
     state.check_not_squeezed("realtime_shock_decomposition")?;
-    let set = state.parameter_set(st, o);
+    let set = state.parameter_set(st, o, "realtime_shock_decomposition")?;
     let mut own = None;
     let (dsge, data, dates) = smoother_inputs(mf, st, o, dir, &mut own)?;
     let x = smoother_point(st, dsge, &set)?;
@@ -1610,7 +1625,7 @@ pub fn initial_condition_decomposition_command(
     fname: &str,
     out_dir: &Path,
 ) -> Result<()> {
-    let set = state.parameter_set(st, o);
+    let set = state.parameter_set(st, o, "shock_decomposition")?;
     let mut own = None;
     let (dsge, data, dates) = smoother_inputs(mf, st, o, dir, &mut own)?;
     if state.initval.is_none() {

@@ -172,29 +172,34 @@ impl VarModel {
         self.eqs.iter().map(|e| e.lhs.clone()).collect()
     }
 
-    /// Lag order `p` (at least one).
+    /// The equation whose LHS is the variable of the RHS term `t`. As in the preprocessor, the
+    /// LHS `diff(x)` is the auxiliary variable `AUX_DIFF_x`: it matches the terms `diff(x(-k))`
+    /// only, and the LHS `x` the level terms only. Terms that match no LHS are left out of the
+    /// VAR (`varmatrices.m` has no entry for them).
+    fn lhs_index(&self, t: &Term) -> Option<usize> {
+        self.eqs.iter().position(|e| e.lhs == t.var && e.lhs_diff == t.diff)
+    }
+
+    /// Lag order `p` (at least one): the largest lag of the terms that enter the VAR.
     pub fn max_lag(&self) -> usize {
-        self.eqs.iter().flat_map(|e| e.terms.iter().map(|t| t.lag)).max().unwrap_or(1).max(1)
+        self.eqs
+            .iter()
+            .flat_map(|e| e.terms.iter().filter(|t| self.lhs_index(t).is_some()).map(|t| t.lag))
+            .max()
+            .unwrap_or(1)
+            .max(1)
     }
 
     /// `varmatrices(name, params, reducedform)`.
     pub fn matrices(&self, ev: &dyn Fn(&Ast) -> Result<f64>, reducedform: bool) -> Result<VarMatrices> {
         let n = self.eqs.len();
         let p = self.max_lag();
-        let lhs = self.lhs();
         let mut ar = vec![Mat::zeros(n, n); p];
         let mut a0 = Mat::identity(n, n);
         let mut constants = vec![0.0; n];
         for (i, e) in self.eqs.iter().enumerate() {
             for t in &e.terms {
-                let j = lhs.iter().position(|v| *v == t.var).ok_or_else(|| {
-                    anyhow!(
-                        "var_model {}: variable {} of equation '{}' is not the LHS of an equation of the model",
-                        self.name,
-                        t.var,
-                        e.tag
-                    )
-                })?;
+                let Some(j) = self.lhs_index(t) else { continue };
                 let v = ev(&t.coef)?;
                 if t.lag == 0 {
                     a0[(i, j)] -= v;
@@ -750,6 +755,7 @@ fn run_series(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Resu
                 n,
                 innov.as_ref(),
                 &hidden,
+                &mf.histval,
             )?;
             println!(
                 "{name}: {n} periods simulated ({}, {} to {}).",

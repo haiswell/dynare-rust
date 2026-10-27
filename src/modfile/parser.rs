@@ -6,7 +6,7 @@ use super::lexer::{Loc, Tok, Token};
 use super::macro_proc::SrcLine;
 use super::{
     Command, DetShock, DetShockKind, EstimatedKind, EstimatedParam, EstimatedParamInit, ModFile, OptValue, Options,
-    OriginalModel, PolicyDecl, PriorShape, RAW_ARGS_KEY, SymbolLabels, lexer, opt,
+    OriginalModel, PolicyDecl, PriorShape, RAW_ARGS_KEY, ShockEntry, StateBlock, SymbolLabels, lexer, opt,
 };
 use crate::linalg::Mat;
 use crate::model::expr::{BinaryOp, Dag, NodeId, UnaryOp};
@@ -235,6 +235,8 @@ struct Cursor<'a> {
     /// Current nesting depth of the expression being parsed (parentheses, unary operators,
     /// `^` chains, function arguments), bounded by [`MAX_EXPR_NESTING`].
     depth: usize,
+    /// inside a `model` block: `pow` / `power` are not Dynare functions there
+    in_model_block: bool,
 }
 
 /// Deepest expression nesting accepted (the later passes over the expression tree are
@@ -243,7 +245,7 @@ const MAX_EXPR_NESTING: usize = 10_000;
 
 impl<'a> Cursor<'a> {
     fn new(t: &'a [Token]) -> Self {
-        Cursor { t, i: 0, nums: Vec::new(), het_dim: false, sums: Vec::new(), depth: 0 }
+        Cursor { t, i: 0, nums: Vec::new(), het_dim: false, sums: Vec::new(), depth: 0, in_model_block: false }
     }
     fn peek(&self) -> Option<&'a Token> {
         self.t.get(self.i)
@@ -336,7 +338,21 @@ impl<'a> Cursor<'a> {
     }
 
     // ---- expressions: precedence as DynareBison.yy (comparison < +- < */ < unary < ^)
+    /// `==` and `!=` bind looser than `<`, `>`, `<=`, `>=` (DynareBison.yy precedence).
     fn expr(&mut self) -> Result<Ast> {
+        let mut a = self.relational()?;
+        loop {
+            let op = match self.peek().map(|t| &t.tok) {
+                Some(Tok::Punct("==")) => BinaryOp::Eq,
+                Some(Tok::Punct("!=")) => BinaryOp::Ne,
+                _ => return Ok(a),
+            };
+            self.i += 1;
+            let b = self.relational()?;
+            a = Ast::Bin(op, Box::new(a), Box::new(b));
+        }
+    }
+    fn relational(&mut self) -> Result<Ast> {
         let mut a = self.additive()?;
         // (left-associative, so that `lb < x < ub` of a heterogeneity ⟂ condition parses)
         loop {
@@ -345,8 +361,6 @@ impl<'a> Cursor<'a> {
                 Some(Tok::Punct(">")) => BinaryOp::Gt,
                 Some(Tok::Punct("<=")) => BinaryOp::Le,
                 Some(Tok::Punct(">=")) => BinaryOp::Ge,
-                Some(Tok::Punct("==")) => BinaryOp::Eq,
-                Some(Tok::Punct("!=")) => BinaryOp::Ne,
                 _ => return Ok(a),
             };
             self.i += 1;
@@ -517,6 +531,12 @@ impl<'a> Cursor<'a> {
                     return Ok(Ast::Op(op, args));
                 }
                 let name = &lname_or(name, &lname);
+                if self.in_model_block && (name == "pow" || name == "power") {
+                    bail!(
+                        "{}: To use an external function ({name}) within the model block, you must first declare it via the external_function() statement.",
+                        t.loc
+                    );
+                }
                 if name == "max" || name == "min" || name == "pow" || name == "power" {
                     self.i += 1;
                     let a = self.expr()?;
@@ -688,6 +708,7 @@ enum Tgt {
     Endo(usize),
 }
 
+#[derive(Clone, Copy)]
 enum ShockStmt {
     Var(Tgt, f64),
     Std(Tgt, f64),
@@ -724,6 +745,8 @@ struct Parser<'a> {
     x: x::XParse,
     // ---- stream EP: shocks(learnt_in=...), endval(learnt_in=...)
     ep: crate::ep::EpDecl,
+    /// Number of commands before each `ep.controlled_paths` entry ([`ModFile::controlled_paths_pos`]).
+    controlled_paths_pos: Vec<usize>,
     /// stream PP: mod-file local variables (`phi = 0.1;` without a declaration), usable in
     /// later expressions outside the model block (Dynare's `modFileLocalVariable`).
     mf_locals: std::collections::HashMap<String, f64>,
@@ -744,6 +767,17 @@ struct Parser<'a> {
     pac: pac::PacParse,
     // ---- heterogeneity ----
     het: het::HetParse,
+    /// `shocks`/`mshocks`/`initval`/`histval` blocks at their position (see
+    /// [`ModFile::state_blocks`]), with the shock targets resolved at the end of the parse.
+    state_blocks: Vec<(usize, RawStateBlock)>,
+}
+
+/// A [`StateBlock`] before `varobs` is complete (measurement errors are indexed by their
+/// position in `varobs`).
+enum RawStateBlock {
+    Shocks { overwrite: bool, stmts: Vec<ShockStmt>, reset_det: bool, det: Vec<DetShock> },
+    Initval { endo: Vec<(usize, f64)>, exo: Vec<(usize, f64)>, sources: Vec<(String, String)> },
+    Histval(Vec<(bool, usize, i32, f64)>),
 }
 
 pub(super) fn parse(toks: Vec<Token>) -> Result<ModFile> {
@@ -780,6 +814,7 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         policy: PolicyDecl::default(),
         x: x::XParse::default(),
         ep: Default::default(),
+        controlled_paths_pos: Vec::new(),
         mf_locals: Default::default(),
         verbatim_ws: Default::default(),
         q4: Default::default(),
@@ -790,6 +825,7 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         vm: Default::default(),         // ---- var models ----
         pac: Default::default(),        // ---- pac ----
         het: Default::default(),        // ---- heterogeneity ----
+        state_blocks: Vec::new(),
     };
     while let Some(t) = p.c.peek() {
         p.statement(t)?;
@@ -800,6 +836,8 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
     varmodels.pacs = p.pac_finish()?; // ---- pac ----
     let n_exo = p.b.exo_names.len();
     let nvobs = p.varobs.len();
+    // q1_exo_det_view moved the varexo_det entries out of the exogenous ones
+    let n_exo_final = n_exo;
     // M_.H is indexed by the position in varobs.
     let obs_pos = |k: usize| -> Result<usize> {
         let name = &p.b.endo_names[k];
@@ -872,12 +910,56 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
             _ => {}
         }
     }
+    // the blocks at their position, with M_.H indexed by the position in varobs
+    let mut state_blocks = Vec::with_capacity(p.state_blocks.len());
+    for (k, b) in std::mem::take(&mut p.state_blocks) {
+        state_blocks.push((
+            k,
+            match b {
+                RawStateBlock::Shocks { overwrite, stmts, reset_det, det } => {
+                    let mut entries = Vec::new();
+                    let mut cross = Vec::new(); // covariances and correlations come after the variances
+                    for s in stmts {
+                        let (a, b) = match s {
+                            ShockStmt::Var(t, _) | ShockStmt::Std(t, _) => (t, t),
+                            ShockStmt::Cov(a, b, _) | ShockStmt::Corr(a, b, _) => (a, b),
+                        };
+                        let (me, i, j) = match (a, b) {
+                            (Tgt::Exo(i), Tgt::Exo(j)) => (false, i, j),
+                            (Tgt::Endo(i), Tgt::Endo(j)) => (true, obs_pos(i)?, obs_pos(j)?),
+                            _ => bail!(
+                                "shocks: cannot mix an exogenous shock and a measurement error in one covariance entry"
+                            ),
+                        };
+                        match s {
+                            ShockStmt::Var(_, v) => entries.push(ShockEntry::Var { me, i, v }),
+                            ShockStmt::Std(_, v) => entries.push(ShockEntry::Var { me, i, v: v * v }),
+                            ShockStmt::Cov(_, _, v) => cross.push(ShockEntry::Cov { me, i, j, v }),
+                            ShockStmt::Corr(_, _, r) => cross.push(ShockEntry::Corr { me, i, j, r }),
+                        }
+                    }
+                    entries.extend(cross);
+                    let det = det.into_iter().filter(|d| d.exo < n_exo_final).collect();
+                    StateBlock::Shocks { overwrite, entries, reset_det, det }
+                }
+                RawStateBlock::Initval { endo, exo, sources } => StateBlock::Initval {
+                    endo,
+                    exo: exo.into_iter().filter(|&(k, _)| k < n_exo_final).collect(),
+                    sources,
+                },
+                RawStateBlock::Histval(h) => {
+                    StateBlock::Histval(h.into_iter().filter(|&(endo, k, _, _)| endo || k < n_exo_final).collect())
+                }
+            },
+        ));
+    }
     p.b.predetermined = p.predetermined.clone(); // stream PP (model::dtree)
     p.q1_bg_context();
     p.q4_check_exclusions()?; // exclude_eqs / include_eqs tags all found
     p.block_opts.final_params = p.b.params.clone(); // model_info: every assignment of the file
     p.b.bvar_present = p.commands.iter().any(|c| matches!(c, Command::Other(n, _) if crate::model::is_bvar_command(n)));
     let mut model = p.b.build(p.stochastic || p.q4_flags.stochastic)?;
+    vm::rename_aux_diff(&mut varmodels, &mut model); // var_expectation_model parameters of a diff(z) VAR variable
     let het = p.het.het_build(&mut model)?; // ---- heterogeneity ----
     // [stream X] parameter assignments after a command run at their place (SET_PARAM).
     if let Some(snap) = &p.x.params_snapshot {
@@ -909,7 +991,9 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         policy: p.policy,
         observation_trends: p.x.observation_trends,
         homotopy_setup: p.x.homotopy_setup,
+        homotopy_from_initval_to_endval: p.x.homotopy_from_initval_to_endval,
         ep: p.ep,
+        controlled_paths_pos: p.controlled_paths_pos,
         q4: p.q4,
         q1: crate::deterministic::shock_paths::Q1Decl {
             shock_paths: p.q1.shock_paths,
@@ -923,6 +1007,8 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         varmodels,                // ---- var models ----
         het,                      // ---- heterogeneity ----
         verbatim_workspace: p.verbatim_ws.vars.iter().map(|(k, v)| (k.clone(), v.to_mat())).collect(),
+        state_blocks,
+        options: Default::default(),
     };
     if mf.block_opts.block {
         // model(block): the block-wise solvers use the decompositions
@@ -1317,7 +1403,10 @@ impl<'a> Parser<'a> {
         self.model_seen = true;
         let opts = self.header_options()?;
         self.apply_model_options(&opts);
-        self.model_body()?;
+        self.c.in_model_block = true;
+        let r = self.model_body();
+        self.c.in_model_block = false;
+        r?;
         self.q4_after_model_block() // exclude_eqs / include_eqs
     }
 
@@ -1490,7 +1579,7 @@ impl<'a> Parser<'a> {
             SymbolKind::Endo => {
                 self.initval.retain_mut(|(j, _)| fix(j));
                 self.endval.retain_mut(|(j, _)| fix(j));
-                self.histval.retain_mut(|(exo, j, _, _)| *exo || fix(j));
+                self.histval.retain_mut(|(endo, j, _, _)| !*endo || fix(j));
                 self.predetermined.retain_mut(fix);
                 self.varobs.retain(|v| v != name);
                 self.labels.endo_tex.remove(idx);
@@ -1498,7 +1587,7 @@ impl<'a> Parser<'a> {
             }
             SymbolKind::Exo => {
                 self.initval_exo.retain_mut(|(j, _)| fix(j));
-                self.histval.retain_mut(|(exo, j, _, _)| !*exo || fix(j));
+                self.histval.retain_mut(|(endo, j, _, _)| *endo || fix(j));
                 self.exo_det.retain_mut(fix);
                 self.det_shocks.retain_mut(|d| fix(&mut d.exo));
                 self.labels.exo_tex.remove(idx);
@@ -1509,6 +1598,16 @@ impl<'a> Parser<'a> {
                 self.labels.param_long.remove(idx);
             }
             SymbolKind::Local | SymbolKind::Trend => {}
+        }
+        for (_, b) in &mut self.state_blocks {
+            match (kind, b) {
+                (SymbolKind::Endo, RawStateBlock::Initval { endo, .. }) => endo.retain_mut(|(j, _)| fix(j)),
+                (SymbolKind::Exo, RawStateBlock::Initval { exo, .. }) => exo.retain_mut(|(j, _)| fix(j)),
+                (SymbolKind::Endo, RawStateBlock::Histval(h)) => h.retain_mut(|(exo, j, _, _)| *exo || fix(j)),
+                (SymbolKind::Exo, RawStateBlock::Histval(h)) => h.retain_mut(|(exo, j, _, _)| !*exo || fix(j)),
+                (SymbolKind::Exo, RawStateBlock::Shocks { det, .. }) => det.retain_mut(|d| fix(&mut d.exo)),
+                _ => {}
+            }
         }
         let tgt_used = |t: &Tgt| matches!((kind, t), (SymbolKind::Endo, Tgt::Endo(_)) | (SymbolKind::Exo, Tgt::Exo(_)));
         let in_shocks = self.shocks.iter().any(|s| match s {
@@ -1594,11 +1693,19 @@ impl<'a> Parser<'a> {
         let mut sources = Vec::new();
         let mut endo_vals = self.initval.clone();
         let mut exo_vals = self.initval_exo.clone();
+        let (endo_st, exo_st) = (endo_vals.len(), exo_vals.len());
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
                 if !initval {
                     self.commands.push(Command::Endval(sources));
+                } else {
+                    let block = RawStateBlock::Initval {
+                        endo: endo_vals[endo_st..].to_vec(),
+                        exo: exo_vals[exo_st..].to_vec(),
+                        sources,
+                    };
+                    self.state_blocks.push((self.commands.len(), block));
                 }
                 return Ok(());
             }
@@ -1814,6 +1921,7 @@ impl<'a> Parser<'a> {
                 self.shocks_pair(periods, values, &format!("{ly}: perfect_foresight_controlled_paths on '{y}'"))?
             {
                 let (p, dates) = g.split();
+                self.controlled_paths_pos.push(self.commands.len());
                 self.ep.controlled_paths.push(ControlledPath {
                     learnt_in: li.0,
                     exogenize,
@@ -1832,10 +1940,12 @@ impl<'a> Parser<'a> {
     fn histval_block(&mut self) -> Result<()> {
         self.c.i += 1;
         self.header_options()?;
-        let start = self.histval.len();
+        // HistValStatement: each block rebuilds M_.endo_histval / M_.exo_histval from zeros
+        self.histval.clear();
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
+                self.state_blocks.push((self.commands.len(), RawStateBlock::Histval(self.histval.clone())));
                 return Ok(());
             }
             let (name, loc) = self.c.ident()?;
@@ -1863,7 +1973,7 @@ impl<'a> Parser<'a> {
                 Some(s) if matches!(s.kind, SymbolKind::Endo | SymbolKind::Exo) => {
                     let endo = s.kind == SymbolKind::Endo;
                     // ParsingDriver::hist_val (Dynare 7.2 wording; 7.1: `hist_val: (NAME, LAG) declared twice`)
-                    if self.histval[start..].iter().any(|&(e, j, l, _)| e == endo && j == s.index && l == lag) {
+                    if self.histval.iter().any(|&(e, j, l, _)| e == endo && j == s.index && l == lag) {
                         bail!("{loc}: histval: {name}({lag}) declared twice");
                     }
                     self.histval.push((endo, s.index, lag, v));
@@ -1993,6 +2103,7 @@ impl<'a> Parser<'a> {
             self.det_shocks.clear();
         }
         self.shocks_block_start(overwrite && !multiplicative);
+        let (st, det_st) = (self.shocks.len(), self.det_shocks.len());
         let kind = if !multiplicative {
             DetShockKind::Level
         } else if opts.iter().any(|(k, _)| k == "relative_to_initval") {
@@ -2003,6 +2114,13 @@ impl<'a> Parser<'a> {
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
+                let block = RawStateBlock::Shocks {
+                    overwrite: overwrite && !multiplicative,
+                    stmts: self.shocks[st..].to_vec(),
+                    reset_det: overwrite,
+                    det: self.det_shocks[det_st..].to_vec(),
+                };
+                self.state_blocks.push((self.commands.len(), block));
                 self.shocks_block_end(); // ---- shocks/shock_paths
                 return Ok(());
             }
@@ -2082,7 +2200,8 @@ impl<'a> Parser<'a> {
                 self.c.i += 1;
                 self.q3_shocks_skew()?;
             } else {
-                self.c.statement()?;
+                let t = self.c.next()?;
+                bail!("{}: syntax error, unexpected '{}', expecting corr or skew or end or var", t.loc, t.raw);
             }
         }
     }

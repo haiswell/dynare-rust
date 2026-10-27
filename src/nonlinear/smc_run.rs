@@ -35,6 +35,43 @@ pub fn smc_method(o: &Options) -> Option<String> {
     ["dsmh", "hssmc", "dime_mcmc", "online"].contains(&s.as_str()).then_some(s)
 }
 
+/// The model of `posterior_sampling_method = 'online'` at order 1 (the linear estimation
+/// path; `None` for the other samplers): `solve_model_for_online_filter.m`'s `order < 2`
+/// branch on the data `y` (nobs x pp). `options_.particle.status` is false at order 1, so
+/// `particle_filter_options` is not read (`check_particle_filter_options.m` does not run).
+pub fn online_model(
+    mf: &crate::modfile::ModFile,
+    x_init: &[f64],
+    o: &Options,
+    y: &Mat,
+    seed: u64,
+) -> Result<Option<NonlinearModel>> {
+    if smc_method(o).as_deref() != Some("online") {
+        return Ok(None);
+    }
+    let particle = super::ParticleOptions::from_preprocessor_options(o)?;
+    let presample = match opt(o, "presample") {
+        Some(OptValue::Num(v)) => *v as usize,
+        _ => 0,
+    };
+    let dsge = DsgeModel::new(mf, Some(x_init))?;
+    let mut nm = NonlinearModel::new(dsge, 1, particle, y.transpose(), presample, seed)?;
+    nm.set_qz_criterium(match opt(o, "qz_criterium") {
+        Some(OptValue::Num(v)) => Some(*v),
+        _ => None,
+    })?;
+    Ok(Some(nm))
+}
+
+/// `options_.prior_trunc` as the online filter reads it (`online_auxiliary_filter.m:45,84`):
+/// `default_option_values.m:508` sets 0, the full prior support.
+pub fn online_prior_trunc(o: &Options) -> f64 {
+    match opt(o, "prior_trunc") {
+        Some(OptValue::Num(v)) => *v,
+        _ => 0.0,
+    }
+}
+
 /// `posterior_sampler_options = ('name', value, ...)` as (name, number) pairs.
 fn key_values(o: &Options) -> Result<Vec<(String, f64)>> {
     let mut out = vec![];
@@ -247,9 +284,7 @@ pub fn run_smc(
         }
         "online" => {
             let Some(nm) = nm else {
-                bail!(
-                    "posterior_sampling_method = online: dynare-rust runs the online filter at order 2 or 3 only (set order = 2)"
-                );
+                bail!("posterior_sampling_method = online: the online filter needs its model (see online_model)");
             };
             let mut on = OnlineOptions { seed: ro.seed, verbose: !ro.quiet, ..Default::default() };
             for (k, v) in &kv {
@@ -266,10 +301,9 @@ pub fn run_smc(
                 on.particles, on.liu_west_delta
             );
             crate::progress::phase("online (Liu & West) filter");
-            let prior_trunc = match opt(o, "prior_trunc") {
-                Some(OptValue::Num(v)) => *v,
-                _ => 1e-10,
-            };
+            // online_auxiliary_filter.m: prior_bounds / dprior with options_.prior_trunc
+            // (default_option_values.m: 0, the full prior support)
+            let prior_trunc = online_prior_trunc(o);
             let bounds = crate::estimation::prior_bounds(&dsge.priors, prior_trunc);
             let r = online_auxiliary_filter(nm, &dsge.priors, &bounds, x_init, &on)?;
             println!("Estimation:online: done in {}.", hms(t.elapsed().as_secs_f64()));

@@ -17,13 +17,10 @@
 //! FOC part of the residual remains; one instrument is solved by `csolve.m`, several by
 //! `dynare_solve`.
 //!
-//! `ramsey_constraints` : Dynare 7.2 parses them and ignores them. dynare-rust
-//! enforces them in the static problem: when the steady state found as Dynare does violates a
-//! constraint, the same static system is solved again by a projected (bounded) Newton method
-//! inside the box the constraints put on the unknowns; when there is no root inside, the
-//! steady state is reported as not found (info 81). Constraints on variables that are not
-//! unknowns of the static problem (with a steady-state model: the non-instruments) are checked
-//! at the solution.
+//! `ramsey_constraints`: the preprocessor turns them into `static_complementarity_conditions`,
+//! which Dynare 7.2 only reads in the non-Ramsey branch of `evaluate_steady_state.m` (and in
+//! perfect foresight); `dyn_ramsey_static.m` ignores them, and so does this port (they are
+//! parsed, see [`parse_constraints`], and not used).
 
 use anyhow::{Result, anyhow, bail};
 use rand::SeedableRng;
@@ -78,7 +75,8 @@ impl CompiledBound {
     }
 }
 
-/// Parses the `ramsey_constraints` lines kept by the parser (`ModFile::policy.ramsey_constraints`).
+/// Parses the `ramsey_constraints` lines kept by the parser (`ModFile::policy.ramsey_constraints`);
+/// the errors are those the preprocessor reports on the block.
 pub fn parse_constraints(model: &Model, lines: &[String]) -> Result<Vec<RamseyConstraint>> {
     let mut out = Vec::new();
     for l in lines {
@@ -105,7 +103,8 @@ pub struct RamseyStatic<'a> {
     pub model: &'a Model,
     /// The `steady_state_model` (`options_.steadystate_flag = 2`), if any.
     pub ssm: Option<&'a SteadyStateModel>,
-    pub constraints: &'a [RamseyConstraint],
+    /// `oo_.exo_steady_state` (`dyn_ramsey_static` evaluates the static model there).
+    pub exo_ss: &'a [f64],
 }
 
 struct Eval {
@@ -131,7 +130,7 @@ impl RamseyStatic<'_> {
         let n = model.n_endo();
         let n0 = r.orig_endo_nbr;
         let inst_nbr = n0 - r.orig_eq_nbr;
-        let exo = vec![0.0; model.n_exo()];
+        let exo = self.exo_ss.to_vec();
         let mut params = p.to_vec();
         let mut full = x.to_vec();
         if let Some(ssm) = self.ssm {
@@ -192,37 +191,6 @@ impl RamseyStatic<'_> {
         Eval { resids, steady_state: ss, params }
     }
 
-    /// The unknowns of the static problem (instruments with a steady-state model, else the
-    /// declared variables) as endogenous indices.
-    fn unknowns(&self) -> Vec<usize> {
-        if self.ssm.is_some() { self.k_inst() } else { (0..self.info().orig_endo_nbr).collect() }
-    }
-
-    /// Boxes `(lo, hi)` the constraints put on the unknowns.
-    fn boxes(&self, p: &[f64]) -> (Vec<f64>, Vec<f64>) {
-        let u = self.unknowns();
-        let mut lo = vec![f64::NEG_INFINITY; u.len()];
-        let mut hi = vec![f64::INFINITY; u.len()];
-        for c in self.constraints {
-            if let Some(k) = u.iter().position(|&j| j == c.var) {
-                let b = c.bound.eval(p);
-                if c.lower {
-                    lo[k] = lo[k].max(b);
-                } else {
-                    hi[k] = hi[k].min(b);
-                }
-            }
-        }
-        (lo, hi)
-    }
-
-    fn satisfies_constraints(&self, ys: &[f64], p: &[f64]) -> bool {
-        self.constraints.iter().all(|c| {
-            let b = c.bound.eval(p);
-            if c.lower { ys[c.var] >= b } else { ys[c.var] <= b }
-        })
-    }
-
     /// The Ramsey steady state (all endogenous variables, multipliers included) and the
     /// parameters (a steady-state model may update them), from the initial guess `ys_init`
     /// (`oo_.steady_state`: initval, multipliers 0 unless given).
@@ -238,7 +206,7 @@ impl RamseyStatic<'_> {
         let model = self.model;
         let r = self.info();
         let n0 = r.orig_endo_nbr;
-        let exo = vec![0.0; model.n_exo()];
+        let exo = self.exo_ss.to_vec();
         let mut res = vec![0.0; model.n_equations()];
         let (ys, params) = if let Some(ssm) = self.ssm {
             // evaluate_steady_state.m: the file at the initial instruments must solve the
@@ -275,7 +243,6 @@ impl RamseyStatic<'_> {
                 }
                 out.x
             };
-            let x = self.enforce(p, x, &x0, &nl, opts)?;
             let e = self.static_1(p, &x, ys_init);
             (e.steady_state, e.params)
         } else {
@@ -284,17 +251,15 @@ impl RamseyStatic<'_> {
                 model.set_auxiliary_variables(&mut ys0, &exo, p);
             }
             model.static_residuals(&ys0, &exo, p, &mut res);
-            if res.iter().map(|v| v * v).sum::<f64>().sqrt() < opts.tolf && self.satisfies_constraints(&ys0, p) {
+            if res.iter().map(|v| v * v).sum::<f64>().sqrt() < opts.tolf {
                 (ys0, p.to_vec()) // check_static_model: the initial values already solve the model
             } else {
                 let nl = |x: &[f64]| self.static_1(p, x, ys_init).resids;
                 let out = self.solve_fd(&nl, &ys0[..n0], opts);
-                if out.errorflag && self.constraints.is_empty() {
+                if out.errorflag {
                     return Err(SolveError::new(81, f64::NAN));
                 }
-                let x = if out.errorflag { ys0[..n0].to_vec() } else { out.x };
-                let x = self.enforce(p, x, &ys0[..n0], &nl, opts)?;
-                let e = self.static_1(p, &x, ys_init);
+                let e = self.static_1(p, &out.x, ys_init);
                 (e.steady_state, e.params)
             }
         };
@@ -308,9 +273,6 @@ impl RamseyStatic<'_> {
         let max = res.iter().fold(0.0f64, |m, v| m.max(v.abs()));
         if max > opts.tolf {
             return Err(SolveError::new(81, res.iter().map(|v| v * v).sum()));
-        }
-        if !self.satisfies_constraints(&ys, &params) {
-            return Err(SolveError::new(81, f64::NAN));
         }
         Ok((ys, params))
     }
@@ -330,29 +292,6 @@ impl RamseyStatic<'_> {
         let o = SteadyOptions { maxit: RAMSEY_MAXIT, linear: false, ..*opts };
         dynare_solve(&f, x0, &o)
     }
-
-    /// `ramsey_constraints`: keeps `x` when it lies in the box, else solves again inside it.
-    fn enforce(
-        &self,
-        p: &[f64],
-        x: Vec<f64>,
-        x0: &[f64],
-        nl: &dyn Fn(&[f64]) -> Vec<f64>,
-        opts: &SteadyOptions,
-    ) -> Result<Vec<f64>, SolveError> {
-        if self.constraints.is_empty() {
-            return Ok(x);
-        }
-        let (lo, hi) = self.boxes(p);
-        let inside = |z: &[f64]| z.iter().zip(lo.iter().zip(&hi)).all(|(v, (l, h))| *v >= *l && *v <= *h);
-        let f0 = nl(&x);
-        if inside(&x) && f0.iter().all(|v| v.abs() <= opts.tolf) {
-            return Ok(x);
-        }
-        // start from the initial guess projected on the box
-        let start: Vec<f64> = x0.iter().zip(lo.iter().zip(&hi)).map(|(v, (l, h))| v.max(*l).min(*h)).collect();
-        bounded_newton(nl, &start, &lo, &hi, opts.tolf, RAMSEY_MAXIT).ok_or(SolveError::new(81, f64::NAN))
-    }
 }
 
 /// Forward-difference Jacobian with Dynare's steps `max(|x|, gstep) * eps^(1/3)`.
@@ -370,51 +309,6 @@ fn fd_jacobian(f: &dyn Fn(&[f64]) -> Vec<f64>, x: &[f64], f0: &[f64]) -> Mat {
         }
     }
     j
-}
-
-/// Projected Newton method with backtracking on `||f||` inside the box `[lo, hi]`
-/// (forward-difference Jacobian; least squares when it is singular or not square).
-/// `None` when no point with `max|f| <= tolf` is found.
-pub fn bounded_newton(
-    f: &dyn Fn(&[f64]) -> Vec<f64>,
-    x0: &[f64],
-    lo: &[f64],
-    hi: &[f64],
-    tolf: f64,
-    maxit: usize,
-) -> Option<Vec<f64>> {
-    let clamp =
-        |z: Vec<f64>| -> Vec<f64> { z.iter().zip(lo.iter().zip(hi)).map(|(v, (l, h))| v.max(*l).min(*h)).collect() };
-    let norm = |v: &[f64]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let mut x = clamp(x0.to_vec());
-    let mut fx = f(&x);
-    for _ in 0..maxit {
-        if fx.iter().all(|v| v.is_finite()) && fx.iter().map(|v| v.abs()).fold(0.0, f64::max) <= tolf {
-            return Some(x);
-        }
-        let j = fd_jacobian(f, &x, &fx);
-        let rhs = Mat::from_column_slice(fx.len(), 1, &fx);
-        let d = backslash(&j, &rhs);
-        if d.iter().any(|v| !v.is_finite()) {
-            return None;
-        }
-        let nf = norm(&fx);
-        let mut lambda = 1.0;
-        loop {
-            let xt = clamp(x.iter().zip(d.iter()).map(|(a, b)| a - lambda * b).collect());
-            let ft = f(&xt);
-            if ft.iter().all(|v| v.is_finite()) && norm(&ft) < nf {
-                x = xt;
-                fx = ft;
-                break;
-            }
-            lambda /= 2.0;
-            if lambda < 1e-10 {
-                return None;
-            }
-        }
-    }
-    None
 }
 
 /// Port of `optimization/csolve.m` (Sims) with numerical derivatives (`gradfun = ''`):
@@ -530,7 +424,7 @@ fn rcond(a: &Mat) -> f64 {
     }
 }
 
-/// The Ramsey steady state without steady-state model or constraints (`dyn_ramsey_static.m`).
+/// The Ramsey steady state without steady-state model (`dyn_ramsey_static.m`).
 pub fn ramsey_steady_state(
     model: &Model,
     p: &[f64],
@@ -540,7 +434,7 @@ pub fn ramsey_steady_state(
     if model.planner().and_then(|pl| pl.ramsey.as_ref()).is_none() {
         return Err(SolveError::new(81, f64::NAN));
     }
-    RamseyStatic { model, ssm: None, constraints: &[] }.steady_state(p, ys_init, opts).map(|(y, _)| y)
+    RamseyStatic { model, ssm: None, exo_ss: &vec![0.0; model.n_exo()] }.steady_state(p, ys_init, opts).map(|(y, _)| y)
 }
 
 /// Checks of `model_diagnostics.m` / `dyn_ramsey_static.m` on the `instruments` option.

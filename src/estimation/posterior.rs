@@ -474,17 +474,18 @@ pub struct BrooksGelman {
 /// `mcmc_diagnostics_core.m` (RW-MH: `Origin = 1000`,
 /// `StepSize = ceil((N-Origin)/100)`). Needs all draws stored and at least
 /// two chains of 1000 draws; returns None otherwise (Dynare skips it too).
-pub fn brooks_gelman(chains: &[Chain], mh_drop: f64) -> Option<BrooksGelman> {
+pub fn brooks_gelman(chains: &[Chain], mh_drop: f64, slice: bool) -> Option<BrooksGelman> {
     let nblck = chains.len();
     if nblck < 2 || chains.iter().any(|c| c.first_stored != 0) {
         return None;
     }
     let ndraws = chains[0].total_draws;
-    let origin = 1000;
+    // mcmc_diagnostics.m:218-223: slice with fewer than 2000 draws uses Origin = StepSize = 1
+    let (origin, step) =
+        if slice && ndraws < 2000 { (1, 1) } else { (1000, (ndraws - 1000.min(ndraws)).div_ceil(100).max(1)) };
     if ndraws < origin {
         return None;
     }
-    let step = (ndraws - origin).div_ceil(100).max(1);
     let iterations: Vec<usize> = (origin..=ndraws).step_by(step).collect();
     let npar = chains[0].npar;
     const ALPHA: f64 = 0.2;

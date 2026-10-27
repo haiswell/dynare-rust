@@ -183,10 +183,9 @@ fn nk_point_analysis_case1() {
 
     // identification strength on MATLAB's simulated sample
     let pt = ctx.solve(&theta).unwrap();
-    let derivs = ctx.perturbation_derivs(&pt).unwrap();
     let sim = mat(&r["endo_simul"]);
     let data = sim.columns(100, sim.ncols() - 100).into_owned();
-    let ahess = ctx.asymptotic_hessian_on(&pt, &derivs, &data).unwrap();
+    let ahess = ctx.asymptotic_hessian_on(&pt, &data).unwrap();
     let h = &r["ide_hess_point"];
     assert_close("AHess", &ahess, &mat(&h["AHess"]), 1e-9);
     let st = strength_measures(

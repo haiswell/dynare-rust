@@ -375,6 +375,21 @@ impl ModelBuilder {
         &self.equation_tags
     }
 
+    /// Gives every untagged equation (and its model item) the tag `tag`, so that `include_eqs`
+    /// can remove them by tag.
+    pub fn tag_untagged_equations(&mut self, tag: &(String, String)) {
+        for t in self.equation_tags.iter_mut().filter(|t| t.is_empty()) {
+            t.push(tag.clone());
+        }
+        for it in &mut self.items {
+            if let dtree::ModelItem::Equation { tags, .. } = it
+                && tags.is_empty()
+            {
+                tags.push(tag.clone());
+            }
+        }
+    }
+
     /// Whether a symbol appears in the equations or model-local variables parsed so far.
     pub fn is_used(&self, name: &str) -> bool {
         let Some(sym) = self.symbols.get(name).copied() else { return false };
@@ -646,7 +661,7 @@ impl ModelBuilder {
         }
         let mut aux_vars = Vec::new();
         let mut aux_rhs = Vec::new();
-        let (orig_max_lead, orig_max_lag, orig_eq_nbr, static_override);
+        let (orig_max_lead, orig_max_lag, orig_max_lag_with_diffs, orig_eq_nbr, static_override);
         let static_eqs: Vec<Option<(NodeId, NodeId)>>; // model_info
         // ---- stream PP: the preprocessor's transform pass (exact aux names and equations);
         // Ramsey models: the FOCs are built inside the transform pass (dtree_ramsey.rs).
@@ -728,6 +743,7 @@ impl ModelBuilder {
             }
             orig_max_lead = tr.orig_max_lead.max(0);
             orig_max_lag = tr.orig_max_lag.max(0);
+            orig_max_lag_with_diffs = tr.orig_max_lag_with_diffs.max(0);
             if orig_eq_nbr + eq_deficit != n_endo_before_aux {
                 bail!("the model has {orig_eq_nbr} equations for {orig_endo_nbr} endogenous variables");
             }
@@ -795,6 +811,7 @@ impl ModelBuilder {
             }
             orig_max_lead = olead;
             orig_max_lag = olag;
+            orig_max_lag_with_diffs = olag;
         }
         equation_tags.resize(equations.len(), Vec::new());
         // ---- complementarity conditions (`eq ⟂ x > lb;`, or the obsolete `mcp` tag)
@@ -913,6 +930,8 @@ impl ModelBuilder {
 
         // stream PP: STEADY_STATE(y_j) is read from the extended parameters [params; ys]
         dag.ss_offset = param_names.len() as u32;
+        dag.ss_n_endo = n as u32;
+        dag.ss_param_nbr = (param_names.len() - exo_det_params.len()) as u32;
         let has_ss = resid.iter().any(|&r| dag.has_steady_state(r));
         let dyn_y = move |j: u32, l: i32| (l + 1) as usize * n + j as usize;
         let x0 = |k: u32, _l: i32| k as usize;
@@ -944,6 +963,7 @@ impl ModelBuilder {
             orig_eq_nbr,
             orig_maximum_lead: orig_max_lead as usize,
             orig_maximum_lag: orig_max_lag as usize,
+            orig_maximum_lag_with_diffs_expanded: orig_max_lag_with_diffs as usize,
             linear,
             n_exo,
             symbols,
@@ -990,6 +1010,8 @@ pub struct Model {
     /// `M_.orig_maximum_lead` / `M_.orig_maximum_lag` (before aux substitution).
     pub orig_maximum_lead: usize,
     pub orig_maximum_lag: usize,
+    /// `M_.orig_maximum_lag_with_diffs_expanded` (each `diff` adds a lag).
+    pub orig_maximum_lag_with_diffs_expanded: usize,
     /// `model(linear)`.
     pub linear: bool,
     n_exo: usize,
@@ -1131,6 +1153,38 @@ impl Model {
         }
     }
 
+    /// The parameter slice of the tapes of parameter derivatives of the dynamic model:
+    /// `[params; ys; dys(:); d2ys(:)]` when the model uses `STEADY_STATE()`, else `params`.
+    /// Dynare passes `steady_state`, `ss_param_deriv = dys` (`n_endo x n_params`) and
+    /// `ss_param_2nd_deriv = d2ys` to `dynamic_params_derivs.m`
+    /// (get_perturbation_params_derivs.m); the derivatives of `STEADY_STATE(y)` w.r.t. the
+    /// parameters ([`expr::Node::SteadyStateParamDeriv`]) read them from here. `d2ys`
+    /// (`d2ys[q2]` is the `n_endo x n_params` slice `d2ys(:,:,q2)`) is only read by second
+    /// parameter derivatives; `None` fills it with zeros, as Dynare's initialization.
+    pub fn params_with_steady_state_derivs(&self, p: &[f64], ys: &[f64], dys: &Mat, d2ys: Option<&[Mat]>) -> Vec<f64> {
+        if !self.has_ss {
+            return p.to_vec();
+        }
+        let (np, n) = (self.n_params(), self.n_endo());
+        let mut v = Vec::with_capacity(np + n + n * np * (1 + np));
+        v.extend_from_slice(&p[..np]);
+        v.extend_from_slice(&ys[..n]);
+        for q in 0..np {
+            v.extend((0..n).map(|j| dys[(j, q)]));
+        }
+        match d2ys {
+            Some(d2) => {
+                for m in &d2[..np] {
+                    for q1 in 0..np {
+                        v.extend((0..n).map(|j| m[(j, q1)]));
+                    }
+                }
+            }
+            None => v.resize(np + n + n * np * (1 + np), 0.0),
+        }
+        v
+    }
+
     /// The parameter slice for a dynamic tape: `p` itself, or `[p; ys]` built in `buf`.
     #[inline]
     fn ext_params<'a>(&self, p: &'a [f64], ys: &[f64], buf: &'a mut Vec<f64>) -> &'a [f64] {
@@ -1165,6 +1219,16 @@ impl Model {
     pub fn exo_index(&self, name: &str) -> Option<usize> {
         self.exo_names.iter().position(|n| n == name)
     }
+    /// Renames a parameter (symbol table and `param_names`; the tapes refer to indices).
+    pub fn rename_param(&mut self, old: &str, new: &str) {
+        if let Some(s) = self.symbols.remove(old) {
+            self.symbols.insert(new.to_string(), s);
+            if let Some(n) = self.param_names.get_mut(s.index) {
+                *n = new.to_string();
+            }
+        }
+    }
+
     pub fn param_index(&self, name: &str) -> Option<usize> {
         self.param_names.iter().position(|n| n == name)
     }

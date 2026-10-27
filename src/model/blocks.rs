@@ -334,7 +334,12 @@ fn dt_diff(
                 Dag::ZERO
             }
         }
-        Node::Num(_) | Node::Exo(..) | Node::Param(_) | Node::SteadyState(..) => Dag::ZERO,
+        Node::Num(_)
+        | Node::Exo(..)
+        | Node::Param(_)
+        | Node::SteadyState(..)
+        | Node::SteadyStateParamDeriv(..)
+        | Node::SteadyStateParam2ndDeriv(..) => Dag::ZERO,
         Node::External(c) => {
             let args = dag.ext_call(c).args.clone();
             let dargs: Vec<NodeId> = args.iter().map(|&a| dt_diff(dag, a, j, lag, fake, rec, memo)).collect();
@@ -474,13 +479,17 @@ fn dt_diff(
                         }
                     }
                     BinaryOp::Pow => {
-                        if db == Dag::ZERO {
-                            // NumConst exponent: b * a^(b-1); otherwise a PowerDeriv node, which
-                            // has the same value
+                        if db == Dag::ZERO && dag.is_num_const(b) {
+                            // NumConst exponent: b * a^(b-1)
                             let t11 = dt_binary(dag, BinaryOp::Sub, b, Dag::ONE);
                             let t12 = dt_binary(dag, BinaryOp::Pow, a, t11);
                             let t13 = mul(dag, b, t12);
                             mul(dag, da, t13)
+                        } else if db == Dag::ZERO {
+                            // other exponents: a PowerDeriv node (getPowerDeriv, exact 0 at a = 0
+                            // for an integer exponent below the order)
+                            let t = dag.binary(BinaryOp::PowerDeriv(1), a, b);
+                            mul(dag, da, t)
                         } else {
                             let t11 = dag.unary(UnaryOp::Log, a);
                             let t12 = mul(dag, db, t11);
@@ -520,7 +529,7 @@ fn to_static_dt(dag: &mut Dag, id: NodeId, ne: usize, memo: &mut HashMap<NodeId,
         Node::Endo(j, _) => dag.endo(j as usize, 0),
         Node::SteadyState(j, _) => dag.endo(j as usize + ne, 0),
         Node::Exo(k, _) => dag.exo(k as usize, 0),
-        Node::Num(_) | Node::Param(_) => id,
+        Node::Num(_) | Node::Param(_) | Node::SteadyStateParamDeriv(..) | Node::SteadyStateParam2ndDeriv(..) => id,
         Node::External(c) => {
             let args = dag.ext_call(c).args.clone();
             let a2: Vec<NodeId> = args.iter().map(|&a| to_static_dt(dag, a, ne, memo)).collect();
@@ -561,6 +570,8 @@ fn eval_memo(dag: &Dag, id: NodeId, c: &EvalContext, memo: &mut HashMap<NodeId, 
         Node::Endo(j, _) | Node::SteadyState(j, _) => c.y[j as usize % c.y.len().max(1)],
         Node::Exo(k, _) => c.x[k as usize],
         Node::Param(i) => c.p.get(i as usize).copied().unwrap_or(0.0),
+        // parameter derivatives of STEADY_STATE never appear in the model equations
+        Node::SteadyStateParamDeriv(..) | Node::SteadyStateParam2ndDeriv(..) => f64::NAN,
         Node::Unary(op, a) => op.apply(eval_memo(dag, a, c, memo)),
         Node::External(k) => {
             let e = dag.ext_call(k).clone();

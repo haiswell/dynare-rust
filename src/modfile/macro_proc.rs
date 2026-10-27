@@ -3,13 +3,15 @@
 //!
 //! Supports `@#define`, `@#if/@#ifdef/@#ifndef/@#elseif/@#else/@#endif`, `@#include`,
 //! `@#includepath`, `@#for ... in ... / @#endfor`, `@#echo`, `@#error`, `@{expr}`
-//! interpolation and `-D` command-line defines (which take precedence over `@#define`s
-//! of the same name in the file). Comments (`//`, `%`, `/* */`) are removed here, as in
-//! Dynare's macro lexer. The output keeps, for each line, its original file and line
-//! number so that parse errors can point at the source.
+//! interpolation and `-D` command-line defines (initial values: a later `@#define` of the
+//! same name in the file replaces them). As in Dynare, comments are left to the .mod lexer
+//! (see [`super::lexer`]): a directive inside `/* */` is executed and `@{}` inside a comment
+//! is expanded; only a `//` comment ending a directive line is dropped here. The output
+//! keeps, for each line, its original file and line number so that parse errors can point
+//! at the source.
 
 use anyhow::{Context, Result, anyhow, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,13 +38,13 @@ pub enum Value {
 /// [stream X] C++ `setprecision(15)` output of a real (the macro processor's `Real::to_string`).
 fn fmt_real(v: f64) -> String {
     if v.is_nan() {
-        return "NaN".into();
+        return "nan".into();
     }
     if v.is_infinite() {
-        return if v > 0.0 { "Inf".into() } else { "-Inf".into() };
+        return if v > 0.0 { "inf".into() } else { "-inf".into() };
     }
     if v == 0.0 {
-        return "0".into();
+        return if v.is_sign_negative() { "-0".into() } else { "0".into() };
     }
     let s = format!("{:.14e}", v);
     let (mant, exp) = s.split_once('e').unwrap();
@@ -50,13 +52,16 @@ fn fmt_real(v: f64) -> String {
     let trim = |t: &str| {
         if t.contains('.') { t.trim_end_matches('0').trim_end_matches('.').to_string() } else { t.to_string() }
     };
-    if !(-5..15).contains(&e) {
+    // %g: scientific notation when the exponent is < -4 or >= the precision
+    if !(-4..15).contains(&e) {
         format!("{}e{}{:02}", trim(mant), if e < 0 { '-' } else { '+' }, e.abs())
     } else {
         trim(&format!("{:.*}", (14 - e).max(0) as usize, v))
     }
 }
 
+/// The macro processor's `to_string` (`@{}`, `@#echo`, `(string)` casts): strings are written
+/// without quotes, also inside arrays and tuples.
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -70,10 +75,7 @@ impl fmt::Display for Value {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    match v {
-                        Value::Str(s) => write!(f, "\"{s}\"")?,
-                        _ => write!(f, "{v}")?,
-                    }
+                    write!(f, "{v}")?;
                 }
                 write!(f, "{close}")
             }
@@ -89,11 +91,23 @@ impl Value {
             _ => bail!("macro value {self} is not a boolean"),
         }
     }
+    /// A real; booleans are a different type (`true + 1` is an error in Dynare).
     fn num(&self) -> Result<f64> {
         match self {
             Value::Num(v) => Ok(*v),
-            Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
-            _ => bail!("macro value {self} is not a number"),
+            _ => bail!("macro value {self} is not a real (operator does not exist for this type)"),
+        }
+    }
+    /// The macro processor's `print` (`@#echomacrovars`): strings are quoted.
+    fn print(&self) -> String {
+        match self {
+            Value::Str(s) => format!("\"{s}\""),
+            Value::Array(a) | Value::Tuple(a) => {
+                let (open, close) = if matches!(self, Value::Array(_)) { ("[", "]") } else { ("(", ")") };
+                let items: Vec<String> = a.iter().map(Value::print).collect();
+                format!("{open}{}{close}", items.join(", "))
+            }
+            v => v.to_string(),
         }
     }
 }
@@ -110,7 +124,6 @@ pub fn preprocess_with(path: &Path, defines: &[(String, String)], include_paths:
     let mut env = Env {
         vars: HashMap::new(),
         funcs: HashMap::new(),
-        locked: HashSet::new(),
         include_paths: std::iter::once(base.clone()).chain(include_paths.iter().cloned()).collect(),
         depth: 0,
     };
@@ -118,7 +131,6 @@ pub fn preprocess_with(path: &Path, defines: &[(String, String)], include_paths:
         let val =
             if v.is_empty() { Value::Bool(true) } else { eval_str(v, &env).unwrap_or_else(|_| Value::Str(v.clone())) };
         env.vars.insert(k.clone(), val);
-        env.locked.insert(k.clone());
     }
     let lines = read_lines(path)?;
     let mut out = Vec::new();
@@ -128,19 +140,13 @@ pub fn preprocess_with(path: &Path, defines: &[(String, String)], include_paths:
 
 /// Same as [`preprocess`] on an in-memory source (used by tests).
 pub fn preprocess_str(src: &str, file: &str, defines: &[(String, String)]) -> Result<Vec<SrcLine>> {
-    let mut env = Env {
-        vars: HashMap::new(),
-        funcs: HashMap::new(),
-        locked: HashSet::new(),
-        include_paths: vec![PathBuf::from(".")],
-        depth: 0,
-    };
+    let mut env =
+        Env { vars: HashMap::new(), funcs: HashMap::new(), include_paths: vec![PathBuf::from(".")], depth: 0 };
     for (k, v) in defines {
         let val = eval_str(v, &env).unwrap_or_else(|_| Value::Str(v.clone()));
         env.vars.insert(k.clone(), val);
-        env.locked.insert(k.clone());
     }
-    let lines = split_lines(&strip_comments(src, file)?, file);
+    let lines = split_lines(src, file);
     let mut out = Vec::new();
     process(&lines, &mut env, &mut out)?;
     Ok(out)
@@ -150,14 +156,13 @@ struct Env {
     vars: HashMap<String, Value>,
     /// [stream X] `@#define f(x, y) = EXPR`: parameter names and body.
     funcs: HashMap<String, (Vec<String>, String)>,
-    locked: HashSet<String>,
     include_paths: Vec<PathBuf>,
     depth: usize,
 }
 
 fn read_lines(path: &Path) -> Result<Vec<SrcLine>> {
     let src = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    Ok(split_lines(&strip_comments(&src, &path.display().to_string())?, &path.display().to_string()))
+    Ok(split_lines(&src, &path.display().to_string()))
 }
 
 fn split_lines(src: &str, file: &str) -> Vec<SrcLine> {
@@ -165,71 +170,18 @@ fn split_lines(src: &str, file: &str) -> Vec<SrcLine> {
     src.lines().enumerate().map(|(i, t)| SrcLine { file: file.clone(), line: i + 1, text: t.to_string() }).collect()
 }
 
-/// Removes `//`, `%` and `/* */` comments, keeping line breaks and quoted strings intact
-/// (an unterminated `/*` is an error; `file` is for the message).
-pub fn strip_comments(src: &str, file: &str) -> Result<String> {
-    let mut out = String::with_capacity(src.len());
-    let mut it = src.chars().peekable();
-    let mut line = 1;
-    while let Some(c) = it.next() {
-        if c == '\n' {
-            line += 1;
-        }
+/// A directive line without its trailing `//` comment (outside double-quoted strings; Dynare's
+/// macro lexer knows no other comment on a directive line).
+fn strip_directive_comment(d: &str) -> &str {
+    let mut in_str = false;
+    for (k, c) in d.char_indices() {
         match c {
-            '/' if it.peek() == Some(&'/') => {
-                while let Some(&d) = it.peek() {
-                    if d == '\n' {
-                        break;
-                    }
-                    it.next();
-                }
-            }
-            '%' => {
-                while let Some(&d) = it.peek() {
-                    if d == '\n' {
-                        break;
-                    }
-                    it.next();
-                }
-            }
-            '/' if it.peek() == Some(&'*') => {
-                it.next();
-                let start = line;
-                let mut prev = ' ';
-                let mut closed = false;
-                for d in it.by_ref() {
-                    if d == '\n' {
-                        out.push('\n');
-                        line += 1;
-                    }
-                    if prev == '*' && d == '/' {
-                        closed = true;
-                        break;
-                    }
-                    prev = d;
-                }
-                if !closed {
-                    bail!("{file}:{start}: unterminated comment: `/*` without a closing `*/`");
-                }
-                out.push(' ');
-            }
-            '\'' | '"' => {
-                out.push(c);
-                while let Some(&d) = it.peek() {
-                    if d == '\n' {
-                        break;
-                    }
-                    out.push(d);
-                    it.next();
-                    if d == c {
-                        break;
-                    }
-                }
-            }
-            _ => out.push(c),
+            '"' => in_str = !in_str,
+            '/' if !in_str && d[k + 1..].starts_with('/') => return &d[..k],
+            _ => {}
         }
     }
-    Ok(out)
+    d
 }
 
 struct IfFrame {
@@ -258,7 +210,7 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
             i += 1;
             continue;
         };
-        let d = d.trim_start();
+        let d = strip_directive_comment(d).trim_start();
         let kw_end = d.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(d.len());
         let (kw, rest) = (&d[..kw_end], d[kw_end..].trim());
         let ctx = || format!("{}: in @#{kw}", loc(l));
@@ -313,6 +265,10 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
                     }
                     j += 1;
                 }
+                if j == i + 1 {
+                    // the macro grammar needs at least one statement (a blank line will do)
+                    bail!("{}: syntax error, unexpected ENDFOR", loc(&lines[j]));
+                }
                 if active {
                     // [stream X] tuples (`@#for (i, j) in ...`) and `when` filters
                     let (var, list) =
@@ -322,12 +278,14 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
                         Some((a, c)) => (a, Some(c.trim())),
                         None => (list, None),
                     };
-                    let items = elements(eval_str(list.trim(), env).with_context(ctx)?).with_context(ctx)?;
-                    let names: Vec<String> = match &pat {
-                        Pattern::Name(n) => vec![n.clone()],
-                        Pattern::Tuple(v) => v.clone(),
+                    let Value::Array(items) = eval_str(list.trim(), env).with_context(ctx)? else {
+                        bail!("{}: in @#for: the index must loop through an array", loc(l));
                     };
-                    let saved: Vec<Option<Value>> = names.iter().map(|n| env.vars.get(n).cloned()).collect();
+                    // Dynare filters the array with the `when` condition first (binding the loop
+                    // variables to every element, so a loop without any element kept still
+                    // leaves them at the last one), then loops over the elements kept; the loop
+                    // variables keep their last values after the loop
+                    let mut kept = Vec::new();
                     for v in items {
                         for (n, x) in pat.bind(&v).with_context(ctx)? {
                             env.vars.insert(n, x);
@@ -337,13 +295,13 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
                         {
                             continue;
                         }
-                        process(&lines[i + 1..j], env, out)?;
+                        kept.push(v);
                     }
-                    for (n, sv) in names.into_iter().zip(saved) {
-                        match sv {
-                            Some(v) => env.vars.insert(n, v),
-                            None => env.vars.remove(&n),
-                        };
+                    for v in kept {
+                        for (n, x) in pat.bind(&v).with_context(ctx)? {
+                            env.vars.insert(n, x);
+                        }
+                        process(&lines[i + 1..j], env, out)?;
                     }
                 }
                 i = j;
@@ -371,10 +329,8 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
                 if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     bail!("{}: bad @#define target '{name}'", loc(l));
                 }
-                if !env.locked.contains(name) {
-                    let v = eval_str(rhs.trim(), env).with_context(ctx)?;
-                    env.vars.insert(name.to_string(), v);
-                }
+                let v = eval_str(rhs.trim(), env).with_context(ctx)?;
+                env.vars.insert(name.to_string(), v);
             }
             "include" => {
                 let v = eval_str(rest, env).with_context(ctx)?;
@@ -427,7 +383,7 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
                 }
                 println!("Macro Variables (at {}):", loc(l));
                 for k in names {
-                    println!("  {k} = {}", env.vars[k]);
+                    println!("  {k} = {}", env.vars[k].print());
                 }
                 let mut fnames: Vec<&String> =
                     env.funcs.keys().filter(|k| wanted.is_empty() || wanted.contains(&k.as_str())).collect();
@@ -532,7 +488,8 @@ fn mlex(s: &str) -> Result<Vec<MTok>> {
             out.push(MTok::Ident(s[st..i].to_string()));
             continue;
         }
-        if c == '"' || c == '\'' {
+        // strings are double-quoted only (`'x'` is a syntax error in Dynare's macro language)
+        if c == '"' {
             let end = s[i + 1..].find(c).ok_or_else(|| anyhow!("unterminated string in macro expression"))?;
             out.push(MTok::Str(s[i + 1..i + 1 + end].to_string()));
             i += end + 2;
@@ -707,8 +664,7 @@ impl MParser<'_> {
         let a = self.range()?;
         if self.peek_ident("in") {
             self.i += 1;
-            let b = self.range()?;
-            let items = elements(b)?;
+            let Value::Array(items) = self.range()? else { bail!("second argument of `in` operator must be an array") };
             return Ok(Value::Bool(items.iter().any(|x| values_eq(x, &a))));
         }
         Ok(a)
@@ -726,17 +682,21 @@ impl MParser<'_> {
         if !(lo.is_finite() && step.is_finite() && hi.is_finite()) {
             bail!("non-finite bound or step in macro range ({lo}:{step}:{hi})");
         }
-        if step == 0.0 {
-            bail!("zero step in macro range");
-        }
-        if (hi - lo) / step > 1e8 {
+        if step != 0.0 && (hi - lo) / step > 1e8 {
             bail!("macro range {lo}:{step}:{hi} has too many elements");
         }
+        // Range::eval: repeated addition of the step while within the bound (1:0.1:1.3 is
+        // [1, 1.1, 1.2]); a zero step or a step away from the bound gives []
         let mut v = Vec::new();
-        let n = ((hi - lo) / step + 1e-10).floor();
-        if n >= 0.0 {
-            for k in 0..=(n as i64) {
-                v.push(Value::Num(lo + k as f64 * step));
+        let within = |x: f64| if step > 0.0 { x <= hi } else { x >= hi };
+        if (step > 0.0 && lo <= hi) || (lo >= hi && step < 0.0) {
+            let mut x = lo;
+            while within(x) {
+                v.push(Value::Num(x));
+                if x + step == x {
+                    bail!("macro range {lo}:{step}:{hi}: the step is below the precision of the bounds");
+                }
+                x += step;
             }
         }
         Ok(Value::Array(v))
@@ -811,10 +771,8 @@ impl MParser<'_> {
                     (x, y) => Value::Num(x.num()? * y.num()?),
                 };
             } else if self.eat_op("/") {
+                // IEEE division: 1/0 is inf, as in Dynare
                 let b = self.unary()?.num()?;
-                if b == 0.0 {
-                    bail!("division by zero in macro expression");
-                }
                 a = Value::Num(a.num()? / b);
             } else {
                 return Ok(a);
@@ -836,9 +794,9 @@ impl MParser<'_> {
     }
 
     fn power(&mut self) -> Result<Value> {
-        let a = self.postfix()?;
+        let a = self.primary()?;
         if self.eat_op("^") {
-            let b = if self.eat_op("-") { Value::Num(-self.postfix()?.num()?) } else { self.postfix()? };
+            let b = if self.eat_op("-") { Value::Num(-self.primary()?.num()?) } else { self.primary()? };
             return match a {
                 // cartesian power of an array
                 Value::Array(x) => {
@@ -870,47 +828,38 @@ impl MParser<'_> {
         Ok(a)
     }
 
-    fn postfix(&mut self) -> Result<Value> {
-        let mut a = self.primary()?;
-        while self.peek_op("[") {
-            self.i += 1;
-            let k = self.expr()?;
-            self.expect_op("]")?;
-            let idx: Vec<usize> = match &k {
-                Value::Array(v) => v.iter().map(|x| x.num().map(|n| n as usize)).collect::<Result<_>>()?,
-                x => vec![x.num()? as usize],
-            };
-            let single = !matches!(k, Value::Array(_));
-            a = match &a {
-                Value::Array(items) | Value::Tuple(items) => {
-                    let picked: Vec<Value> = idx
-                        .iter()
-                        .map(|&k| {
-                            items
-                                .get(k.wrapping_sub(1))
-                                .cloned()
-                                .ok_or_else(|| anyhow!("macro index {k} out of bounds"))
-                        })
-                        .collect::<Result<_>>()?;
-                    if single { picked.into_iter().next().unwrap() } else { Value::Array(picked) }
-                }
-                Value::Str(s) => {
-                    let chars: Vec<char> = s.chars().collect();
-                    let picked: String = idx
-                        .iter()
-                        .map(|&k| {
-                            chars
-                                .get(k.wrapping_sub(1))
-                                .copied()
-                                .ok_or_else(|| anyhow!("macro index {k} out of bounds"))
-                        })
-                        .collect::<Result<_>>()?;
-                    Value::Str(picked)
-                }
-                _ => bail!("indexing a non-array macro value"),
-            };
-        }
-        Ok(a)
+    /// `NAME[k]` after the `[`: the grammar only indexes a variable, once (`[1, 2][1]`,
+    /// `v[1][2]` and `f(x)[1]` are syntax errors in Dynare).
+    fn index(&mut self, a: Value) -> Result<Value> {
+        let k = self.expr()?;
+        self.expect_op("]")?;
+        let idx: Vec<usize> = match &k {
+            Value::Array(v) => v.iter().map(|x| x.num().map(|n| n as usize)).collect::<Result<_>>()?,
+            x => vec![x.num()? as usize],
+        };
+        let single = !matches!(k, Value::Array(_));
+        Ok(match &a {
+            Value::Array(items) | Value::Tuple(items) => {
+                let picked: Vec<Value> = idx
+                    .iter()
+                    .map(|&k| {
+                        items.get(k.wrapping_sub(1)).cloned().ok_or_else(|| anyhow!("macro index {k} out of bounds"))
+                    })
+                    .collect::<Result<_>>()?;
+                if single { picked.into_iter().next().unwrap() } else { Value::Array(picked) }
+            }
+            Value::Str(s) => {
+                let chars: Vec<char> = s.chars().collect();
+                let picked: String = idx
+                    .iter()
+                    .map(|&k| {
+                        chars.get(k.wrapping_sub(1)).copied().ok_or_else(|| anyhow!("macro index {k} out of bounds"))
+                    })
+                    .collect::<Result<_>>()?;
+                Value::Str(picked)
+            }
+            _ => bail!("indexing a non-array macro value"),
+        })
     }
 
     /// The tokens up to the matching closing bracket (not consumed).
@@ -989,16 +938,10 @@ impl MParser<'_> {
             self.i = end;
             return Ok(Value::Array(out));
         }
+        // a range inside brackets is an element: [1:3] == [[1, 2, 3]]
         let mut items = Vec::new();
         loop {
-            let v = self.expr()?;
-            // a range inside brackets is spliced: [1:3] == [1, 2, 3]
-            match v {
-                Value::Array(a) if items.is_empty() && self.peek_op("]") && self.t[self.i - 1] != MTok::Op("]") => {
-                    items = a
-                }
-                v => items.push(v),
-            }
+            items.push(self.expr()?);
             if self.eat_op("]") {
                 break;
             }
@@ -1163,7 +1106,10 @@ impl MParser<'_> {
                 match id.as_str() {
                     "true" => Ok(Value::Bool(true)),
                     "false" => Ok(Value::Bool(false)),
-                    _ => self.lookup(&id).ok_or_else(|| anyhow!("unknown macro variable '{id}'")),
+                    _ => {
+                        let v = self.lookup(&id).ok_or_else(|| anyhow!("unknown macro variable '{id}'"))?;
+                        if self.eat_op("[") { self.index(v) } else { Ok(v) }
+                    }
                 }
             }
             MTok::Op(o) => bail!("unexpected '{o}' in macro expression"),
@@ -1192,6 +1138,7 @@ fn cast(ty: &str, v: Value) -> Result<Value> {
         "real" => match v {
             Value::Str(s) => Value::Num(s.trim().parse().map_err(|_| anyhow!("cannot cast \"{s}\" to real"))?),
             Value::Array(a) | Value::Tuple(a) if a.len() == 1 => Value::Num(a[0].num()?),
+            Value::Bool(b) => Value::Num(if b { 1.0 } else { 0.0 }),
             v => Value::Num(v.num()?),
         },
         "string" => Value::Str(v.to_string()),
@@ -1206,9 +1153,9 @@ fn cast(ty: &str, v: Value) -> Result<Value> {
     })
 }
 
+/// `==` of the macro language: values of different types (a real and a boolean included) differ.
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Num(_) | Value::Bool(_), Value::Num(_) | Value::Bool(_)) => a.num().ok() == b.num().ok(),
         (Value::Array(x), Value::Array(y)) | (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_eq(p, q))
         }
@@ -1216,9 +1163,16 @@ fn values_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// Error function (Abramowitz-Stegun 7.1.26 is not precise enough: use libm's via statrs).
+// erf/erfc from the system libm, as the preprocessor's std::erf/std::erfc
+unsafe extern "C" {
+    #[link_name = "erf"]
+    fn libm_erf(x: f64) -> f64;
+    #[link_name = "erfc"]
+    fn libm_erfc(x: f64) -> f64;
+}
+
 fn erf(x: f64) -> f64 {
-    statrs::function::erf::erf(x)
+    unsafe { libm_erf(x) }
 }
 
 fn call(f: &str, args: &[Value]) -> Result<Value> {
@@ -1276,13 +1230,13 @@ fn call(f: &str, args: &[Value]) -> Result<Value> {
         "acos" => n(one()?.acos()),
         "atan" => n(one()?.atan()),
         "erf" => n(erf(one()?)),
-        "erfc" => n(1.0 - erf(one()?)),
+        "erfc" => n(unsafe { libm_erfc(one()?) }),
         "gamma" => n(statrs::function::gamma::gamma(one()?)),
         "lgamma" => n(statrs::function::gamma::ln_gamma(one()?)),
         "mod" => match args {
             [a, b] => {
-                let (a, b) = (a.num()?, b.num()?);
-                n(if b == 0.0 { a } else { a - (a / b).floor() * b })
+                // std::fmod: the sign of the dividend, mod(-7, 3) = -1, mod(x, 0) = nan
+                n(a.num()? % b.num()?)
             }
             _ => bail!("mod() takes two arguments"),
         },
@@ -1295,20 +1249,20 @@ fn call(f: &str, args: &[Value]) -> Result<Value> {
             _ => bail!("normpdf() takes 1 or 3 arguments"),
         },
         "normcdf" => match args {
-            [x] => n(0.5 * (1.0 + erf(x.num()? / 2f64.sqrt()))),
-            [x, m, s] => n(0.5 * (1.0 + erf((x.num()? - m.num()?) / (s.num()? * 2f64.sqrt())))),
+            [x] => n(0.5 * (1.0 + erf(x.num()? / std::f64::consts::SQRT_2))),
+            [x, m, s] => n(0.5 * (1.0 + erf((x.num()? - m.num()?) / s.num()? / std::f64::consts::SQRT_2))),
             _ => bail!("normcdf() takes 1 or 3 arguments"),
         },
-        "max" | "min" => {
-            let v: Result<Vec<f64>> = args.iter().map(Value::num).collect();
-            let v = v?;
-            let r = if f == "max" {
-                v.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-            } else {
-                v.iter().cloned().fold(f64::INFINITY, f64::min)
-            };
-            n(r)
-        }
+        // binary operators on reals in Dynare's grammar (std::max / std::min)
+        "max" | "min" => match args {
+            [Value::Num(a), Value::Num(b)] => n(match f {
+                "max" if a < b => *b,
+                "min" if b < a => *b,
+                _ => *a,
+            }),
+            [_, _] => bail!("operator `{f}` does not exist for this type"),
+            _ => bail!("{f}() takes two arguments"),
+        },
         _ => bail!("unsupported macro function '{f}'"),
     })
 }
@@ -1337,10 +1291,13 @@ mod tests {
     }
 
     #[test]
-    fn command_line_define_overrides() {
-        let src = "@#define X = 1\nx = @{X};\n";
-        assert_eq!(run(src, &[("X", "5")]), vec!["x = 5;"]);
-        assert_eq!(run(src, &[]), vec!["x = 1;"]);
+    fn command_line_define_is_an_initial_value() {
+        // dynare-preprocessor -DX=5: `c0 = 5; c1 = 1;`
+        let src = "c0 = @{X};
+@#define X = 1
+c1 = @{X};
+";
+        assert_eq!(run(src, &[("X", "5")]), vec!["c0 = 5;", "c1 = 1;"]);
     }
 
     #[test]
@@ -1359,10 +1316,17 @@ mod tests {
     }
 
     #[test]
-    fn comments_are_stripped() {
-        let src = "a = 1; // c @#if\n/* block\n @#if X */ b = 'x//y'; % tail\n";
-        let out = run(src, &[]);
-        assert_eq!(out, vec!["a = 1; ", "  b = 'x//y'; "]);
+    fn comments_are_left_to_the_lexer() {
+        // the directive inside /* */ is executed, @{} is expanded inside comments, and only a
+        // `//` comment ends a directive line (dynare-preprocessor savemacro)
+        let src = "/*
+@#define X = 99 // c
+*/
+x = 1; // c @{X}
+@#define Y = \"a//b\" // c
+y = @{Y}; % @{Y}
+";
+        assert_eq!(run(src, &[]), vec!["/*", "*/", "x = 1; // c 99", "y = a//b; % a//b"]);
     }
 
     #[test]

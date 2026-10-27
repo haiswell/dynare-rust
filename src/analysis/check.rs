@@ -14,7 +14,7 @@ use crate::solver::{FirstOrderSolver, SolverOptions, describe};
 pub struct CheckResult {
     /// `dr.eigval` (mjdgges order).
     pub eigval: Vec<Complex<f64>>,
-    /// `dr.edim` (None for purely backward models).
+    /// `dr.edim`.
     pub edim: Option<usize>,
     pub nsfwrd: usize,
     pub full_rank: bool,
@@ -34,20 +34,13 @@ pub fn check_at(model: &Model, params: &[f64], ys: &[f64], x: &[f64], opts: Solv
     let g1 = model.dynamic_jacobian(ys, x, params);
     let nsfwrd = solver.structure.nsfwrd;
     match solver.check_eigenvalues(&g1) {
-        Ok(Some(c)) => Ok(CheckResult {
+        Ok(c) => Ok(CheckResult {
             result: nsfwrd == c.edim && c.full_rank,
             eigval: c.eigval,
             edim: Some(c.edim),
             nsfwrd,
             full_rank: c.full_rank,
         }),
-        Ok(None) => {
-            // purely backward model: resol's eigenvalues of the state transition, no edim
-            match solver.solve(&g1, ys) {
-                Ok(dr) => Ok(CheckResult { eigval: dr.eigval, edim: None, nsfwrd, full_rank: true, result: false }),
-                Err(e) => bail!("check: {}", describe(e.info)),
-            }
-        }
         Err(e) => bail!("check: {} (info {})", describe(e.info), e.info),
     }
 }

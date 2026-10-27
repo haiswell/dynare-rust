@@ -56,6 +56,22 @@ pub struct GradEvaluation {
     pub hess: Option<Mat>,
 }
 
+/// `[fval, info, exit_flag, DLIK, Hess] = fcn(x)` as `analytic_gradient_wrapper.m` and
+/// `penalty_objective_function.m` call it: [`Objective::eval_grad`] or, for an objective
+/// that only provides [`Objective::gradient`] (method of moments with `analytic_jacobian`),
+/// its evaluation and gradient (`df = NaN` on failure, as in `mom.objective_function`).
+pub fn eval_with_gradient(obj: &dyn Objective, x: &[f64], hess: AnalyticHessian) -> Option<GradEvaluation> {
+    if let Some(g) = obj.eval_grad(x, hess) {
+        return Some(g);
+    }
+    if !obj.has_gradient() {
+        return None;
+    }
+    let e = obj.eval_full(x, false);
+    let grad = if e.info == 0 { obj.gradient(x) } else { None }.unwrap_or_else(|| vec![f64::NAN; x.len()]);
+    Some(GradEvaluation { fval: e.fval, info: e.info, info4: e.info4, grad, hess: None })
+}
+
 /// `[fval, exit_flag, grad, hess] = penalty_objective_function(x, fcn, base_penalty)` with an
 /// analytic objective: on failure `fval = base_penalty + info(4)`.
 pub fn penalty_objective_grad(
@@ -64,7 +80,7 @@ pub fn penalty_objective_grad(
     base_penalty: f64,
     hess: AnalyticHessian,
 ) -> (f64, bool, Vec<f64>, Option<Mat>) {
-    match obj.eval_grad(x, hess) {
+    match eval_with_gradient(obj, x, hess) {
         Some(g) => {
             if g.info != 0 || !g.fval.is_finite() {
                 let info4 = if g.info != 0 { g.info4 } else { 0.1 };
@@ -239,7 +255,7 @@ impl AnalyticContext {
             })
             .collect();
         Ok(AnalyticContext {
-            pderivs: ModelParamDerivs::new(&dsge.model),
+            pderivs: ModelParamDerivs::new(&dsge.model).at_exo_steady_state(&dsge.exo_ss),
             second: OnceLock::new(),
             set,
             to_set,
@@ -287,7 +303,7 @@ impl AnalyticContext {
         let model = &dsge.model;
         let (p, q) = self.set.apply(th, &res.params, &res.q);
         let ys = dsge.steady_state(&p).map_err(|f| anyhow!("fjaco.m: cannot solve the model (info = {})", f.info))?;
-        let g1 = model.dynamic_jacobian(&ys, &vec![0.0; model.n_exo()], &p);
+        let g1 = model.dynamic_jacobian(&ys, &dsge.exo_ss, &p);
         let dr =
             dsge.solve_first_order(&g1, &ys).map_err(|e| anyhow!("fjaco.m: cannot solve the model (info = {e})"))?;
         Ok((ys, g1, q, dr))
@@ -415,7 +431,7 @@ impl AnalyticContext {
                 }
             })
             .collect();
-        let x_ss = vec![0.0; model.n_exo()];
+        let x_ss = dsge.exo_ss.clone();
         let solve = |th: &[f64]| -> Result<(Vec<f64>, Mat, Mat, crate::solver::DecisionRule, Vec<f64>)> {
             let (p, q) = self.set.apply(th, &res.params, &res.q);
             let ys =
@@ -492,7 +508,7 @@ impl AnalyticContext {
     pub fn deriv_info(&self, post: &DsgePosterior, res: &Resolved, pstar: &Mat, full: bool) -> Result<DerivInfo> {
         let dsge = post.dsge;
         let model = &dsge.model;
-        let x_ss = vec![0.0; model.n_exo()];
+        let x_ss = dsge.exo_ss.clone();
         let g1 = model.dynamic_jacobian(&res.steady_state, &x_ss, &res.params);
         let d = self.first_order(post, res, &g1)?;
         let iv = &dsge.ss_index.restrict_var_list;

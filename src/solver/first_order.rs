@@ -153,17 +153,19 @@ impl FirstOrderSolver {
     /// The `task = 1` part of `dyn_first_order_solver.m` that `check.m` reports: the
     /// eigenvalues of the full pencil from one `mjdgges` (Dynare's exact path: dense QR static
     /// elimination), `dr.sdim`, `dr.edim` and `dr.full_rank`
-    /// (`rcond(w(npred+nboth+1:end, npred+nboth+1:end)) >= 1e-9`). Purely backward models:
-    /// `None` (Dynare reports the eigenvalues of ghx without edim; use [`Self::solve`]).
+    /// (`rcond(w(npred+nboth+1:end, npred+nboth+1:end)) >= 1e-9`). Purely backward models
+    /// (stochastic_solvers.m): the eigenvalues of the state transition, `edim` their number
+    /// above `qz_criterium` (explosive roots are not an error here, `info = 3` is not printed
+    /// by check.m) and `full_rank = 1`.
     /// `Err` only for mjdgges failures (info 2 / 7) and NaN/Inf Jacobians.
-    pub fn check_eigenvalues(&self, g1: &Mat) -> Result<Option<CheckEigen>, SolveError> {
+    pub fn check_eigenvalues(&self, g1: &Mat) -> Result<CheckEigen, SolveError> {
         let s = &self.structure;
         if g1.as_slice().iter().any(|x| !x.is_finite()) {
             let inf = g1.as_slice().iter().any(|x| x.is_infinite());
             return Err(SolveError::new(if inf { 10 } else { 8 }, 0.0));
         }
         if s.maximum_endo_lead == 0 {
-            return Ok(None);
+            return self.check_backward(g1);
         }
         let (nstatic, npred, nboth, nspred, ndynamic) = (s.nstatic, s.npred, s.nboth, s.nspred, s.ndynamic);
         let nd = ndynamic + nboth;
@@ -202,7 +204,7 @@ impl FirstOrderSolver {
             !(rc.is_nan() || rc < 1e-9)
         };
         let edim = qz.eigval.len() - qz.sdim;
-        Ok(Some(CheckEigen { eigval: qz.eigval, sdim: qz.sdim, edim, full_rank }))
+        Ok(CheckEigen { eigval: qz.eigval, sdim: qz.sdim, edim, full_rank })
     }
     // ---- end stream S ---------------------------------------------------------------
 
@@ -700,6 +702,25 @@ impl FirstOrderSolver {
         let hx2 = x2.transpose();
         let hx = mul(&hx1, false, &hx2, false);
         Ok((gx, hx, qz.eigval, sdim))
+    }
+
+    /// The eigenvalues and `edim` of a purely backward model (`stochastic_solvers.m`, order 1),
+    /// as [`Self::solve_backward`] computes them but without failing on explosive roots.
+    fn check_backward(&self, g1: &Mat) -> Result<CheckEigen, SolveError> {
+        let s = &self.structure;
+        let n = s.n_endo;
+        if self.cols_b.len() != n {
+            return Err(SolveError::new(1, 0.0));
+        }
+        let bcols: Vec<usize> = self.cols_b.iter().map(|&k| n + s.order_var[k]).collect();
+        let (fb, pb, _) = lu(&g1.select_columns(&bcols));
+        let xcols: Vec<usize> = (0..s.nspred).map(|k| s.order_var[s.nstatic + k]).collect();
+        let mut ghx = g1.select_columns(&xcols);
+        lu_solve(&fb, &pb, false, &mut ghx);
+        ghx.neg_mut();
+        let eigval = crate::linalg::eig_general(&ghx.rows(s.nstatic, s.nspred).clone_owned());
+        let edim = eigval.iter().filter(|z| z.norm() > self.opts.qz_criterium).count();
+        Ok(CheckEigen { sdim: s.nspred + s.nsfwrd - edim, eigval, edim, full_rank: true })
     }
 
     /// Purely backward models (`M_.maximum_endo_lead == 0`), `stochastic_solvers.m`.

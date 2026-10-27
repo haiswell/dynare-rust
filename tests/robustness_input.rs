@@ -87,8 +87,12 @@ fn deep_nesting_is_an_error() {
 #[test]
 fn macro_errors() {
     assert_err("@#define f(a) = f(a)\n@#define y = f(1)\nvar a; varexo e; model; a = e; end;\n", "nested calls");
-    assert_err("@#define x = 1/0\nvar a; varexo e; model; a = e; end;\n", "division by zero");
-    assert_err("@#define x = 1e400\n@#for i in 1:x\n@#endfor\nvar a; varexo e; model; a = e; end;\n", "non-finite");
+    // 1/0 is inf in the macro language (the preprocessor does not reject it); a loop over an
+    // infinite range never ends in the preprocessor, here it is an error
+    assert_err(
+        "@#define x = 1e400\n@#for i in 1:x\nvar a@{i};\n@#endfor\nvar a; varexo e; model; a = e; end;\n",
+        "non-finite",
+    );
     assert_err("var y; varexo e;\n/* unterminated\nmodel; y = e; end;\n", ":2: unterminated comment");
 }
 

@@ -51,9 +51,6 @@ pub struct PfQ1Options {
     pub minimal_solving_periods: usize,
     /// `lmmcp` (`options_.lmmcp.status`): stack_solve_algo 7 with solve_algo 10.
     pub lmmcp: bool,
-    /// `solve_algo` given to the perfect-foresight command (`options_.solve_algo`, used by
-    /// stack_solve_algo 7 and the purely backward/forward/static models).
-    pub solve_algo: Option<u8>,
     /// `options_.jacobian_tolerance` (rank tolerance of `check_jacobian_singularity`).
     pub jacobian_tolerance: Option<f64>,
 }
@@ -75,7 +72,6 @@ impl Default for PfQ1Options {
             homotopy_marginal_linearization_fallback: 0.0,
             minimal_solving_periods: 1,
             lmmcp: false,
-            solve_algo: None,
             jacobian_tolerance: None,
         }
     }
@@ -161,9 +157,6 @@ impl PfQ1Options {
         }
         if let Some(b) = flag(o, "lmmcp") {
             self.lmmcp = b;
-        }
-        if let Some(v) = num(o, "solve_algo") {
-            self.solve_algo = Some(v as u8);
         }
         if let Some(v) = num(o, "jacobian_tolerance") {
             self.jacobian_tolerance = Some(v);
@@ -606,7 +599,8 @@ fn eps_of(x: f64) -> f64 {
 
 // ---- sim1.m with the lin_solve variants ------------------------------------------------------
 
-/// `sim1.m` for `stack_solve_algo` 2, 3, 8, 9, 10, `robust_lin_solve`, `check_jacobian_singularity`.
+/// `sim1.m` for `stack_solve_algo` 2, 3, 8, 9, 10, `robust_lin_solve`, `check_jacobian_singularity`
+/// (with the horizon truncation of `endogenous_terminal_period`).
 pub fn sim1(
     model: &Model,
     o: &SimulOptions,
@@ -618,8 +612,8 @@ pub fn sim1(
     let q = &o.q1;
     let verbose = o.verbosity > 0 && !o.noprint;
     let n = model.n_endo();
-    let periods = o.periods;
-    let (y0, yt, mut y) = conditions(endo, ml, periods);
+    let mut periods = o.periods;
+    let (y0, mut yt, mut y) = conditions(endo, ml, periods);
     if verbose {
         println!();
         println!("{}", "-".repeat(56));
@@ -635,10 +629,29 @@ pub fn sim1(
     let mut failed = false;
     while !(converged || iter > o.maxit) {
         let h2 = Instant::now();
-        let (res, a) = st.eval(&y, &y0, &yt, &|t| exo_row(exo, t + ml), params, true);
-        let a = a.unwrap();
+        let (mut res, a) = st.eval(&y, &y0, &yt, &|t| exo_row(exo, t + ml), params, true);
+        let mut a = a.unwrap();
         if iter == 1 && q.check_jacobian_singularity {
             check_jacobian_for_singularity(&a, &model.endo_names, q.jacobian_tolerance);
+        }
+        if o.endogenous_terminal_period && iter > 1 {
+            for it in 1..=periods {
+                if norm_inf(&res[(it - 1) * n..it * n]) < o.tolf / 1e7 {
+                    if it < periods {
+                        res.truncate(it * n);
+                        a = sub_csr(&a, 0..it * n);
+                        yt = y[it * n..(it + 1) * n].to_vec();
+                        for t in it..periods {
+                            for j in 0..n {
+                                endo[(j, ml + t)] = y[t * n + j];
+                            }
+                        }
+                        y.truncate(it * n);
+                        periods = it;
+                    }
+                    break;
+                }
+            }
         }
         err = norm_inf(&res);
         if err < o.tolf {
@@ -669,6 +682,9 @@ pub fn sim1(
         for j in 0..n {
             endo[(j, ml + t)] = y[t * n + j];
         }
+    }
+    if o.endogenous_terminal_period {
+        err = compute_maxerror(model, endo, exo, params, ml, o.periods);
     }
     let success = converged && !failed && y.iter().all(|v| v.is_finite());
     if verbose {
@@ -703,6 +719,24 @@ pub fn sim1_lbj(
     params: &[f64],
     ml: usize,
 ) -> (bool, f64, usize) {
+    sim1_lbj_controlled(model, o, endo, &mut exo.clone(), params, ml, None)
+}
+
+/// `sim1_lbj.m` with a `controlled_paths_by_period` (`perfect_foresight_controlled_paths` or
+/// `shock_paths` + `exogenize`): the exogenized endogenous variables are fixed to their values,
+/// their Jacobian columns are replaced by those of the endogenized exogenous variables (and
+/// zeroed in the neighbouring periods), and the exogenous variables absorb the Newton step.
+/// Convergence is on the step size (`dynatol.x`), as in `sim1_lbj.m`.
+#[allow(clippy::too_many_arguments)]
+pub fn sim1_lbj_controlled(
+    model: &Model,
+    o: &SimulOptions,
+    endo: &mut Mat,
+    exo: &mut Mat,
+    params: &[f64],
+    ml: usize,
+    cp: Option<&[crate::ep::controlled::ControlledPeriod]>,
+) -> (bool, f64, usize) {
     let lli = &model.lead_lag_incidence;
     let ny = model.n_endo();
     let iyp: Vec<usize> = (0..ny).filter(|&j| lli[j][0] > 0).collect();
@@ -729,6 +763,13 @@ pub fn sim1_lbj(
     let mut success = false;
     let mut iter_done = 0;
     let nx = model.n_exo();
+    if let Some(cp) = cp {
+        for (p, c) in cp.iter().enumerate().take(periods) {
+            for (&j, &v) in c.exogenize.iter().zip(&c.values) {
+                endo[(j, p + ml)] = v;
+            }
+        }
+    }
     let mut g1 = Mat::zeros(model.n_equations(), 3 * ny + nx);
     let mut ws = model.workspace();
     let mut d1 = vec![0.0; ny];
@@ -747,6 +788,23 @@ pub fn sim1_lbj(
             let x = exo_row(exo, it);
             model.dynamic_residuals(&y3, &x, params, &mut d1);
             model.dynamic_jacobian_y3_with(&y3, &x, params, &mut ws, &mut g1);
+            if let Some(cp) = cp {
+                // dynamicmodel() of sim1_lbj.m
+                if p > 0 {
+                    for &j in &cp[p - 1].exogenize {
+                        g1.column_mut(j).fill(0.0);
+                    }
+                }
+                for (&j, &k) in cp[p].exogenize.iter().zip(&cp[p].endogenize) {
+                    let col = g1.column(3 * ny + k).into_owned();
+                    g1.set_column(ny + j, &col);
+                }
+                if p + 1 < periods {
+                    for &j in &cp[p + 1].exogenize {
+                        g1.column_mut(2 * ny + j).fill(0.0);
+                    }
+                }
+            }
             // jacobian = [g1(:, iz), -d1]: lag part (ny x nyp), current (ny x ny), rhs block [lead, -d1]
             let mut cur = Mat::from_fn(ny, ny, |i, j| g1[(i, ny + j)]);
             let mut rhs = Mat::zeros(ny, nrc);
@@ -799,6 +857,17 @@ pub fn sim1_lbj(
                 let d = c[(p * ny + j, nyf)];
                 endo[(j, ml + p)] += d;
                 err_x = if d.is_nan() || err_x.is_nan() { f64::NAN } else { err_x.max(d.abs()) };
+            }
+        }
+        if let Some(cp) = cp {
+            for (p, cpp) in cp.iter().enumerate().take(periods) {
+                if cpp.endogenize.is_empty() {
+                    continue;
+                }
+                for ((&j, &k), &v) in cpp.exogenize.iter().zip(&cpp.endogenize).zip(&cpp.values) {
+                    endo[(j, ml + p)] = v;
+                    exo[(ml + p, k)] += c[(p * ny + j, nyf)];
+                }
             }
         }
         if verbose {
@@ -999,7 +1068,7 @@ pub fn core(
     linear: bool,
 ) -> Option<(bool, f64, usize)> {
     let q = &o.q1;
-    let solve_algo = if q.lmmcp { 10 } else { q.solve_algo.unwrap_or(global_solve_algo) };
+    let solve_algo = if q.lmmcp { 10 } else { global_solve_algo };
     let stack = if q.lmmcp { 7 } else { o.stack_solve_algo };
     if !q.lmmcp {
         let kind = match (ml > 0, mlead > 0) {

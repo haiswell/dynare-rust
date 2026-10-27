@@ -48,7 +48,7 @@ pub fn setup(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path) -> Resul
         Some(OptValue::Str(s)) => Some(s.clone()),
         _ => None,
     };
-    det.simul.update(&simul_options(o, &["datafile"]));
+    det.update_options(&simul_options(o, &["datafile"]));
     // ---- shocks/shock_paths: get_simulation_periods.m
     let (periods, fsp, _) = det.simulation_periods()?;
     let mut terminal = Mat::from_element(nx, periods, f64::NAN);
@@ -275,15 +275,20 @@ pub fn solver(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path, fname: 
         .pfwee
         .clone()
         .ok_or_else(|| anyhow!("perfect_foresight_with_expectation_errors_solver: run perfect_foresight_with_expectation_errors_setup first"))?;
+    // the command's options are global (the preprocessor writes them to options_ first);
+    // the changes below are local to the MATLAB function
+    det.update_options(&simul_options(o, &["constant_simulation_length"]));
+    let saved = det.simul.clone();
     let constant_length = flag(o, "constant_simulation_length");
+    if constant_length && det.simul.last_simulation_period.is_some() {
+        bail!("Options constant_simulation_length and last_simulation_period cannot be used together");
+    }
     let has_controlled = info.controlled.iter().any(|c| c.iter().any(|p| !p.endogenize.is_empty()));
     if constant_length && has_controlled {
         bail!(
             "Options constant_simulation_length is incompatible with perfect_foresight_controlled_paths or shock_paths+exogenize block"
         );
     }
-    let saved = det.simul.clone();
-    det.simul.update(&simul_options(o, &["constant_simulation_length"]));
     let periods = info.periods;
     let (ml, mlead) = (det.maximum_lag, det.maximum_lead);
     let mut endo = det.endo_simul.clone().ok_or_else(|| anyhow!("oo_.endo_simul is empty"))?;
@@ -298,6 +303,7 @@ pub fn solver(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path, fname: 
     let mut info_period = 1usize;
     let mut increment = 0usize;
     let mut completion_share = 1.0;
+    let mlf = det.simul.q1.homotopy_marginal_linearization_fallback;
     let result = (|| -> Result<()> {
         while info_period <= periods {
             let ip = info_period - 1;
@@ -332,7 +338,23 @@ pub fn solver(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path, fname: 
                     x[(r, k)] = det.exo_steady_state[k];
                 }
             }
-            det.simul.periods = sim_length;
+            det.simul.set_periods(sim_length);
+            // reset so as to avoid an inconsistency with periods
+            det.simul.first_simulation_period = None;
+            det.simul.last_simulation_period = None;
+            // marginal_linearization_previous_raw_sims: the raw simulations of the previous
+            // informational period, from its first period on
+            let prev = match (&det.sim1, &det.sim2) {
+                (Some(s1), Some(s2)) if info_period > 1 && completion_share < 1.0 && mlf > 0.0 => {
+                    let tail = |r: &crate::deterministic::RawSim| crate::deterministic::RawSim {
+                        endo_simul: r.endo_simul.columns(increment, r.endo_simul.ncols() - increment).into_owned(),
+                        exo_simul: r.exo_simul.rows(increment, r.exo_simul.nrows() - increment).into_owned(),
+                        homotopy_completion_share: r.homotopy_completion_share,
+                    };
+                    Some(crate::deterministic::MarginalRawSims { sim1: tail(s1), sim2: tail(s2) })
+                }
+                _ => None,
+            };
             det.endo_simul = Some(e);
             det.exo_simul = Some(x);
             det.controlled = info
@@ -340,7 +362,7 @@ pub fn solver(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path, fname: 
                 .get(ip)
                 .map(|c| c[ip..].to_vec())
                 .filter(|c| c.iter().any(|p| !p.endogenize.is_empty()));
-            let r = det.solve(model);
+            let r = det.solve_with(model, prev.as_ref());
             det.controlled = None;
             r?;
             if !det.last.status {
@@ -375,9 +397,7 @@ pub fn solver(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path, fname: 
         Ok(())
     })();
     // options_ is local to the MATLAB function
-    let periods_opt = det.simul.periods;
     det.simul = saved;
-    let _ = periods_opt;
     result?;
     det.endo_simul = Some(endo);
     det.exo_simul = Some(exo);

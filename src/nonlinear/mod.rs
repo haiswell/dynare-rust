@@ -204,9 +204,19 @@ fn num_opt(o: &Options, k: &str) -> Option<f64> {
 }
 
 impl ParticleOptions {
-    /// The estimation options the preprocessor maps to `options_.particle` (and
-    /// `check_particle_filter_options.m` for `particle_filter_options`).
+    /// The estimation options the preprocessor maps to `options_.particle`, then
+    /// `check_particle_filter_options.m` (`particle_filter_options`), as
+    /// `dynare_estimation_1.m` runs it when `options_.particle.status` (order > 1).
     pub fn from_options(o: &Options) -> Result<Self> {
+        let mut p = Self::from_preprocessor_options(o)?;
+        p.check_particle_filter_options(o)?;
+        Ok(p)
+    }
+
+    /// The estimation options the preprocessor maps to `options_.particle`, without
+    /// `check_particle_filter_options.m` (at order 1, where `options_.particle.status` is
+    /// false, `particle_filter_options` is never read).
+    pub fn from_preprocessor_options(o: &Options) -> Result<Self> {
         let mut p = ParticleOptions::default();
         if let Some(s) = str_opt(o, "filter_algorithm") {
             p.algorithm = FilterAlgorithm::parse(&s)?;
@@ -251,44 +261,129 @@ impl ParticleOptions {
             p.initialization = v as u8;
         }
         // ---- end estimation completion
-        // particle_filter_options = ('key', value, ...) (check_particle_filter_options.m)
-        if let Some(v) = opt(o, "particle_filter_options") {
-            let items: Vec<OptValue> = match v {
-                OptValue::List(l) => l.clone(),
-                other => vec![other.clone()],
-            };
-            let mut it = items.into_iter();
-            while let Some(k) = it.next() {
-                let OptValue::Str(k) = k else { bail!("particle_filter_options: expected 'key', value pairs") };
-                let val = it.next().ok_or_else(|| anyhow::anyhow!("particle_filter_options: {k} has no value"))?;
-                let num = match &val {
-                    OptValue::Num(x) => Some(*x),
-                    _ => None,
-                };
-                let truth = match &val {
-                    OptValue::Str(s) => Some(s == "true"),
-                    OptValue::Num(x) => Some(*x != 0.0),
-                    OptValue::Flag => Some(true),
-                    _ => None,
-                };
-                let need =
-                    |x: Option<f64>| x.ok_or_else(|| anyhow::anyhow!("particle_filter_options: {k} needs a number"));
-                match k.as_str() {
-                    "initial_state_prior_std" => p.initial_state_prior_std = need(num)?,
-                    "pruning" => p.pruning = truth.unwrap_or(false),
-                    "unscented_alpha" => p.unscented.alpha = need(num)?,
-                    "unscented_beta" => p.unscented.beta = need(num)?,
-                    "unscented_kappa" => p.unscented.kappa = need(num)?,
-                    "mixture_state_variables" => p.mixture_state_variables = need(num)? as usize,
-                    "mixture_structural_shocks" => p.mixture_structural_shocks = need(num)? as usize,
-                    "mixture_measurement_shocks" => p.mixture_measurement_shocks = need(num)? as usize,
-                    "initialization" => p.initialization = need(num)? as u8,
-                    _ => println!("WARNING: check_particle_filter_options: Unknown option ({k})!"),
-                }
-            }
-        }
         Ok(p)
     }
+
+    /// `check_particle_filter_options.m`: `particle_filter_options = ('key', value, ...)`,
+    /// with its argument checks. Keys are case sensitive; `posterior_sampler` and
+    /// `liu_west_delta` are checked and stored by Dynare but read by no filter.
+    fn check_particle_filter_options(&mut self, o: &Options) -> Result<()> {
+        let Some(v) = opt(o, "particle_filter_options") else { return Ok(()) };
+        let items: Vec<OptValue> = match v {
+            OptValue::List(l) => l.clone(),
+            other => vec![other.clone()],
+        };
+        let mut it = items.into_iter();
+        while let Some(k) = it.next() {
+            let OptValue::Str(k) = k else { bail!("particle_filter_options: expected 'key', value pairs") };
+            let val =
+                it.next().ok_or_else(|| anyhow::anyhow!("read_key_value_string: Wrong number of Key-Value pairs!"))?;
+            let num = match &val {
+                OptValue::Num(x) => Some(*x),
+                _ => None,
+            };
+            let need = |x: Option<f64>| x.ok_or_else(|| anyhow::anyhow!("particle_filter_options: {k} needs a number"));
+            // `options_list{i,2} <= 0` (or `< 0`) -> error(msg)
+            let positive = |x: f64, strict: bool, msg: &str| -> Result<f64> {
+                if (strict && x <= 0.0) || (!strict && x < 0.0) {
+                    bail!("check_particle_filter_options:: {msg}")
+                } else {
+                    Ok(x)
+                }
+            };
+            match k.as_str() {
+                "posterior_sampler" => {
+                    let ok = matches!(&val, OptValue::Str(s)
+                        if s.eq_ignore_ascii_case("Herbst_Schorfheide") || s.eq_ignore_ascii_case("DSMH"));
+                    if !ok {
+                        bail!(
+                            "check_particle_filter_options:: the proposal_distribution option to estimation takes either Herbst_Schorfheide or Herbst_Schorfheide as options"
+                        );
+                    }
+                }
+                "initial_state_prior_std" => {
+                    self.initial_state_prior_std =
+                        positive(need(num)?, true, "the initial_state_prior_std option takes a positive argument")?
+                }
+                // `~islogical(value)`: only `true` / `false` (str2num of a number is a double)
+                "pruning" => match &val {
+                    OptValue::Str(s) if s == "true" || s == "false" => self.pruning = s == "true",
+                    _ => bail!("check_particle_filter_options:: the pruning options takes only true or false"),
+                },
+                "unscented_alpha" => {
+                    self.unscented.alpha =
+                        positive(need(num)?, true, "the unscented_alpha option takes a positive argument")?
+                }
+                "unscented_beta" => {
+                    self.unscented.beta =
+                        positive(need(num)?, false, "the unscented_beta option takes a positive argument")?
+                }
+                "unscented_kappa" => {
+                    self.unscented.kappa =
+                        positive(need(num)?, false, "the unscented_kappa option takes a positive argument")?
+                }
+                "mixture_state_variables" => {
+                    self.mixture_state_variables =
+                        positive(need(num)?, true, "the mixture_state_variables option takes a positive integer")?
+                            as usize
+                }
+                "mixture_structural_shocks" => {
+                    self.mixture_structural_shocks =
+                        positive(need(num)?, true, "the mixture_structural_shocks option takes a positive integer")?
+                            as usize
+                }
+                "mixture_measurement_shocks" => {
+                    self.mixture_measurement_shocks =
+                        positive(need(num)?, true, "the mixture_measurement_shocks option takes a positive integer")?
+                            as usize
+                }
+                "liu_west_delta" => {
+                    positive(need(num)?, true, "the liu_west_delta option takes a positive argument")?;
+                }
+                _ => println!("WARNING: check_particle_filter_options: Unknown option ({k})!"),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `select_qz_criterium_value.m`: `options_.qz_criterium` for an estimation, from the user's
+/// value (`None` when `options_.qz_criterium` is empty). `particle_initialization` is
+/// `Some(options_.particle.initialization)` when `options_.particle.status` (order > 1),
+/// `None` for the linear filters, which use `lik_init`.
+pub fn select_qz_criterium_value(user: Option<f64>, particle_initialization: Option<u8>, lik_init: f64) -> Result<f64> {
+    Ok(match particle_initialization {
+        // non linear filter
+        Some(3) => match user {
+            None => 1.0 + 1e-6,
+            Some(v) if v <= 1.0 => {
+                println!(
+                    "\ndynare_estimation_init.m:: You set nonlinear_filter_initialization equal to 3, it is assumed that you try to estimate a non stationary model. Resetting it to 1+1e-6."
+                );
+                1.0 + 1e-6
+            }
+            Some(v) => v,
+        },
+        Some(_) => user.unwrap_or(1.0 - 1e-6),
+        // linear filter
+        None if lik_init == 1.0 => match user {
+            None => 1.0 - 1e-6,
+            Some(v) if v > 1.0 - f64::EPSILON => bail!(
+                "dynare_estimation_init.m: option qz_criterium is too large for estimating/smoothing a stationary model. If your model contains unit roots, use option diffuse_filter"
+            ),
+            Some(v) => v,
+        },
+        None => match user {
+            None => 1.0 + 1e-6,
+            Some(v) if v <= 1.0 => {
+                println!(
+                    "\ndynare_estimation_init.m:: diffuse filter is incompatible with a qz_criterium<=1. Resetting it to 1+1e-6."
+                );
+                1.0 + 1e-6
+            }
+            Some(v) => v,
+        },
+    })
 }
 
 /// `estimation(order = k)` with `k >= 2` (Dynare then requires a nonlinear filter).

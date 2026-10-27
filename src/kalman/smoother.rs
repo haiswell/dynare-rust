@@ -29,6 +29,9 @@ pub struct SmootherOutput {
     pub alphahat0: Vector,
     /// smoothed state covariances V_t (if requested)
     pub state_uncertainty: Option<Vec<Mat>>,
+    /// `state_uncertainty0`: covariance of the smoothed initial state (period 0), when
+    /// `state_uncertainty` was requested (multivariate smoother only).
+    pub state_uncertainty0: Option<Mat>,
     /// number of diffuse periods
     pub d: usize,
     /// true if the univariate smoother (H3) produced the results
@@ -213,6 +216,18 @@ pub fn smoother_request(
             }
             None => (None, None),
         };
+        // filter_initial_state: Dynare's a_initial = ST*a_initial with the augmented
+        // ST = blkdiag(T, 0) predicts the measurement errors at 0, i.e. [a; Z a] here
+        let req_c;
+        let req = match req.and_then(|q| q.a_initial.as_ref().map(|ai| (q, ai))) {
+            Some((q0, ai)) if ai.len() == mm => {
+                let mut q1 = q0.clone();
+                q1.a_initial = Some(super::augment::state(ai, mf));
+                req_c = q1;
+                Some(&req_c)
+            }
+            _ => req,
+        };
         let sys_c = Sys {
             t: &s.t,
             r: &s.r,
@@ -244,6 +259,7 @@ pub fn smoother_request(
             state_uncertainty: o
                 .state_uncertainty
                 .map(|v| v.iter().map(|m| m.view((0, 0), (mm, mm)).into_owned()).collect()),
+            state_uncertainty0: None,
             d: o.d,
             univariate: true,
             info,
@@ -541,9 +557,14 @@ fn smoother_h1(
         alphahat.set_column(tt, &(&a[tt] + &p[tt] * &rvec[tt]));
         etahat.set_column(tt, &(s.qrt(tt) * &rvec[tt]));
     }
-    let alphahat0 = if d == 0 {
+    let (alphahat0, v0) = if d == 0 {
         let r0 = s.t.transpose() * &rvec[0];
-        &a0 + &p0 * &r0
+        // V0 = P0 - P0*N0*P0 with N0 = L0'*N(:,:,1)*L0, L0 = T (DK (2012), eq. 4.43)
+        let v0 = su.then(|| {
+            let n0 = s.t.transpose() * &nmat[0] * s.t;
+            &p0 - &p0 * n0 * &p0
+        });
+        (&a0 + &p0 * &r0, v0)
     } else {
         let mut r0: Vec<Vector> = vec![Vector::zeros(mm); d + 1];
         let mut r1: Vec<Vector> = vec![Vector::zeros(mm); d + 1];
@@ -607,7 +628,15 @@ fn smoother_h1(
         }
         let r10 = s.t.transpose() * &r1[0];
         let r00 = s.t.transpose() * &r0[0];
-        &a_init + &pstar_init * &r00 + &pinf_init * &r10
+        // V0 (DK (2012), eq. 5.30) from N0 = T'*N(:,:,1)*T, N_10, N_20
+        let v0 = su.then(|| {
+            let n0 = s.t.transpose() * &nmat[0] * s.t;
+            let n10 = s.t.transpose() * &n1[0] * s.t;
+            let n20 = s.t.transpose() * &n2[0] * s.t;
+            let pnp = &pinf_init * &n10 * &pstar_init;
+            &pstar_init - &pstar_init * &n0 * &pstar_init - pnp.transpose() - &pnp - &pinf_init * &n20 * &pinf_init
+        });
+        (&a_init + &pstar_init * &r00 + &pinf_init * &r10, v0)
     };
     let ahat = Mat::from_columns(&atilde);
     // aK / PK / decomp
@@ -650,6 +679,7 @@ fn smoother_h1(
         sa
     });
     let mut out = finish(s, y, alphahat, etahat, ahat, ak, alphahat0, if su { Some(vmat) } else { None }, d, false);
+    out.state_uncertainty0 = v0;
     out.step_ahead = step;
     Ok(out)
 }
@@ -722,6 +752,7 @@ fn finish(
         filtered,
         alphahat0,
         state_uncertainty: v,
+        state_uncertainty0: None,
         d,
         univariate,
         info: 0,

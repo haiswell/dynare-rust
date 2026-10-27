@@ -347,10 +347,10 @@ pub fn prepare_plot(
     };
     if spec.q4.init2shocks.is_some() && spec.realtime == 0 && state.initval.is_none() {
         println!("computing initval shock decomposition ...");
-        let set = state
-            .parameter_set
-            .clone()
-            .unwrap_or_else(|| crate::forecast::commands::default_parameter_set(st).to_string());
+        let set = state.parameter_set.clone().map_or_else(
+            || crate::forecast::commands::default_parameter_set(st, "shock_decomposition").map(str::to_string),
+            Ok,
+        )?;
         let mut own = None;
         let (dsge, data, _) = crate::forecast::commands::smoother_inputs(mf, st, o, dir, &mut own)?;
         let x = crate::analysis::realtime_decomposition::smoother_point(st, dsge, &set)?;

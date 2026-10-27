@@ -31,7 +31,7 @@ fn run(mf: &ModFile) -> DetState {
                 det.command(mf, name, o, &[], &dir(), "q1").unwrap()
             }
             Command::Deterministic(name, o, _) => {
-                det.simul.update(o);
+                det.update_options(o);
                 det.simul.noprint = true;
                 det.simul.verbosity = 0;
                 match name.as_str() {

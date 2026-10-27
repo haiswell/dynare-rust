@@ -86,6 +86,8 @@ pub struct MomInputs {
     /// SMM: the standard-normal draws `options_mom_.mom.shock_series`
     /// (`(long + burnin) x exo_nbr`), e.g. MATLAB's `randn` from a dump.
     pub shock_series: Option<Mat>,
+    /// SMM: the measurement-error draws `options_mom_.mom.ME_shock_series` (`long x nobs`).
+    pub me_shock_series: Option<Mat>,
     /// Print the console output (tables, optimizer progress).
     pub quiet: bool,
 }

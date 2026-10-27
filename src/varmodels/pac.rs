@@ -87,20 +87,20 @@ impl PacModel {
 
 // ---------------------------------------------------------------- numerics
 
-/// `a2alpha.m`.
-fn a2alpha(a: &[f64]) -> Vec<f64> {
+/// `a2alpha.m`. With a single element (a PAC equation without autoregressive terms),
+/// `alpha(1) = a(1)-a(2)-1` reads past the end of `a` and MATLAB fails.
+fn a2alpha(a: &[f64]) -> Result<Vec<f64>> {
     let m = a.len();
+    if m < 2 {
+        bail!("Index exceeds the number of array elements. Index must not exceed {m}.");
+    }
     let mut al = vec![0.0; m];
     al[m - 1] = a[m - 1];
-    for i in 1..m.saturating_sub(1) {
+    for i in 1..m - 1 {
         al[i] = a[i] - a[i + 1];
     }
-    if m >= 2 {
-        al[0] = a[0] - a[1] - 1.0;
-    } else {
-        al[0] = a[0] - 1.0;
-    }
-    al
+    al[0] = a[0] - a[1] - 1.0;
+    Ok(al)
 }
 
 /// `buildGmatrixWithAlphaAndBeta.m` for `params = [a_1..a_m, beta]`: `(G, alpha, beta)` with
@@ -110,7 +110,7 @@ fn g_matrix(params: &[f64]) -> Result<(Mat, Vec<f64>, f64)> {
         bail!("Input argument has to be a vector with at least two elements. The last element is the discount factor.");
     }
     let m = params.len() - 1;
-    let mut alpha = a2alpha(&params[..m]);
+    let mut alpha = a2alpha(&params[..m])?;
     alpha.reverse();
     let beta = params[m];
     if beta < f64::EPSILON || beta > 1.0 - f64::EPSILON {
@@ -331,5 +331,21 @@ impl VarModels {
     pub fn pac_update_values(&self, name: &str, names: &[String], params: &[f64]) -> Result<Vec<(String, f64)>> {
         let p = self.pac(name).ok_or_else(|| anyhow!("PAC model {name} is not defined in the model block!"))?;
         if p.is_mce() { p.mce_values(names, params) } else { p.update_values(self, names, params) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::a2alpha;
+
+    /// `a2alpha.m`: alpha(m) = a(m); alpha(2:m-1) = a(2:m-1)-a(3:m); alpha(1) = a(1)-a(2)-1, and an
+    /// error for m = 1 (`a(2)` is out of range; the preprocessor accepts a PAC equation without
+    /// autoregressive terms, so `pac.update.expectation` fails in MATLAB).
+    #[test]
+    fn a2alpha_follows_the_matlab_function() {
+        let al = a2alpha(&[0.5, 0.3, 0.1]).unwrap();
+        assert_eq!(al, vec![0.5 - 0.3 - 1.0, 0.3 - 0.1, 0.1]);
+        assert_eq!(a2alpha(&[0.4, 0.1]).unwrap(), vec![0.4 - 0.1 - 1.0, 0.1]);
+        assert!(a2alpha(&[0.5]).is_err());
     }
 }

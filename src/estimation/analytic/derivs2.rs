@@ -127,6 +127,13 @@ impl SecondTapes {
         let x0 = |k: u32, _l: i32| k as usize;
         let static_tape = Tape::compile(&dag, &sroots, &st_y, &x0);
 
+        // STEADY_STATE(y) in the dynamic model depends on every parameter (`ss_param_deriv`,
+        // `ss_param_2nd_deriv`: `prepareForDerivation` adds all the parameter deriv ids)
+        let params_dyn = |dag: &Dag, id: u32| -> Vec<u32> {
+            let mut ps = dag.param_deps(id);
+            ps.dedup();
+            ps
+        };
         // ---- dynamic model (columns of the full layout [y(-1), y, y(+1), x])
         let col_of = |nd: Node| -> Option<(DiffVar, usize)> {
             match nd {
@@ -155,12 +162,12 @@ impl SecondTapes {
                 if e == Dag::ZERO {
                     continue;
                 }
-                for q1 in params_in(&dag, e) {
+                for q1 in params_dyn(&dag, e) {
                     let e1 = dag.diff(e, DiffVar::Param(q1), memos.entry(DiffVar::Param(q1)).or_default());
                     if e1 == Dag::ZERO {
                         continue;
                     }
-                    for q2 in params_in(&dag, e1).into_iter().filter(|&q2| q2 >= q1) {
+                    for q2 in params_dyn(&dag, e1).into_iter().filter(|&q2| q2 >= q1) {
                         let e2 = dag.diff(e1, DiffVar::Param(q2), memos.entry(DiffVar::Param(q2)).or_default());
                         if e2 != Dag::ZERO {
                             g1pp.push((i, c, q1 as usize, q2 as usize));
@@ -175,7 +182,7 @@ impl SecondTapes {
                     }
                     g2.push((i, c, c2));
                     n_g2.push(e2);
-                    for q in params_in(&dag, e2) {
+                    for q in params_dyn(&dag, e2) {
                         let e3 = dag.diff(e2, DiffVar::Param(q), memos.entry(DiffVar::Param(q)).or_default());
                         if e3 != Dag::ZERO {
                             g2p.push((i, c, c2, q as usize));
@@ -283,7 +290,24 @@ fn symbolic_d2(
     for _ in 0..3 {
         y3.extend_from_slice(ys);
     }
-    tp.dyn_tape.eval(&y3, &x, params, &mut dsn);
+    // dynamic_params_derivs(y3n, exo, params, ys, dys, d2ys): `d2ys(:,:,q2)` is `n_endo x n_params`,
+    // non-zero only for the selected model parameters
+    let np = model.n_params();
+    let d2full: Vec<Mat> = (0..np)
+        .map(|q2| {
+            let mut m = Mat::zeros(n, np);
+            if let Some(&b) = pos.get(&q2) {
+                for a in 0..nm {
+                    for v in 0..n {
+                        m[(v, pm[a])] = d2ys[b][(v, a)];
+                    }
+                }
+            }
+            m
+        })
+        .collect();
+    let pext = model.params_with_steady_state_derivs(params, ys, dys, Some(&d2full));
+    tp.dyn_tape.eval(&y3, &x, &pext, &mut dsn);
     let dyy = |c: usize, a: usize| if c < 3 * n { dys[(c % n, pm[a])] } else { 0.0 };
     let ncol = 3 * n + ne;
     let pair = |a: usize, b: usize| if a <= b { b * (b + 1) / 2 + a } else { a * (a + 1) / 2 + b };

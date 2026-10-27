@@ -58,7 +58,7 @@ pub fn likelihood_data(mf: &ModFile, dir: &Path, o: &Options, datafile: &str) ->
     if let Some(v) = num(o, "riccati_tol") {
         k.riccati_tol = v;
     }
-    k.qz_criterium = super::qz_criterium(o);
+    k.qz_criterium = super::qz_criterium(o, true); // rmse always runs dynare_estimation_init
     Ok(LikelihoodData::new(&sample, k))
 }
 

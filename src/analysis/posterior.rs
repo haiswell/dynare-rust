@@ -139,6 +139,14 @@ pub fn posterior_irf(
     Ok(PosteriorIrf { ivar: ivar.to_vec(), shocks, stats })
 }
 
+/// A decomposition with measurement error and the variables it covers
+/// (`check_measurement_error_requested_vars.m`).
+pub struct MeDecomposition<T> {
+    /// Declaration indices of the observed requested variables (`observable_pos_requested_vars`).
+    pub vars: Vec<usize>,
+    pub stats: T,
+}
+
 /// Posterior distribution of the theoretical moments (`oo_.PosteriorTheoreticalMoments.dsge`).
 pub struct PosteriorTheoreticalMoments {
     pub ivar: Vec<usize>,
@@ -150,6 +158,11 @@ pub struct PosteriorTheoreticalMoments {
     pub variance_decomposition: Option<Vec<Vec<ParamMoments>>>,
     /// `conditional[step][i][shock]` (fractions).
     pub conditional: Option<Vec<Vec<Vec<ParamMoments>>>>,
+    /// `VarianceDecompositionME` (dsge_simulated_theoretical_variance_decomposition.m): for
+    /// the requested observed variables, `[obs][shock or ME]` (fractions, last column ME).
+    pub variance_decomposition_me: Option<MeDecomposition<Vec<Vec<ParamMoments>>>>,
+    /// `ConditionalVarianceDecompositionME`: `[step][obs][shock or ME]`.
+    pub conditional_me: Option<MeDecomposition<Vec<Vec<Vec<ParamMoments>>>>>,
     // ---- estimation completion ----
     /// `contemporaneous_correlation`: `contemporeaneous_correlation[i][j]`, j >= i
     /// (covariance_mc_analysis.m: cov / (sd_i sd_j), 0 where the covariance is 0).
@@ -167,15 +180,22 @@ pub fn posterior_moments_varendo(
     ivar: &[usize],
     o: &StochSimulOptions,
 ) -> Result<PosteriorTheoreticalMoments> {
+    let me_ids: Option<Vec<usize>> = Some(dsge.varobs.clone());
     let nexo = dsge.model.n_exo();
     let mut mo = o.moment_options();
     mo.nodecomposition = true;
     let do_vd = nexo > 1 && !o.nodecomposition;
     let steps = o.conditional_variance_decomposition.clone();
+    // compute_moments_varendo.m: `if Steps` sits outside `if ~NoDecomposition`
+    let do_cvd = nexo > 1 && !steps.is_empty();
     struct One {
         g: moments::TheoreticalMoments,
         vd: Option<Mat>,
         cvd: Option<Vec<Mat>>,
+        /// diag(M_.H) at the draw (set_measurement_errors).
+        h: Vec<f64>,
+        /// Conditional variances of the requested variables (nvar x nexo per step).
+        cv: Option<Vec<Mat>>,
     }
     let per: Vec<One> = draws
         .par_iter()
@@ -192,12 +212,13 @@ pub fn posterior_moments_varendo(
             } else {
                 None
             };
-            let cvd = if do_vd && !steps.is_empty() {
+            let cvd = if do_cvd {
                 Some(vardec::conditional_variance_decomposition(&r.dr, &r.q, &steps, ivar)?)
             } else {
                 None
             };
-            Ok(One { g, vd, cvd })
+            let cv = if do_cvd { Some(vardec::conditional_variances(&r.dr, &r.q, &steps, ivar)?) } else { None };
+            Ok(One { g, vd, cvd, h: r.h.diagonal().iter().copied().collect(), cv })
         })
         .collect::<Result<_>>()?;
     let n = ivar.len();
@@ -229,7 +250,7 @@ pub fn posterior_moments_varendo(
             })
             .collect()
     });
-    let conditional = (do_vd && !steps.is_empty()).then(|| {
+    let conditional = do_cvd.then(|| {
         (0..steps.len())
             .map(|h| {
                 (0..n)
@@ -241,6 +262,53 @@ pub fn posterior_moments_varendo(
                     .collect()
             })
             .collect()
+    });
+    // ---- with measurement error: dsge_simulated_theoretical_(conditional_)variance_decomposition.m
+    // (M_.H of each draw; the observed requested variables, `intersect(ivar, varobs_id, 'stable')`)
+    let (me_vars, index_subset, index_obs) = match &me_ids {
+        Some(ids) if per.iter().any(|p| p.h.iter().any(|&x| x != 0.0)) => {
+            let me = super::MeasurementErrors { h: Mat::zeros(0, 0), varobs: vec![], varobs_id: ids.clone() };
+            me.requested(ivar)
+        }
+        _ => (vec![], vec![], vec![]),
+    };
+    let me_present = !me_vars.is_empty();
+    let variance_decomposition_me = (do_vd && me_present).then(|| MeDecomposition {
+        vars: me_vars.clone(),
+        stats: (0..me_vars.len())
+            .map(|a| {
+                let (k, ob) = (index_subset[a], index_obs[a]);
+                let draw_me = |p: &One, j: usize| -> f64 {
+                    let v = p.g.gamma0[(k, k)];
+                    let vdm = p.vd.as_ref().unwrap();
+                    let part = |s: usize| vdm[(k, s)] * (v / (v + p.h[ob]));
+                    if j < nexo { part(j) } else { 1.0 - (0..nexo).map(part).sum::<f64>() }
+                };
+                (0..=nexo).map(|j| moments_of(per.iter().map(|p| draw_me(p, j)).collect(), sig)).collect()
+            })
+            .collect(),
+    });
+    let conditional_me = (do_cvd && me_present).then(|| MeDecomposition {
+        vars: me_vars.clone(),
+        stats: (0..steps.len())
+            .map(|h| {
+                (0..me_vars.len())
+                    .map(|a| {
+                        let (k, ob) = (index_subset[a], index_obs[a]);
+                        let draw_me = |p: &One, j: usize| -> f64 {
+                            let c = &p.cv.as_ref().unwrap()[h];
+                            let tot: f64 = (0..nexo).map(|i| c[(k, i)]).sum::<f64>() + p.h[ob];
+                            if j < nexo {
+                                c[(k, j)] / tot
+                            } else {
+                                1.0 - (0..nexo).map(|i| c[(k, i)] / tot).sum::<f64>()
+                            }
+                        };
+                        (0..=nexo).map(|j| moments_of(per.iter().map(|p| draw_me(p, j)).collect(), sig)).collect()
+                    })
+                    .collect()
+            })
+            .collect(),
     });
     // ---- estimation completion: contemporaneous_correlation, kernel densities ----
     let corr_of = |p: &One, i: usize, j: usize| {
@@ -299,13 +367,13 @@ pub fn posterior_moments_varendo(
                     densities.push(("variance_decomposition", i, s, 0, posterior_density(&v)));
                 }
             }
-            if !steps.is_empty() {
-                for (h, &st) in steps.iter().enumerate() {
-                    for i in 0..n {
-                        for s in 0..nexo {
-                            let v: Vec<f64> = per.iter().map(|p| p.cvd.as_ref().unwrap()[h][(i, s)]).collect();
-                            densities.push(("conditional_variance_decomposition", i, s, st, posterior_density(&v)));
-                        }
+        }
+        if do_cvd {
+            for (h, &st) in steps.iter().enumerate() {
+                for i in 0..n {
+                    for s in 0..nexo {
+                        let v: Vec<f64> = per.iter().map(|p| p.cvd.as_ref().unwrap()[h][(i, s)]).collect();
+                        densities.push(("conditional_variance_decomposition", i, s, st, posterior_density(&v)));
                     }
                 }
             }
@@ -317,6 +385,8 @@ pub fn posterior_moments_varendo(
         correlation,
         variance_decomposition,
         conditional,
+        variance_decomposition_me,
+        conditional_me,
         contemporaneous_correlation,
         densities,
     })
@@ -451,6 +521,26 @@ pub fn run(
                 println!("\n");
             }
         }
+        // ---- with measurement error (compute_moments_varendo.m)
+        let me_headers: Vec<String> = headers.iter().cloned().chain(std::iter::once("ME".to_string())).collect();
+        let me_names = |vars: &[usize]| vars.iter().map(|&v| model.endo_names[v].clone()).collect::<Vec<_>>();
+        if let (Some(me), true) = (&pm.variance_decomposition_me, pm.variance_decomposition.is_some()) {
+            let nm = me_names(&me.vars);
+            for (a, n) in nm.iter().enumerate() {
+                for (s, e) in model.exo_names.iter().map(String::as_str).chain(["ME"]).enumerate() {
+                    w += &format!("variance_decomposition_ME,{n},{e},0,{}\n", stat_row(&me.stats[a][s]));
+                }
+            }
+            if !o.noprint {
+                let m = Mat::from_fn(nm.len(), model.n_exo() + 1, |a, s| 100.0 * me.stats[a][s].mean);
+                let title = super::filter_subtitle(
+                    "Posterior mean variance decomposition (in percent) with measurement error",
+                    o,
+                );
+                print!("{}", dyntable(&title, &me_headers, &nm, &m, max_len(&names) + 2, 8, 2));
+                println!();
+            }
+        }
         if let Some(c) = &pm.conditional {
             let steps = &o.conditional_variance_decomposition;
             for (h, ch) in c.iter().enumerate() {
@@ -469,6 +559,33 @@ pub fn run(
                     let title =
                         format!("Posterior mean conditional variance decomposition (in percent) Period {}", steps[h]);
                     print!("{}", dyntable(&title, &headers, &names, &m, lh, 8, 2));
+                }
+            }
+            if !o.noprint {
+                println!();
+            }
+        }
+        if let Some(me) = &pm.conditional_me {
+            let steps = &o.conditional_variance_decomposition;
+            let nm = me_names(&me.vars);
+            for (h, ch) in me.stats.iter().enumerate() {
+                for (a, n) in nm.iter().enumerate() {
+                    for (s, e) in model.exo_names.iter().map(String::as_str).chain(["ME"]).enumerate() {
+                        w += &format!(
+                            "conditional_variance_decomposition_ME_{},{n},{e},{},{}\n",
+                            steps[h],
+                            steps[h],
+                            stat_row(&ch[a][s])
+                        );
+                    }
+                }
+                if !o.noprint {
+                    let m = Mat::from_fn(nm.len(), model.n_exo() + 1, |a, s| 100.0 * ch[a][s].mean);
+                    let title = format!(
+                        "Posterior mean conditional variance decomposition (in percent) with measurement error Period {}",
+                        steps[h]
+                    );
+                    print!("{}", dyntable(&title, &me_headers, &nm, &m, max_len(&names) + 2, 8, 2));
                 }
             }
             if !o.noprint {

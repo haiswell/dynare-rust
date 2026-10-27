@@ -40,6 +40,16 @@ pub struct FullSmooth {
     /// The constant `simult_` adds back (`dr.ys`, logged under `loglinear`): [`Self::constant`]
     /// without the prefilter mean.
     pub ys_constant: Vec<f64>,
+    /// Declaration indices of the observed variables (`options_.varobs_id`).
+    pub varobs: Vec<usize>,
+    /// `Pstar` the smoother started from (`P(:,:,1)`, DR order).
+    pub pstar_initial: Mat,
+    /// `trend_addition` of compute_trend_coefficients.m (`oo_.Smoother.Trend`), nvobs x nobs in
+    /// varobs order, demeaned under `prefilter`; None without `observation_trends`.
+    pub trend: Option<Mat>,
+    /// `trend_coeff` (`oo_.Smoother.TrendCoeffs` of the observables), varobs order; zeros
+    /// without `observation_trends`.
+    pub trend_coeff: Vec<f64>,
 }
 
 impl FullSmooth {
@@ -49,13 +59,42 @@ impl FullSmooth {
     pub fn ys(&self) -> &[f64] {
         &self.resolved.steady_state
     }
+    /// The observation trend of variable `v` (declaration order) in period `t`: 0 for the
+    /// variables that are not observed and without `observation_trends`.
+    pub fn trend_at(&self, v: usize, t: usize) -> f64 {
+        match (&self.trend, self.varobs.iter().position(|&o| o == v)) {
+            (Some(tr), Some(i)) => tr[(i, t)],
+            _ => 0.0,
+        }
+    }
+    /// The trend coefficient of variable `v` (declaration order; 0 if it is not observed).
+    pub fn trend_coeff_of(&self, v: usize) -> f64 {
+        self.varobs.iter().position(|&o| o == v).map_or(0.0, |i| self.trend_coeff[i])
+    }
     /// States (mm x nobs, DR order, deviations) -> levels, nobs x nvars, declaration order
-    /// restricted to `vars`: deviations + [`Self::constant`] (store_smoother_results.m; the
-    /// same constants as prior_posterior_statistics_core.m's smoothed, updated and filtered
-    /// variables, except that the latter also logs the steady state of exogenous aux variables).
+    /// restricted to `vars`: deviations + [`Self::constant`] + the observation trend of the
+    /// observed variables (store_smoother_results.m for the smoothed and updated variables,
+    /// where "no trend shift is required"; the same constants as
+    /// prior_posterior_statistics_core.m's smoothed and updated variables, except that the
+    /// latter also logs the steady state of exogenous aux variables).
     pub fn levels(&self, states: &Mat, vars: &[usize]) -> Mat {
         let dr = self.dr();
-        Mat::from_fn(states.ncols(), vars.len(), |t, j| states[(dr.inv_order_var[vars[j]], t)] + self.constant[vars[j]])
+        Mat::from_fn(states.ncols(), vars.len(), |t, j| {
+            states[(dr.inv_order_var[vars[j]], t)] + self.constant[vars[j]] + self.trend_at(vars[j], t)
+        })
+    }
+    /// One-step-ahead predictions in levels (`oo_.FilteredVariables`), nobs x nvars: as
+    /// [`Self::levels`], but row t predicts period t+1, so the observation trend is shifted by
+    /// one period (`Trend + trend_coeff`, store_smoother_results.m's `filter_ahead_1`).
+    pub fn filtered_levels(&self, vars: &[usize]) -> Mat {
+        let mut m = self.levels(&self.out.filtered, vars);
+        for (j, &v) in vars.iter().enumerate() {
+            let c = self.trend_coeff_of(v);
+            if self.trend.is_some() && c != 0.0 {
+                m.column_mut(j).add_scalar_mut(c);
+            }
+        }
+        m
     }
     /// Smoothed deviations from the steady state, n_endo x nobs, declaration order
     /// (`Smoothed_Variables_deviation_from_mean` of evaluate_smoother.m).
@@ -71,13 +110,36 @@ impl FullSmooth {
     }
 }
 
-/// Port of DsgeSmoother.m as the driver uses it (measurement errors `M_.H`, full state space,
-/// lik_init 1 or 3) at parameter vector `x`.
+/// `trend_coeff` of compute_trend_coefficients.m at the model parameters `params`, varobs
+/// order (`options_.trend_coeffs`, 0 for the observables without a trend).
+pub fn trend_coefficients(dsge: &DsgeModel, params: &[f64]) -> Vec<f64> {
+    let (y0, x0) = (vec![0.0; dsge.model.n_endo()], vec![0.0; dsge.model.n_exo()]);
+    dsge.trend_coeffs.iter().map(|e| e.as_ref().map_or(0.0, |e| e.eval(&y0, &x0, params))).collect()
+}
+
+/// Port of DsgeSmoother.m (full state space, measurement errors `M_.H`) at parameter vector
+/// `x`, the one implementation behind the estimation's smoother, the post-estimation commands
+/// and the decompositions: the data minus `trend = constant + trend_addition`
+/// (`observation_trends`), `Pstar` / `Pinf` of `lik_init` 1 (`lyapunov_solver` with the
+/// `lyapunov=` options), 2 / 5 (Harvey scale factor), 3 (`compute_Pinf_Pstar`) and 4 (Riccati
+/// steady state), `filter_initial_state`, the heteroskedastic and the pruned skewed filters.
 pub fn dsge_smoother(
     dsge: &DsgeModel,
     data: &LikelihoodData,
     x: &[f64],
     state_uncertainty: bool,
+) -> Result<FullSmooth> {
+    dsge_smoother_request(dsge, data, x, state_uncertainty, None)
+}
+
+/// [`dsge_smoother`] with the k-step-ahead objects of `req` (`filter_step_ahead`,
+/// `filter_covariance`, `filter_decomposition`), returned in `out.step_ahead`.
+pub fn dsge_smoother_request(
+    dsge: &DsgeModel,
+    data: &LikelihoodData,
+    x: &[f64],
+    state_uncertainty: bool,
+    req: Option<&crate::kalman::SmootherRequest>,
 ) -> Result<FullSmooth> {
     let resolved =
         dsge.resolve(x).map_err(|e| anyhow!("smoother: no solution at the requested point (info {})", e.info))?;
@@ -92,14 +154,47 @@ pub fn dsge_smoother(
             y[(i, j)] -= c;
         }
     }
+    // [stream X] observation_trends: data1 = Y - (constant + trend_addition)
+    let trend = dsge.trend_addition(&resolved.params, data.first_obs, y.ncols(), data.prefilter_mean.is_some());
+    if let Some(tr) = &trend {
+        y -= tr;
+    }
     let opts = &data.kalman;
-    let (pstar, pinf) = compute_pinf_pstar(&mf, &t, &r, &resolved.q, opts.qz_criterium, &[]);
+    let (mut pstar, pinf) = compute_pinf_pstar(&mf, &t, &r, &resolved.q, opts.qz_criterium, &[]);
+    if crate::kalman::lik_init::handles(opts.lik_init) {
+        // [stream X] lik_init 2/4/5
+        pstar = crate::kalman::lik_init::initial_pstar(
+            opts.lik_init,
+            &t,
+            &r,
+            &resolved.q,
+            Some(&resolved.h),
+            &mf,
+            opts.qz_criterium,
+            opts.lyapunov_complex_threshold,
+            true,
+        )?;
+    }
+    if opts.lik_init == 1 && opts.lyapunov.method != 0 {
+        pstar = crate::kalman::lyapunov::lyapunov_solver_opts(&t, &r, &resolved.q, opts)?; // lyapunov_solver
+    }
     let pinf = (opts.lik_init == 3).then_some(&pinf);
     let qvec = data.hetero.as_ref().map(|hs| hs.qvec(&resolved.q, y.ncols())); // heteroskedastic_filter
+    // filter_initial_state (set_Kalman_smoother_starting_values)
+    let req_init;
+    let req = if data.filter_initial_state.is_empty() {
+        req
+    } else {
+        let mut r0 = req.cloned().unwrap_or_default();
+        r0.a_initial = Some(crate::estimation::q3::kalman_a0(dsge, &resolved, &full, &data.filter_initial_state));
+        req_init = r0;
+        Some(&req_init)
+    };
+    let pstar_initial = pstar.clone();
     let out = match &data.skewed {
         // ---- estimation completion: kalman_algo = 5 (kalman_smoother_pruned_skewed.m) ----
         Some(spec) => crate::estimation::skewed::smoother(dsge, data, spec, x, &resolved, &y, &t, &r, &mf)?,
-        None => crate::kalman::smoother_heteroskedastic(
+        None => crate::kalman::smoother_request(
             &y,
             &data.missing,
             &mf,
@@ -112,6 +207,7 @@ pub fn dsge_smoother(
             opts,
             state_uncertainty,
             qvec.as_deref(),
+            req,
         )?, // M_.H (stream M)
     };
     let ys_constant = simult_constant(dsge, &resolved.steady_state);
@@ -121,7 +217,17 @@ pub fn dsge_smoother(
             constant[v] = m[i];
         }
     }
-    Ok(FullSmooth { resolved, out, constant, ys_constant })
+    let trend_coeff = trend_coefficients(dsge, &resolved.params);
+    Ok(FullSmooth {
+        resolved,
+        out,
+        constant,
+        ys_constant,
+        varobs: dsge.varobs.clone(),
+        pstar_initial,
+        trend,
+        trend_coeff,
+    })
 }
 
 /// The levels `simult_` adds to the deviations (declaration order): `dr.ys`, with
@@ -254,6 +360,7 @@ pub fn simulated_forecast(
     conf_sig: f64,
     replic: usize,
     draws: &mut dyn crate::nonlinear::rng::Draws,
+    me: Option<(&Mat, &[usize])>,
 ) -> Result<Forecast> {
     let nv = vars.len();
     let y = sim(&Mat::zeros(sim_periods, n_exo));
@@ -280,25 +387,55 @@ pub fn simulated_forecast(
         }
     }
     let (p1, p2) = ((1.0 - conf_sig) / 2.0, 1.0 - (1.0 - conf_sig) / 2.0);
-    let (mut lower, mut upper) = (Mat::zeros(horizon, nv), Mat::zeros(horizon, nv));
-    for h in 0..horizon {
-        for j in 0..nv {
-            let x = &mut sims[h * nv + j];
-            x.sort_by(|a, b| a.total_cmp(b));
-            lower[(h, j)] = matlab_quantile(x, p1);
-            upper[(h, j)] = matlab_quantile(x, p2);
+    let bands = |sims: &mut Vec<Vec<f64>>| {
+        let (mut lower, mut upper) = (Mat::zeros(horizon, nv), Mat::zeros(horizon, nv));
+        for h in 0..horizon {
+            for j in 0..nv {
+                let x = &mut sims[h * nv + j];
+                x.sort_by(|a, b| a.total_cmp(b));
+                lower[(h, j)] = matlab_quantile(x, p1);
+                upper[(h, j)] = matlab_quantile(x, p2);
+            }
+        }
+        (lower, upper)
+    };
+    let mut me_sims = me.map(|_| sims.clone());
+    let (lower, upper) = bands(&mut sims);
+    // stochastic_classical.m / simult_varexo_det.m with `nargout == 3` (M_.H not zero): simulated
+    // measurement errors `randn(n, horizon+1)'*chol(H)` on the observables of the var_list are
+    // added to every replication (after all the state simulations), `yf_CI_ME` the quantiles
+    let (mut lower_me, mut upper_me) = (None, None);
+    if let (Some((h, varobs)), Some(sims)) = (me, me_sims.as_mut()) {
+        let loc: Vec<(usize, usize)> =
+            varobs.iter().enumerate().filter_map(|(i, v)| vars.iter().position(|w| w == v).map(|j| (i, j))).collect();
+        if !loc.is_empty() {
+            let i_endo: Vec<usize> = (0..varobs.len()).filter(|&i| h[(i, i)] != 0.0).collect();
+            let n = i_endo.len();
+            let c = chol_upper(&Mat::from_fn(n, n, |a, b| h[(i_endo[a], i_endo[b])]))
+                .ok_or_else(|| anyhow!("forecast: M_.H is not positive definite"))?;
+            let mut z = vec![0.0; n * (horizon + 1)];
+            for r in 0..replic {
+                draws.randn(&mut z);
+                // period 0 (the initial condition) is drawn too but not reported
+                for t in 1..=horizon {
+                    for (a, &ia) in i_endo.iter().enumerate() {
+                        let e: f64 = (0..n).map(|b| z[t * n + b] * c[(b, a)]).sum();
+                        if let Some(&(_, j)) = loc.iter().find(|&&(i, _)| i == ia) {
+                            sims[(t - 1) * nv + j][r] += e;
+                        }
+                    }
+                }
+            }
+            let (lo, up) = bands(sims);
+            let (mut l, mut u) = (Mat::from_element(horizon, nv, f64::NAN), Mat::from_element(horizon, nv, f64::NAN));
+            for &(_, j) in &loc {
+                l.column_mut(j).copy_from(&lo.column(j));
+                u.column_mut(j).copy_from(&up.column(j));
+            }
+            (lower_me, upper_me) = (Some(l), Some(u));
         }
     }
-    Ok(Forecast {
-        vars: vars.to_vec(),
-        names: names.to_vec(),
-        mean,
-        lower,
-        upper,
-        conf_sig,
-        lower_me: None,
-        upper_me: None,
-    })
+    Ok(Forecast { vars: vars.to_vec(), names: names.to_vec(), mean, lower, upper, conf_sig, lower_me, upper_me })
 }
 
 /// `quantile` as Dynare 7.2 runs it (its own `missing/stats/quantile.m`, which shadows

@@ -302,8 +302,8 @@ impl<'a> Stacked<'a> {
 }
 
 /// `sim1.m` / `sim1_linear.m` with a `controlled_paths_by_period` (stacked Newton; one linear
-/// solve at the steady state when `linear`). Updates `endo` and the endogenized entries of
-/// `exo`; returns (success, maxerror, iterations).
+/// solve at the steady state when `linear`, whose residuals there are bounded by `solve_tolf`).
+/// Updates `endo` and the endogenized entries of `exo`; returns (success, maxerror, iterations).
 #[allow(clippy::too_many_arguments)]
 pub fn sim1(
     model: &Model,
@@ -316,15 +316,10 @@ pub fn sim1(
     ml: usize,
     cp: &[ControlledPeriod],
     linear: bool,
-) -> (bool, f64, usize) {
+    solve_tolf: f64,
+) -> Result<(bool, f64, usize)> {
     let n = model.n_endo();
     let periods = o.periods;
-    if o.endogenous_terminal_period {
-        println!(
-            "ERROR: The endogenous_terminal_period option not available with perfect_foresight_controlled_paths or shock_paths+exogenize"
-        );
-        return (false, f64::NAN, 0);
-    }
     for (p, c) in cp.iter().enumerate().take(periods) {
         for (q, &j) in c.exogenize.iter().enumerate() {
             endo[(j, p + ml)] = c.values[q];
@@ -345,9 +340,8 @@ pub fn sim1(
         }
         let mut d1 = vec![0.0; n];
         model.dynamic_residuals(&y3n, xs, params, &mut d1);
-        if !o.steadystate_nocheck && d1.iter().any(|v| v.abs() > f64::EPSILON.cbrt()) {
-            println!("ERROR: Jacobian is not evaluated at the steady state!");
-            return (false, f64::NAN, 1);
+        if !o.steadystate_nocheck && d1.iter().fold(0.0f64, |m, v| m.max(v.abs())) > solve_tolf {
+            bail!("Jacobian is not evaluated at the steady state!");
         }
         let mut vals = vec![0.0; model.dynamic_jacobian_pattern().len()];
         model.dynamic_jacobian_values_with(&y3n, xs, params, &mut model.workspace(), &mut vals);
@@ -408,7 +402,7 @@ pub fn sim1(
                                     "Singularity problem! The jacobian matrix of the stacked model cannot be inverted."
                                 );
                             }
-                            return (false, f64::NAN, 1);
+                            return Ok((false, f64::NAN, 1));
                         }
                         println!("Warning: Matrix is singular to working precision.");
                         vec![f64::NAN; res.len()]
@@ -474,7 +468,7 @@ pub fn sim1(
         if verbose {
             println!();
         }
-        return (ok, err, 1);
+        return Ok((ok, err, 1));
     }
     let success = converged && y.iter().all(|v| v.is_finite());
     if verbose {
@@ -487,5 +481,71 @@ pub fn sim1(
         }
         println!();
     }
-    (success, err, iter)
+    Ok((success, err, iter))
+}
+
+/// `solve_stacked_problem.m` with a `controlled_paths_by_period` (`stack_solve_algo = 7`):
+/// `dynare_solve` (`options_.solve_algo`) on `controlled_paths_wrapper`, whose unknowns are
+/// the endogenous paths with the endogenized exogenous values in place of the exogenized
+/// variables. Updates `endo` and `exo`; returns (success, maxerror, 0).
+#[allow(clippy::too_many_arguments)]
+pub fn solve_stacked_problem(
+    model: &Model,
+    o: &SimulOptions,
+    solve_algo: u8,
+    endo: &mut Mat,
+    exo: &mut Mat,
+    params: &[f64],
+    ml: usize,
+    cp: &[ControlledPeriod],
+) -> (bool, f64, usize) {
+    let n = model.n_endo();
+    let periods = o.periods;
+    let col = |e: &Mat, c: usize| -> Vec<f64> {
+        if c < e.ncols() { e.column(c).iter().copied().collect() } else { vec![f64::NAN; n] }
+    };
+    let y0 = if ml > 0 { col(endo, ml - 1) } else { vec![f64::NAN; n] };
+    let yt = col(endo, ml + periods);
+    let mut z: Vec<f64> = (0..periods).flat_map(|t| col(endo, ml + t)).collect();
+    for (p, c) in cp.iter().enumerate().take(periods) {
+        for (&j, &k) in c.exogenize.iter().zip(&c.endogenize) {
+            z[p * n + j] = exo[(p + ml, k)];
+        }
+    }
+    // controlled_paths_wrapper: the exogenized values in y, the unknowns in exogenousvariables
+    let substitute = |z: &[f64], x: &mut Mat| -> Vec<f64> {
+        let mut y = z.to_vec();
+        for (p, c) in cp.iter().enumerate().take(periods) {
+            for (q, (&j, &k)) in c.exogenize.iter().zip(&c.endogenize).enumerate() {
+                x[(p + ml, k)] = z[p * n + j];
+                y[p * n + j] = c.values[q];
+            }
+        }
+        y
+    };
+    let st = std::cell::RefCell::new(Stacked { model, n, periods, ml, cp, rows: vec![], cols: vec![], vals: vec![] });
+    let x0 = exo.clone();
+    let f = |z: &[f64]| {
+        let mut x = x0.clone();
+        let y = substitute(z, &mut x);
+        let mut res = vec![0.0; n * periods];
+        let mut st = st.borrow_mut();
+        st.eval(&y, &y0, &yt, &x, params, &mut res, true, None);
+        let mut a = Mat::zeros(n * periods, n * periods);
+        for ((&r, &c), &v) in st.rows.iter().zip(&st.cols).zip(&st.vals) {
+            a[(r as usize, c as usize)] += v;
+        }
+        (res, a)
+    };
+    let so =
+        crate::solver::SteadyOptions { solve_algo, maxit: o.maxit, tolf: o.tolf, tolx: o.tolx, ..Default::default() };
+    let out = crate::solver::dynare_solve(&f, &z, &so);
+    let res = f(&out.x).0;
+    let y = substitute(&out.x, exo);
+    for t in 0..periods {
+        for j in 0..n {
+            endo[(j, ml + t)] = y[t * n + j];
+        }
+    }
+    (!out.errorflag, inf_norm(&res), 0)
 }

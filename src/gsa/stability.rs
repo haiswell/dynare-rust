@@ -178,6 +178,7 @@ pub fn stability_mapping(
         bounds: &ctx.bounds,
         priors: &dsge.priors,
         neighborhood: (o.neighborhood_width > 0.0).then_some((o.neighborhood_width, ctx.xparam_calib.as_slice())),
+        posterior: ctx.posterior_mode.as_ref().map(|(x, hh)| (x.as_slice(), hh)),
     };
     let (lpmat0, lpmat) = draw_sample(&spec, rng)?;
     let keep_t = o.redform || o.identification;

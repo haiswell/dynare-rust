@@ -66,6 +66,8 @@ enum BOp {
     GreaterEqual,
     EqualEqual,
     Different,
+    /// `powerDeriv` (`getPowerDeriv(x, p, k)`), created by the derivatives of the Ramsey FOCs.
+    PowerDeriv(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -145,6 +147,8 @@ pub(crate) struct Transformed {
     pub shown: Vec<Option<(String, NodeId)>>,
     pub orig_max_lead: i32,
     pub orig_max_lag: i32,
+    /// `M_.orig_maximum_lag_with_diffs_expanded` (`DynamicModel::setLeadsLagsOrig`).
+    pub orig_max_lag_with_diffs: i32,
     /// Ramsey first-order conditions (before the aux substitution), as lhs expressions.
     pub ramsey_focs: Vec<NodeId>,
 }
@@ -253,6 +257,7 @@ fn eval_bop(op: BOp, a: f64, b: f64) -> Option<f64> {
         BOp::GreaterEqual => t(a >= b),
         BOp::EqualEqual => t(a == b),
         BOp::Different => t(a != b),
+        BOp::PowerDeriv(k) => crate::model::expr::get_power_deriv(a, b, k),
         BOp::Equal => return None,
     })
 }
@@ -272,6 +277,8 @@ enum Mx {
     EndoLag,
     ExoLag,
     Lead,
+    /// `maxLagWithDiffsExpanded()`: the maximum lag with each `diff` counting one more lag.
+    LagDiffs,
 }
 
 struct Tree {
@@ -751,13 +758,14 @@ impl Tree {
                 (SymType::Endo, Mx::EndoLead) | (SymType::Exo, Mx::ExoLead) => lag.max(0),
                 (SymType::Endo, Mx::EndoLag) | (SymType::Exo, Mx::ExoLag) => (-lag).max(0),
                 (SymType::Endo | SymType::Exo, Mx::Lead) => lag,
+                (SymType::Endo | SymType::Exo, Mx::LagDiffs) => -lag,
                 (SymType::Local, _) => {
                     let v = self.get_local(s, lag);
                     self.mx(k, v)
                 }
                 _ => 0,
             },
-            N::Un(_, a, _) => self.mx(k, a),
+            N::Un(op, a, _) => self.mx(k, a) + (k == Mx::LagDiffs && op == UOp::Diff) as i32,
             N::Bin(_, a, b) => {
                 let x = self.mx(k, a);
                 x.max(self.mx(k, b))
@@ -989,6 +997,7 @@ impl Tree {
                     BinaryOp::Ge => BOp::GreaterEqual,
                     BinaryOp::Eq => BOp::EqualEqual,
                     BinaryOp::Ne => BOp::Different,
+                    BinaryOp::PowerDeriv(_) => unreachable!("getPowerDeriv only arises in derivatives"),
                 };
                 self.build_bin(o, x, y)?
             }
@@ -1836,6 +1845,7 @@ impl Tree {
                     BOp::GreaterEqual => BinaryOp::Ge,
                     BOp::EqualEqual => BinaryOp::Eq,
                     BOp::Different => BinaryOp::Ne,
+                    BOp::PowerDeriv(k) => BinaryOp::PowerDeriv(k),
                     BOp::Equal => bail!("internal error: nested equation"),
                 };
                 dag.binary(o, a, b)
@@ -1991,6 +2001,11 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
             max_lag = max_lag.max(-l);
         }
     }
+    let mut max_lag_with_diffs = 0;
+    for k in 0..t.equations.len() {
+        let e = t.equations[k].eq;
+        max_lag_with_diffs = max_lag_with_diffs.max(t.mx(Mx::LagDiffs, e));
+    }
     t.substitute_diff()?;
     t.substitute_expectation()?;
     if json_on() {
@@ -2086,6 +2101,7 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
         shown,
         orig_max_lead: max_lead,
         orig_max_lag: max_lag,
+        orig_max_lag_with_diffs: max_lag_with_diffs,
         ramsey_focs,
     })
 }
@@ -2153,7 +2169,7 @@ impl Tree {
                 BOp::Plus | BOp::Minus => 3,
                 BOp::Times | BOp::Divide => 4,
                 BOp::Power => 5,
-                BOp::Max | BOp::Min => 100,
+                BOp::Max | BOp::Min | BOp::PowerDeriv(_) => 100,
             },
         }
     }
@@ -2174,6 +2190,7 @@ impl Tree {
             BOp::GreaterEqual => ">=",
             BOp::EqualEqual => "==",
             BOp::Different => "!=",
+            BOp::PowerDeriv(_) => "get_power_deriv",
         }
     }
 
@@ -2221,6 +2238,13 @@ impl Tree {
                 out.push(',');
                 self.json_write(b, out);
                 out.push(')');
+            }
+            N::Bin(BOp::PowerDeriv(k), a, b) => {
+                out.push_str("get_power_deriv(");
+                self.json_write(a, out);
+                out.push(',');
+                self.json_write(b, out);
+                out.push_str(&format!(",{k})"));
             }
             N::Bin(op, a, b) => {
                 let prec = self.json_prec(id);

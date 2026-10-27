@@ -198,9 +198,9 @@ fn macro_language_against_dynare_preprocessor() {
     // x_macro_macroexp.mod: `dynare-preprocessor x_macro.mod savemacro onlymacro` (Dynare 7.1)
     let want = common::read_ref(src().join("x_macro_macroexp.mod"));
     let ours = dynare::modfile::macro_proc::preprocess(&src().join("x_macro.mod"), &[]).unwrap();
+    // comments are kept in the savemacro output as in the preprocessor
     let ours: Vec<String> = ours.iter().map(|l| l.text.trim().to_string()).filter(|t| !t.is_empty()).collect();
-    let want: Vec<String> =
-        want.lines().map(|l| l.trim().to_string()).filter(|t| !t.is_empty() && !t.starts_with("//")).collect();
+    let want: Vec<String> = want.lines().map(|l| l.trim().to_string()).filter(|t| !t.is_empty()).collect();
     assert_eq!(ours, want);
     // and the parser accepts the expanded file
     let mf = parse_mod_file(&src().join("x_macro.mod"), &[]).unwrap();

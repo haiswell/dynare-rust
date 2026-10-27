@@ -48,6 +48,10 @@ pub struct KalmanOptions {
     pub lyapunov_complex_threshold: f64,
     /// `lyapunov = ...` and its tolerances (lik_init = 1).
     pub lyapunov: lyapunov::LyapunovOptions,
+    /// `options_.noconstant`: the constant of the measurement equation is zero (the data are
+    /// not demeaned by the steady state of the observables; dsge_likelihood.m:204,
+    /// DsgeSmoother.m:155).
+    pub noconstant: bool,
     // ---- estimation completion ----
     /// DsgeSmoother.m: the multivariate smoother's error 422 (singular F in a stationary
     /// period) is an error (`print_info`) unless `use_univariate_smoother_if_singularity_is_detected`
@@ -74,6 +78,7 @@ impl Default for KalmanOptions {
             rescale_prediction_error_covariance: false,
             lyapunov_complex_threshold: 1e-15,
             lyapunov: Default::default(),
+            noconstant: false,
             smoother_singularity_error: false, // ---- estimation completion ----
             obs_contributions: false,          // ---- estimation completion ----
         }

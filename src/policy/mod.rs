@@ -7,15 +7,21 @@
 //! [`crate::model::planner`]. This module holds the numerical side:
 //!
 //! * [`ramsey`]: the Ramsey steady state (`dyn_ramsey_static.m`, with or without
-//!   `steady_state_model`, `csolve.m`) and `ramsey_constraints`;
+//!   `steady_state_model`, `csolve.m`; `ramsey_constraints` are parsed and ignored, as in
+//!   Dynare 7.2);
 //! * [`discretion`]: `discretionary_policy_1.m` / `discretionary_policy_engine.m`;
 //! * [`osr`]: `+osr/run.m`, `+osr/objective.m` (orders 1 and 2, bounds);
 //! * [`welfare`]: `evaluate_planner_objective.m` (order 1, order 2, linear-quadratic) and the
 //!   theoretical variances it needs.
 //!
 //! [`Session`] runs the commands in file order (the driver hands it every
-//! [`Command::Policy`] and, for Ramsey models, `stoch_simul`), keeping `M_.params`, the
-//! `stoch_simul` options and the last decision rule between commands as Dynare's globals do.
+//! [`Command::Policy`] and, for Ramsey models, `stoch_simul`), keeping the policy parts of
+//! `options_` and `oo_` (last decision rule, `oo_.exo_simul(1,:)`, the persistent `Hold` of
+//! `discretionary_policy_1.m`) between commands as Dynare's globals do. `M_.params` and the
+//! `stoch_simul` options are the driver's: a command reads them from the `ModFile` and from
+//! [`Session::ss_opts`], and leaves the `M_.params` it returns (`osr`'s optimal parameters,
+//! parameters set by a steady-state model) in [`Session::params`] for the driver to take
+//! ([`Session::take_params`]).
 //! The `stoch_simul` part of the output goes through stream S's `analysis::stoch_simul` (order
 //! 1: model summary, decision rules, moments, decompositions, IRF files and figures) or stream
 //! K's `korder::stoch_simul::run_at` (order >= 2), when the driver gave an output context.
@@ -35,12 +41,12 @@ use crate::deterministic::SteadyStateModel;
 use crate::linalg::Mat;
 use crate::model::Model;
 use crate::model::higher::DynamicDerivatives;
-use crate::modfile::{Command, ModFile, OptValue, Options, opt};
+use crate::modfile::{Command, DetShockKind, ModFile, OptValue, Options, opt};
 use crate::solver::korder::KOrderDr;
 use crate::solver::{DecisionRule, FirstOrderSolver, SolveError, SolverOptions, SteadyOptions};
 pub use discretion::DiscretionOptions;
 pub use ramsey::RamseyConstraint;
-pub use welfare::PlannerObjectiveValue;
+pub use welfare::{InitialState, PlannerObjectiveValue};
 
 /// Steady state + decision rule at a parameter vector (`resol.m` for the policy problems).
 pub struct Resolver<'a> {
@@ -54,8 +60,8 @@ pub struct Resolver<'a> {
     pub discretion: Option<DiscretionOptions>,
     /// `steady_state_model` (`options_.steadystate_flag = 2`).
     pub ssm: Option<SteadyStateModel>,
-    /// `ramsey_constraints` (enforced in the Ramsey static problem, see [`ramsey`]).
-    pub constraints: Vec<RamseyConstraint>,
+    /// `oo_.exo_steady_state`.
+    pub exo_ss: Vec<f64>,
 }
 
 impl<'a> Resolver<'a> {
@@ -73,17 +79,20 @@ impl<'a> Resolver<'a> {
             qz_criterium: 1.0 + 1e-6,
             discretion: discretion.then(DiscretionOptions::default),
             ssm: SteadyStateModel::from_modfile(mf).ok().flatten(),
-            constraints: Vec::new(),
+            exo_ss: mf.exo_steady_state(),
         }
     }
 
-    /// [`Resolver::new`] plus the `ramsey_constraints` of the file (Ramsey models only).
-    pub fn with_constraints(mf: &'a ModFile) -> Result<Self> {
-        let mut r = Self::new(mf, false);
-        if mf.model.planner().is_some_and(|pl| pl.ramsey.is_some()) {
-            r.constraints = ramsey::parse_constraints(&mf.model, &mf.policy.ramsey_constraints)?;
+    /// The first-order solver and the Lyapunov `qz_criterium` of `options_` (`resol` and
+    /// `lyapunov_symm` read `qz_criterium`, `qz_zero_threshold` and `dr=` from `options_`).
+    pub fn with_options(mut self, o: &StochSimulOptions) -> Self {
+        let m = self.model;
+        self.solver = FirstOrderSolver::new(&m.lead_lag_incidence, m.n_exo(), o.solver_options());
+        self.qz_criterium = o.qz_criterium;
+        if let Some(d) = self.discretion.as_mut() {
+            d.qz_criterium = o.qz_criterium;
         }
-        Ok(r)
+        self
     }
 
     /// The steady state and the parameters (a steady-state model may change them) at
@@ -91,10 +100,10 @@ impl<'a> Resolver<'a> {
     pub fn steady_state_params(&self, p: &[f64]) -> Result<(Vec<f64>, Vec<f64>), SolveError> {
         let m = self.model;
         if m.planner().is_some_and(|pl| pl.ramsey.is_some()) {
-            let rs = ramsey::RamseyStatic { model: m, ssm: self.ssm.as_ref(), constraints: &self.constraints };
+            let rs = ramsey::RamseyStatic { model: m, ssm: self.ssm.as_ref(), exo_ss: &self.exo_ss };
             return rs.steady_state(p, &self.ys_guess, &self.steady_opts);
         }
-        let x = vec![0.0; m.n_exo()];
+        let x = self.exo_ss.clone();
         crate::deterministic::evaluate_steady_state(
             m,
             self.ssm.as_ref(),
@@ -119,13 +128,25 @@ impl<'a> Resolver<'a> {
     /// The first-order decision rule and the parameters it was computed with.
     pub fn resolve_params(&self, p: &[f64]) -> Result<(DecisionRule, Vec<f64>), SolveError> {
         if let Some(o) = &self.discretion {
-            return discretion::discretionary_policy_1(self.model, p, o, self.steady_opts.tolf)
-                .map(|dr| (dr, p.to_vec()))
+            let steady = self.discretion_steady_state();
+            return discretion::discretionary_policy_1(self.model, p, o, steady.as_ref(), self.steady_opts.tolf, None)
+                .map(|(dr, p, _)| (dr, p))
                 .map_err(|(info, info2)| SolveError::new(info, info2));
         }
         let (ys, p) = self.steady_state_params(p)?;
-        let g1 = self.model.dynamic_jacobian(&ys, &vec![0.0; self.model.n_exo()], &p);
+        let g1 = self.model.dynamic_jacobian(&ys, &self.exo_ss, &p);
         self.solver.solve(&g1, &ys).map(|dr| (dr, p))
+    }
+
+    /// The steady-state file `discretionary_policy_1.m` evaluates (`options_.steadystate_flag`).
+    fn discretion_steady_state(&self) -> Option<discretion::DiscretionSteadyState<'_>> {
+        let ssm = self.ssm.as_ref()?;
+        Some(discretion::DiscretionSteadyState {
+            ssm,
+            ys_init: &self.ys_guess,
+            opts: &self.steady_opts,
+            exo_ss: &self.exo_ss,
+        })
     }
 
     /// The decision rule at `order >= 2` (`deriv` = `Model::dynamic_derivatives(order)`).
@@ -137,7 +158,7 @@ impl<'a> Resolver<'a> {
         sigma_e: &Mat,
     ) -> Result<(KOrderDr, Vec<f64>), SolveError> {
         let (ys, p) = self.steady_state_params(p)?;
-        let x = vec![0.0; self.model.n_exo()];
+        let x = self.exo_ss.clone();
         let g1 = self.model.dynamic_jacobian(&ys, &x, &p);
         let dr1 = self.solver.solve(&g1, &ys)?;
         let vals = deriv.eval(&ys, &x, &p);
@@ -194,18 +215,52 @@ const POLICY_OPTIONS: &[&str] = &[
     "opt_algo",
     "discretionary_tol",
     "maxit",
+    "tolf",
     "optim",
 ];
 
-/// State carried between commands (Dynare's `M_.params`, `options_`, `oo_.dr`,
-/// `oo_.planner_objective_value`, `oo_.osr`).
+/// `options_.osr` and `options_.optim_opt` (persistent across `osr` commands).
+#[derive(Clone, Debug)]
+pub struct OsrOptions {
+    /// `options_.osr.opt_algo` (4).
+    pub opt_algo: i32,
+    /// `options_.osr.maxit`, `options_.osr.tolf` (deprecated; fields absent by default).
+    pub maxit: Option<f64>,
+    pub tolf: Option<f64>,
+    /// `options_.optim_opt` (`optim` option).
+    pub optim: Option<OptValue>,
+}
+
+impl Default for OsrOptions {
+    fn default() -> Self {
+        OsrOptions { opt_algo: 4, maxit: None, tolf: None, optim: None }
+    }
+}
+
+/// MATLAB `num2str` of a scalar: integers in full, other values with
+/// `max(floor(log10(|x|)) + 5, 5)` significant digits (at most 16).
+fn num2str(x: f64) -> f64 {
+    if x == x.trunc() || !x.is_finite() {
+        return x;
+    }
+    let dgt = (x.abs().log10().floor() as i64 + 5).clamp(5, 16) as usize;
+    format!("{:.*e}", dgt - 1, x).parse().unwrap_or(x)
+}
+
+/// State carried between commands (the policy parts of Dynare's `options_` and `oo_`:
+/// `oo_.dr`, `oo_.planner_objective_value`, `oo_.osr`, ...).
 #[derive(Default)]
 pub struct Session {
+    /// `M_.params` as the last command returned it (`stoch_simul` / `osr` /
+    /// `discretionary_policy` return `M_`), until the driver takes it into the `ModFile`
+    /// ([`Session::take_params`]); while it is there, the next command reads it instead of
+    /// `mf.model.params`.
     pub params: Option<Vec<f64>>,
     pub dr: Option<DecisionRule>,
     /// Second- or third-order decision rule of the last stoch_simul-like command.
     pub kdr: Option<KOrderDr>,
-    /// `options_.order` of the last stoch_simul-like command.
+    /// `options_.order` after the last stoch_simul-like command (`stoch_simul.m` restores the
+    /// order it lowers to 1 for `model(linear)` or a zero Hessian).
     pub order: usize,
     pub planner_objective_value: Option<PlannerObjectiveValue>,
     pub osr: Option<OsrResult>,
@@ -213,13 +268,22 @@ pub struct Session {
     pub var: Option<Mat>,
     pub var_list: Vec<usize>,
     pub quiet: bool,
-    /// `options_` of the stoch_simul part (persistent across commands, as in Dynare).
+    /// `options_` of the stoch_simul part: the driver's persistent options, which it copies
+    /// in before [`Session::run`] and back afterwards.
     pub ss_opts: StochSimulOptions,
+    /// `options_.osr`, `options_.optim_opt`.
+    pub osr_opts: OsrOptions,
+    /// `options_.dp.maxit`, `options_.discretionary_tol` (`qz_criterium` comes from `ss_opts`).
+    pub dp_opts: DiscretionOptions,
+    /// The persistent `Hold` of `discretionary_policy_1.m`: the last discretionary solution
+    /// `H`, where the next Dennis iteration starts.
+    pub hold: Option<Mat>,
     /// Where the stoch_simul output (files, figures) goes; `None`: no stoch_simul output.
     pub ctx: Option<OutputContext>,
     hessian_eq_zero: Option<bool>,
-    /// `oo_.exo_simul(1,:)` of the last order-1 stoch_simul simulation (`periods > 0`): the
-    /// initial shock `u` of `evaluate_planner_objective`'s conditional welfare.
+    /// `oo_.exo_simul(1,:)` after the last stoch_simul-like command (the first simulated shock
+    /// when `periods > 0`, else `oo_.exo_steady_state`): the initial shock `u` of
+    /// `evaluate_planner_objective`'s conditional welfare. `None`: `oo_.exo_simul` is empty.
     pub exo_simul_first: Option<Vec<f64>>,
     /// `options_.ramsey.periods` / `options_.ramsey.drop` (`evaluate_planner_objective(periods=,
     /// drop=)`; read by the order >= 3 simulated welfare). `None`: Dynare's defaults 10000/1000.
@@ -250,8 +314,23 @@ impl Session {
         self.ctx = Some(ctx);
     }
 
+    /// `M_.params`: the parameters the last command returned when the driver has not taken
+    /// them yet, else the driver's.
     fn params(&self, mf: &ModFile) -> Vec<f64> {
         self.params.clone().unwrap_or_else(|| mf.model.params.clone())
+    }
+
+    /// The `M_.params` the last command returned (`None` if the driver already took them, or
+    /// no command returned `M_`): the driver writes them into `mf.model.params`, so that the
+    /// later commands of every area see them and the next policy command sees the parameter
+    /// changes made in between.
+    pub fn take_params(&mut self) -> Option<Vec<f64>> {
+        self.params.take()
+    }
+
+    /// A resolver with the solver options of `options_`.
+    fn resolver<'a>(&self, mf: &'a ModFile, discretion: bool) -> Resolver<'a> {
+        Resolver::new(mf, discretion).with_options(&self.ss_opts)
     }
 
     /// `M_.hessian_eq_zero`.
@@ -262,13 +341,20 @@ impl Session {
     /// Runs one command; `out` = `(output dir, fname)` for the results files.
     pub fn run(&mut self, mf: &ModFile, c: &Command, out: Option<(&Path, &str)>) -> Result<()> {
         match c {
-            Command::StochSimul(o, vars) => self.ramsey_stoch_simul(mf, o, vars, out),
+            Command::StochSimul(o, vars) => {
+                // the preprocessor writes options_.order = 2 when the command has no `order`
+                // option (ramsey_policy and osr keep options_.order)
+                if !o.iter().any(|(k, _)| k == "order") {
+                    self.ss_opts.order = 2;
+                }
+                self.ramsey_stoch_simul(mf, o, vars, out)
+            }
             Command::Policy(name, o, vars) => match name.as_str() {
                 "ramsey_model" => self.apply_options(o, false),
                 "osr_params" => Ok(()),
                 "ramsey_policy" => {
                     self.ramsey_stoch_simul(mf, o, vars, out)?;
-                    self.evaluate_planner_objective(mf, out)
+                    self.evaluate_planner_objective(mf, out, self.ss_opts.order)
                 }
                 "evaluate_planner_objective" => {
                     if let Some(v) = num(o, "periods") {
@@ -277,7 +363,7 @@ impl Session {
                     if let Some(v) = num(o, "drop") {
                         self.ramsey_drop = Some(v as usize);
                     }
-                    self.evaluate_planner_objective(mf, out)
+                    self.evaluate_planner_objective(mf, out, self.ss_opts.order)
                 }
                 "discretionary_policy" => self.discretionary_policy(mf, o, vars, out),
                 "osr" => self.osr(mf, o, vars, out),
@@ -316,8 +402,8 @@ impl Session {
         Ok(out)
     }
 
-    /// The order `stoch_simul` uses (`stoch_simul.m`: `model(linear)` and a zero Hessian force
-    /// order 1).
+    /// The order `stoch_simul` solves at (`stoch_simul.m`: `model(linear)` and a zero Hessian
+    /// force order 1 locally; `options_.order` is restored at the end).
     fn effective_order(&mut self, m: &Model) -> usize {
         let mut order = self.ss_opts.order.max(1);
         if order > 1 && m.linear {
@@ -341,32 +427,28 @@ impl Session {
         out: Option<(&Path, &str)>,
     ) -> Result<()> {
         self.apply_options(o, true)?;
-        self.exo_simul_first = None; // set again by an order-1 simulation (report)
+        self.exo_simul_first = Some(exo_steady_state(mf)); // oo_.exo_simul = exo_steady_state
         let m = &mf.model;
         ramsey::check_instruments(m, !mf.steady_state_model.is_empty())?;
+        // ramsey_constraints: parsed (preprocessor errors), not used by dyn_ramsey_static.m
+        ramsey::parse_constraints(m, &mf.policy.ramsey_constraints)?;
         let order = self.effective_order(m);
-        self.order = order;
+        self.order = self.ss_opts.order;
         let p0 = self.params(mf);
-        let res = Resolver::with_constraints(mf)?;
-        if !res.constraints.is_empty() && !self.quiet {
-            println!(
-                "NOTE: ramsey_constraints are enforced in the Ramsey steady-state problem (bounded solve); Dynare 7.2 ignores them."
-            );
-        }
+        let res = self.resolver(mf, false);
         let (ys, p) = res.steady_state_params(&p0).map_err(|e| anyhow!("Ramsey policy: {e}"))?;
         let iv = Self::var_list(mf, vars)?;
         if order == 1 {
-            let x = vec![0.0; m.n_exo()];
-            let g1 = m.dynamic_jacobian(&ys, &x, &p);
+            let g1 = m.dynamic_jacobian(&ys, &res.exo_ss, &p);
             let dr = res.solver.solve(&g1, &ys).map_err(|e| anyhow!("Ramsey policy: {e}"))?;
             self.params = Some(p);
             self.report(mf, &dr, &iv, vars, &res, out, "ramsey")?;
             self.dr = Some(dr);
             self.kdr = None;
         } else {
-            let kdr = self.korder_stoch_simul(mf, order, vars, &ys, &p)?;
+            let (kdr, first) = self.korder_stoch_simul(mf, order, vars, &ys, &p)?;
             self.params = Some(p);
-            self.report_k(mf, &kdr, &iv, &res, out, "ramsey")?;
+            self.report_k(mf, &kdr, &iv, &res, out, "ramsey", first)?;
             self.dr = Some(kdr.first.clone());
             self.kdr = Some(kdr);
         }
@@ -374,7 +456,8 @@ impl Session {
     }
 
     /// The order >= 2 `stoch_simul` (stream K) at `(ys, p)`: prints and writes its files when
-    /// there is an output context, else only solves.
+    /// there is an output context, else only solves. Also returns `oo_.exo_simul(1,:)` of its
+    /// simulation (`periods > 0`).
     fn korder_stoch_simul(
         &self,
         mf: &ModFile,
@@ -382,10 +465,11 @@ impl Session {
         vars: &[String],
         ys: &[f64],
         p: &[f64],
-    ) -> Result<KOrderDr> {
-        let so = self.korder_options(order);
+    ) -> Result<(KOrderDr, Option<Vec<f64>>)> {
         match &self.ctx {
             Some(ctx) => {
+                let mut so = self.korder_options(mf, order);
+                so.tex_ctx = Some(ctx.clone());
                 let r = crate::solver::korder::stoch_simul::run_at(
                     mf,
                     &so,
@@ -395,40 +479,30 @@ impl Session {
                     ctx.seed,
                     Some((ys, p)),
                 )?;
-                Ok(r.dr)
+                let first = r.exo_simul.as_ref().filter(|e| e.nrows() > 0).map(|e| e.row(0).iter().copied().collect());
+                Ok((r.dr, first))
             }
-            None => crate::solver::korder::solve_model(
+            None => crate::solver::korder::solve_model_at(
                 &mf.model,
                 ys,
+                &mf.exo_steady_state(),
                 p,
                 &mf.sigma_e,
                 order,
-                SolverOptions { qz_criterium: self.ss_opts.qz_criterium, ..Default::default() },
-            ),
+                self.ss_opts.solver_options(),
+            )
+            .map(|k| (k, None)),
         }
     }
 
-    /// Stream K's options from the persistent `options_`.
-    fn korder_options(&self, order: usize) -> crate::solver::korder::stoch_simul::StochSimulOptions {
-        let s = &self.ss_opts;
-        let mut k = crate::solver::korder::stoch_simul::StochSimulOptions {
-            order,
-            irf: s.irf,
-            drop: s.drop,
-            periods: s.periods,
-            ar: s.ar,
-            nomoments: s.nomoments,
-            noprint: s.noprint || self.quiet,
-            nofunctions: s.nofunctions,
-            nograph: s.nograph,
-            graph_formats: s.graph_format.clone(),
-            qz_criterium: s.qz_criterium,
-            ..Default::default()
-        };
-        if let Some(sh) = &s.irf_shocks {
-            k.irf_shocks = sh.clone();
-        }
-        k
+    /// Stream K's options from the persistent `options_` (as the driver's `stoch_simul` at
+    /// order >= 2: pruning, replic, filters, ... and `M_.H`), at `order`.
+    pub fn korder_options(&self, mf: &ModFile, order: usize) -> crate::solver::korder::stoch_simul::StochSimulOptions {
+        let mut a = self.ss_opts.clone();
+        a.me = crate::analysis::MeasurementErrors::from_modfile(mf);
+        a.order = order;
+        a.noprint |= self.quiet;
+        crate::solver::korder::stoch_simul::StochSimulOptions::from_analysis(&a)
     }
 
     /// Order-1 output: stream S's `stoch_simul` printout/files when there is an output
@@ -446,6 +520,7 @@ impl Session {
     ) -> Result<()> {
         let rows: Vec<usize> = iv.iter().map(|&j| dr.inv_order_var[j]).collect();
         let var = welfare::variance(dr, &rows, &mf.sigma_e, res.qz_criterium);
+        let mut first = None;
         if let Some(ctx) = &self.ctx {
             let sol = LinearSolution { dr: dr.clone(), sigma_e: mf.sigma_e.clone(), params: self.params(mf) };
             let mut o = self.ss_opts.clone();
@@ -458,7 +533,7 @@ impl Session {
             };
             let r = crate::analysis::stoch_simul(&mf.model, &sol, &o, &names, ctx, None)?;
             if let Some(ex) = r.exo_simul.as_ref().filter(|e| e.nrows() > 0) {
-                self.exo_simul_first = Some(ex.row(0).iter().copied().collect());
+                first = Some(ex.row(0).iter().copied().collect());
             }
         } else if !self.quiet {
             let sol = LinearSolution { dr: dr.clone(), sigma_e: mf.sigma_e.clone(), params: self.params(mf) };
@@ -466,6 +541,7 @@ impl Session {
             print!("\n{}", crate::analysis::disp_dr(&mf.model, dr, iv, 1e-6));
             print_moments(&mf.model, dr, iv, &var);
         }
+        self.exo_simul_first = Some(first.unwrap_or_else(|| exo_steady_state(mf)));
         self.var = Some(var.clone());
         self.var_list = iv.to_vec();
         if let Some((dir, fname)) = out {
@@ -489,7 +565,9 @@ impl Session {
         Ok(())
     }
 
-    /// Order >= 2: the policy results JSON (the printout and IRFs come from stream K).
+    /// Order >= 2: the policy results JSON (the printout and IRFs come from stream K);
+    /// `first` is `oo_.exo_simul(1,:)` of stream K's simulation.
+    #[allow(clippy::too_many_arguments)]
     fn report_k(
         &mut self,
         mf: &ModFile,
@@ -498,10 +576,12 @@ impl Session {
         res: &Resolver,
         out: Option<(&Path, &str)>,
         what: &str,
+        first: Option<Vec<f64>>,
     ) -> Result<()> {
         let dr = &kdr.first;
         let rows: Vec<usize> = iv.iter().map(|&j| dr.inv_order_var[j]).collect();
         let var = welfare::variance(dr, &rows, &mf.sigma_e, res.qz_criterium);
+        self.exo_simul_first = Some(first.unwrap_or_else(|| exo_steady_state(mf)));
         self.var = Some(var.clone());
         self.var_list = iv.to_vec();
         if let Some((dir, fname)) = out {
@@ -529,14 +609,15 @@ impl Session {
         Ok(())
     }
 
-    /// Port of `evaluate_planner_objective.m` on the last decision rule.
-    fn evaluate_planner_objective(&mut self, mf: &ModFile, out: Option<(&Path, &str)>) -> Result<()> {
+    /// Port of `evaluate_planner_objective.m` on the last decision rule, at `options_.order =
+    /// order`.
+    fn evaluate_planner_objective(&mut self, mf: &ModFile, out: Option<(&Path, &str)>, order: usize) -> Result<()> {
         let m = &mf.model;
         let p = self.params(mf);
         let beta = m.planner_discount(&p).unwrap_or(1.0);
         let discretionary = m.planner().is_some_and(|pl| pl.discretionary);
         let qz = self.ss_opts.qz_criterium;
-        let v = self.welfare(mf, &p, discretionary, qz)?;
+        let v = self.welfare(mf, &p, discretionary, qz, order)?;
         if beta >= 1.0 {
             println!(
                 "evaluate_planner_objective: the planner discount factor is not strictly smaller than 1. Unconditional welfare will not be finite."
@@ -574,7 +655,7 @@ impl Session {
         }
         if let Some((dir, fname)) = out {
             let j = json!({
-                "order": self.order,
+                "order": order,
                 "unconditional": v.unconditional,
                 "conditional_zero_initial_multiplier": v.conditional_zero_initial_multiplier,
                 "conditional_steady_initial_multiplier": v.conditional_steady_initial_multiplier,
@@ -586,28 +667,39 @@ impl Session {
         Ok(())
     }
 
-    /// The branch of `evaluate_planner_objective.m` for the current order and model.
-    fn welfare(&mut self, mf: &ModFile, p: &[f64], discretionary: bool, qz: f64) -> Result<PlannerObjectiveValue> {
+    /// The branch of `evaluate_planner_objective.m` for `options_.order = order` and the model.
+    fn welfare(
+        &mut self,
+        mf: &ModFile,
+        p: &[f64],
+        discretionary: bool,
+        qz: f64,
+        order: usize,
+    ) -> Result<PlannerObjectiveValue> {
         let m = &mf.model;
-        let hz = self.order == 2 && self.hessian_eq_zero(m);
-        let dr = self.dr.as_ref().ok_or_else(|| {
-            anyhow!("evaluate_planner_objective requires decision rules to have previously been computed (e.g. by stoch_simul or discretionary_policy)")
-        })?;
-        let none = || anyhow!("evaluate_planner_objective: no planner_objective");
-        let u0 = self.exo_simul_first.as_deref().unwrap_or(&[]);
-        if discretionary || self.order <= 1 {
-            return welfare::evaluate_planner_objective_u(m, p, dr, &mf.sigma_e, discretionary, qz, u0)
-                .ok_or_else(none);
+        let hz = order == 2 && self.hessian_eq_zero(m);
+        if self.dr.is_none() {
+            bail!(
+                "evaluate_planner_objective requires decision rules to have previously been computed (e.g. by stoch_simul or discretionary_policy)"
+            );
         }
-        if self.order == 2 {
-            if hz {
-                return welfare::evaluate_planner_objective_u(m, p, dr, &mf.sigma_e, true, qz, u0).ok_or_else(none);
-            }
+        let init = self.initial_state(mf)?;
+        let dr = self.dr.as_ref().expect("checked above");
+        let none = || anyhow!("evaluate_planner_objective: no planner_objective");
+        if order == 1 && !discretionary {
+            return welfare::evaluate_planner_objective_from(m, p, dr, &mf.sigma_e, false, qz, &init).ok_or_else(none);
+        }
+        if order == 2 && !hz {
+            // full second order approximation
             let kdr = self
                 .kdr
                 .as_ref()
                 .ok_or_else(|| anyhow!("evaluate_planner_objective: no second-order decision rule"))?;
-            return welfare::evaluate_planner_objective_order2_u(m, p, kdr, &mf.sigma_e, qz, u0).ok_or_else(none);
+            return welfare::evaluate_planner_objective_order2_from(m, p, kdr, &mf.sigma_e, qz, &init).ok_or_else(none);
+        }
+        if hz || discretionary {
+            // linear quadratic problem
+            return welfare::evaluate_planner_objective_from(m, p, dr, &mf.sigma_e, true, qz, &init).ok_or_else(none);
         }
         // order > 2: k_order_welfare + simulated unconditional welfare
         let kdr = self.kdr.as_ref().ok_or_else(|| anyhow!("evaluate_planner_objective: no k-order decision rule"))?;
@@ -638,7 +730,58 @@ impl Session {
                 ex
             }
         };
-        welfare::evaluate_planner_objective_korder(m, p, kdr, &mf.sigma_e, &ex, drop, u0)
+        welfare::evaluate_planner_objective_korder(m, p, kdr, &mf.sigma_e, &ex, drop, &init)
+    }
+
+    /// `get_initial_state` of `evaluate_planner_objective.m`: `M_.endo_histval` and the initial
+    /// shock `u` (`oo_.exo_steady_state` with the period-1 values of `M_.det_shocks`, else
+    /// `oo_.exo_simul(1,:)`, else `oo_.exo_steady_state`).
+    fn initial_state(&self, mf: &ModFile) -> Result<InitialState> {
+        let endo_histval = crate::analysis::stochastic_histval_of(&mf.model, &mf.histval);
+        let u = if !mf.det_shocks.is_empty() {
+            if self.exo_simul_first.as_ref().is_some_and(|u| u.iter().any(|&v| v != 0.0)) {
+                println!(
+                    "\nevaluate_planner_objective: oo_.exo_simul contains simulated values for the initial period.\n\
+                     evaluate_planner_objective: Dynare will ignore them and use the provided initial condition."
+                );
+            }
+            let mut u = exo_steady_state(mf);
+            let periods: Vec<i64> = mf.det_shocks.iter().flat_map(|d| d.periods.iter().copied()).collect();
+            if periods.contains(&0) {
+                println!(
+                    "\nevaluate_planner_objective: M_.det_shocks contains values for the predetermined t=0 period.\n\
+                     evaluate_planner_objective: Dynare will ignore them. Use histval to set the value of lagged innovations."
+                );
+            }
+            if periods.iter().any(|&t| t > 1) {
+                println!(
+                    "\nevaluate_planner_objective: Shock values for periods not contained in the initial information set (t=1) have been provided.\n\
+                     evaluate_planner_objective: Note that they will be ignored."
+                );
+            }
+            // shock_indices = find(periods == 1), which index M_.det_shocks itself
+            let n = mf.det_shocks.len();
+            let shocks = (periods.iter().enumerate().filter(|(_, t)| **t == 1))
+                .map(|(k, _)| {
+                    mf.det_shocks.get(k).ok_or_else(|| {
+                        anyhow!(
+                            "evaluate_planner_objective: Index exceeds the number of array elements. Index must not exceed {n}."
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if shocks.iter().any(|d| d.kind != DetShockKind::Level) {
+                println!("\nevaluate_planner_objective: Shock values need to be specified in level.");
+            }
+            for d in shocks {
+                u[d.exo] = d.value;
+            }
+            u
+        } else {
+            // first value of the simulation (set by simult if periods > 0), else the steady state
+            self.exo_simul_first.clone().unwrap_or_else(|| exo_steady_state(mf))
+        };
+        Ok(InitialState { endo_histval, u })
     }
 
     /// Port of `discretionary_policy.m`.
@@ -650,6 +793,10 @@ impl Session {
         out: Option<(&Path, &str)>,
     ) -> Result<()> {
         self.apply_options(o, true)?;
+        // discretionary_policy_initialization.m
+        if self.ss_opts.loglinear {
+            bail!("discretionary_policy is not compatible with `loglinear` option set to 1");
+        }
         let m = &mf.model;
         let pl = m.planner().ok_or_else(|| anyhow!("discretionary_policy: no planner_objective"))?;
         let instr_nbr = m.n_endo() - m.n_equations();
@@ -663,19 +810,30 @@ impl Session {
         } else if pl.instruments.len() > instr_nbr {
             bail!("discretionary_policy:: There are more declared instruments than omitted equations.");
         }
+        // options_.discretionary_tol, options_.dp.maxit (persistent)
+        if let Some(v) = num(o, "discretionary_tol") {
+            self.dp_opts.tol = v;
+        }
+        if let Some(v) = num(o, "maxit") {
+            self.dp_opts.maxit = v as usize;
+        }
         let p = self.params(mf);
-        let mut res = Resolver::new(mf, true);
-        if let (Some(d), Some(v)) = (res.discretion.as_mut(), num(o, "discretionary_tol")) {
-            d.tol = v;
-        }
-        if let (Some(d), Some(v)) = (res.discretion.as_mut(), num(o, "maxit")) {
-            d.maxit = v as usize;
-        }
-        if let Some(d) = res.discretion.as_mut() {
-            d.qz_criterium = self.ss_opts.qz_criterium;
-        }
-        let dr = res.resolve(&p).map_err(|e| anyhow!("discretionary_policy: {e}"))?;
-        self.order = 1;
+        let res = self.resolver(mf, true);
+        let dopts = DiscretionOptions { qz_criterium: self.ss_opts.qz_criterium, ..self.dp_opts };
+        // stoch_simul at order 1: discretionary_policy_1, starting from the persistent Hold
+        self.exo_simul_first = Some(exo_steady_state(mf));
+        let steady = res.discretion_steady_state();
+        let (dr, p, h) = discretion::discretionary_policy_1(
+            m,
+            &p,
+            &dopts,
+            steady.as_ref(),
+            res.steady_opts.tolf,
+            self.hold.as_ref(),
+        )
+        .map_err(|(info, info2)| anyhow!("discretionary_policy: {}", SolveError::new(info, info2)))?;
+        self.hold = Some(h);
+        self.order = self.ss_opts.order; // options_.order = origorder
         self.params = Some(p);
         let iv = Self::var_list(mf, vars)?;
         self.report(mf, &dr, &iv, vars, &res, out, "discretionary_policy")?;
@@ -690,12 +848,26 @@ impl Session {
         }
         self.dr = Some(dr);
         self.kdr = None;
-        self.evaluate_planner_objective(mf, out)
+        self.evaluate_planner_objective(mf, out, 1)
     }
 
     /// Port of `+osr/run.m`.
     fn osr(&mut self, mf: &ModFile, o: &Options, vars: &[String], out: Option<(&Path, &str)>) -> Result<()> {
         self.apply_options(o, true)?;
+        // options_.osr.opt_algo / maxit / tolf and options_.optim_opt persist
+        if let Some(v) = num(o, "opt_algo") {
+            self.osr_opts.opt_algo = v as i32;
+        }
+        if let Some(v) = num(o, "maxit") {
+            self.osr_opts.maxit = Some(v);
+        }
+        if let Some(v) = num(o, "tolf") {
+            self.osr_opts.tolf = Some(v);
+        }
+        if let Some(v) = opt(o, "optim") {
+            self.osr_opts.optim = Some(v.clone());
+        }
+        let print = !self.quiet && !self.ss_opts.noprint;
         let m = &mf.model;
         let order = self.ss_opts.order.max(1);
         let pd = &mf.policy;
@@ -711,14 +883,38 @@ impl Session {
         if pd.osr_params.is_empty() {
             bail!("OSR: no osr_params declared");
         }
-        let p0 = self.params(mf);
-        if pd.osr_params.iter().any(|&i| p0[i].is_nan()) {
-            bail!("OSR: At least one of the initial parameter values for osr_params is NaN");
+        if print {
+            println!("\nOPTIMAL SIMPLE RULE");
         }
         if m.lead_lag_incidence.iter().all(|r| r[2] == 0) {
             bail!("OSR: Backward or static model: no point in using OSR");
         }
-        let res = Resolver::new(mf, false);
+        let p0 = self.params(mf);
+        if pd.osr_params.iter().any(|&i| p0[i].is_nan()) {
+            bail!("OSR: At least one of the initial parameter values for osr_params is NaN");
+        }
+        // restore backward compatibility with maxit and tolf (appended to options_.optim_opt)
+        if self.osr_opts.maxit.is_some() || self.osr_opts.tolf.is_some() {
+            println!("Warning: OSR: The use of maxit and tolf is now deprecated. Please use the optim-option instead.");
+            if self.osr_opts.opt_algo != 4 {
+                bail!(
+                    "OSR: The maxit and tolf options are not supported when not using the default opt_algo=4. Use the optim-option instead."
+                );
+            }
+            let mut items: Vec<OptValue> = match self.osr_opts.optim.take() {
+                Some(OptValue::List(l)) => l,
+                Some(v) => vec![v],
+                None => Vec::new(),
+            };
+            if let Some(v) = self.osr_opts.maxit {
+                items.extend([OptValue::Str("'MaxIter'".into()), OptValue::Num(num2str(v))]);
+            }
+            if let Some(v) = self.osr_opts.tolf {
+                items.extend([OptValue::Str("'TolFun'".into()), OptValue::Num(num2str(v))]);
+            }
+            self.osr_opts.optim = Some(OptValue::List(items));
+        }
+        let res = self.resolver(mf, false);
         let weights = if use_weights {
             // i_var = unique(i_var); positions in the decision rule
             let (iv, w) = osr::weight_block(m, &pd.optim_weights);
@@ -751,19 +947,19 @@ impl Session {
             welfare: welfare_kind,
         };
         let x0: Vec<f64> = pd.osr_params.iter().map(|&i| p0[i]).collect();
-        if !self.quiet {
-            println!("\nOPTIMAL SIMPLE RULE");
-        }
         let (l0, info0, _) = obj.loss(&x0);
         if info0 != 0 {
-            println!("OSR: the initial parameters give info {info0} ({})", crate::solver::describe(info0));
-        } else if !self.quiet {
+            // print_info: an error unless noprint
+            if !self.ss_opts.noprint {
+                bail!("OSR: {}", crate::solver::describe(info0));
+            }
+        } else if print {
             println!("\nOSR: Initial value of the objective function: {} \n", crate::analysis::table::fmt_g(l0, 0, 6));
         }
         if l0.is_infinite() {
             bail!("OSR: Initial likelihood is infinite");
         }
-        let opt_algo = num(o, "opt_algo").unwrap_or(4.0) as i32;
+        let opt_algo = self.osr_opts.opt_algo;
         let bounds: Vec<(f64, f64)> = pd
             .osr_params
             .iter()
@@ -783,7 +979,7 @@ impl Session {
             opt_algo,
             (!pd.osr_bounds.is_empty()).then_some(&bounds[..]),
             &names,
-            opt(o, "optim"),
+            self.osr_opts.optim.as_ref(),
             !self.quiet,
             self.ctx.as_ref().map_or(0, |c| c.seed), // --seed (stochastic optimizers 2, 9)
         )?;
@@ -793,7 +989,7 @@ impl Session {
         }
         let optim_params: Vec<(String, f64)> =
             pd.osr_params.iter().zip(&r.x).map(|(&i, &v)| (m.param_names[i].clone(), v)).collect();
-        if !self.quiet {
+        if print {
             println!("\nOPTIMAL VALUE OF THE PARAMETERS\n");
             for (n, v) in &optim_params {
                 println!("{n:<12} {v:>12.6}");
@@ -806,9 +1002,10 @@ impl Session {
             iterations: r.iterations,
             func_count: r.func_count,
         });
-        // stoch_simul at the optimum
+        // stoch_simul at the optimum (M_.params(i_params) = p)
+        self.exo_simul_first = Some(exo_steady_state(mf));
         let st_order = self.effective_order(m);
-        self.order = st_order;
+        self.order = self.ss_opts.order;
         let iv = Self::var_list(mf, vars)?;
         let (ys, p) =
             res.steady_state_params(&p).map_err(|e| anyhow!("osr: no solution at the optimal parameters: {e}"))?;
@@ -819,8 +1016,8 @@ impl Session {
             self.dr = Some(dr);
             self.kdr = None;
         } else {
-            let kdr = self.korder_stoch_simul(mf, st_order, vars, &ys, &p)?;
-            self.report_k(mf, &kdr, &iv, &res, out, "osr")?;
+            let (kdr, first) = self.korder_stoch_simul(mf, st_order, vars, &ys, &p)?;
+            self.report_k(mf, &kdr, &iv, &res, out, "osr", first)?;
             self.dr = Some(kdr.first.clone());
             self.kdr = Some(kdr);
         }
@@ -835,6 +1032,17 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// `oo_.exo_steady_state` (the exogenous values of the `initval` block, zero by default).
+fn exo_steady_state(mf: &ModFile) -> Vec<f64> {
+    let mut x = vec![0.0; mf.model.n_exo()];
+    for &(i, v) in &mf.initval_exo {
+        if let Some(e) = x.get_mut(i) {
+            *e = v;
+        }
+    }
+    x
 }
 
 fn mat_rows(m: &Mat) -> Vec<Vec<f64>> {

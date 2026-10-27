@@ -86,8 +86,8 @@ impl MomProblem {
             }
         }
         let colmap: Vec<usize> = cs.into_iter().chain(cc).chain(cm).collect();
-        let g1 = model.dynamic_jacobian(&dr.ys, &vec![0.0; model.n_exo()], &params);
-        let pd = self.pderivs.get_or_init(|| ModelParamDerivs::new(model));
+        let g1 = model.dynamic_jacobian(&dr.ys, &self.exo_ss, &params);
+        let pd = self.pderivs.get_or_init(|| ModelParamDerivs::new(model).at_exo_steady_state(&self.exo_ss));
         let md = pd.eval(model, &dr.ys, &params, self.qz_criterium).map_err(|_| NUM_FAIL)?;
         let d = perturbation_derivs(model, dr, &g1, &md, &sigma_e, &set).map_err(|_| NUM_FAIL)?;
         let nm_off = set.n_shock();

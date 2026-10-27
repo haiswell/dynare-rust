@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The OccBin smoother: ports of `+occbin/DSGE_smoother.m` and of the OccBin branches of
 //! `kalman/DsgeSmoother.m` / `kalman/missing_DiffuseKalmanSmootherH3_Z.m` (Dynare 7.2,
-//! `smoother_redux = false`, `lik_init` 1, no diffuse periods).
+//! `smoother_redux = false`, `lik_init` 1, 2, 4 or 5, no diffuse periods).
 //!
 //! 1. The realtime smoother: the univariate filter with OccBin updates
 //!    (`kalman_update_engine` -> `kalman_update_algo_3`, regimes found period by period), then the
@@ -17,12 +17,13 @@
 use anyhow::{Result, anyhow, bail};
 use nalgebra::DVector;
 
-use super::estimation::OccbinEstimation;
+use super::estimation::{OccbinEstimation, kalman_starting_values};
 use super::pkf::{self, PkfOptions, PointModel, Univariate, UpdateInput};
 use super::regimes::{self, Regimes};
 use super::solver::{SimulOptions, SolveOutput};
 use crate::dsge::{DsgeModel, LikelihoodData};
-use crate::kalman::lyapunov_solver;
+use crate::kalman::lik_init::{HARVEY_SCALE_FACTOR, initial_pstar};
+use crate::kalman::lyapunov::lyapunov_solver_opts;
 use crate::linalg::Mat;
 use crate::solver::{StateSpaceIndex, kalman_transition_matrix};
 
@@ -260,6 +261,9 @@ pub struct OccbinSmoothed {
     pub linear_etahat: Mat,
     /// Steady state (declaration order) and the DR ordering, for levels.
     pub steady_state: Vec<f64>,
+    /// observation_trends of the observables (`Trend`, varobs x nobs) and the trend one period
+    /// ahead (`Trend + trend_coeff`, for the filtered variables), as in `store_smoother_results.m`.
+    pub trend: Option<(Mat, Mat)>,
     pub order_var: Vec<usize>,
 }
 
@@ -289,8 +293,8 @@ pub fn occbin_smoother(
     x: &[f64],
 ) -> Result<OccbinSmoothed> {
     let opts = &data.kalman;
-    if opts.lik_init != 1 {
-        bail!("OccBin smoother: only lik_init = 1 is ported");
+    if opts.lik_init == 3 {
+        bail!("OccBin smoother: lik_init = 3 (diffuse_filter) is not ported");
     }
     // linear smoother (oo_.occbin.linear_smoother)
     let lin = crate::forecast::dsge_smoother(dsge, data, x, false)?;
@@ -300,19 +304,35 @@ pub fn occbin_smoother(
     let full = StateSpaceIndex::full(dr);
     let (t, r) = kalman_transition_matrix(dr, &full);
     let mf: Vec<usize> = dsge.varobs.iter().map(|&v| dr.inv_order_var[v]).collect();
+    // data1 = Y - trend (constant + observation_trends)
     let mut y = data.y.clone();
-    for (i, &v) in dsge.varobs.iter().enumerate() {
-        let c = res.steady_state[v];
-        for j in 0..y.ncols() {
-            y[(i, j)] -= c;
+    if !opts.noconstant {
+        // (DsgeSmoother.m:155: the constant is zero with `noconstant`)
+        for (i, &v) in dsge.varobs.iter().enumerate() {
+            let c = res.steady_state[v];
+            for j in 0..y.ncols() {
+                y[(i, j)] -= c;
+            }
         }
+    }
+    let trend = dsge.trend_addition(&res.params, data.first_obs, y.ncols(), false).map(|tr| {
+        let ahead = dsge.trend_addition(&res.params, data.first_obs + 1, y.ncols(), false).unwrap();
+        (tr, ahead)
+    });
+    if let Some((tr, _)) = &trend {
+        y -= tr;
     }
     let h = res.h.clone();
     if (0..h.nrows()).any(|i| (0..h.ncols()).any(|j| i != j && h[(i, j)].abs() >= 1e-14)) {
         bail!("OccBin smoother: correlated measurement errors are not supported");
     }
-    let pstar = lyapunov_solver(&t, &r, &res.q, opts.qz_criterium, opts.lyapunov_complex_threshold)
-        .map_err(|e| anyhow!("OccBin smoother: {e}"))?;
+    // DsgeSmoother.m: Pstar of the lik_init case (Pinf = [])
+    let pstar = match opts.lik_init {
+        1 => lyapunov_solver_opts(&t, &r, &res.q, opts),
+        2 => Ok(Mat::identity(n, n) * HARVEY_SCALE_FACTOR),
+        k => initial_pstar(k, &t, &r, &res.q, Some(&h), &mf, opts.qz_criterium, opts.lyapunov_complex_threshold, true),
+    }
+    .map_err(|e| anyhow!("OccBin smoother: {e}"))?;
     let order_var = dr.order_var.clone();
     let all: Vec<usize> = (0..n).collect();
     let pm = PointModel::new(
@@ -339,7 +359,9 @@ pub fn occbin_smoother(
         kalman_tol: opts.kalman_tol,
         pkf: smoother_pkf_options(occ),
     };
-    let zero_a = Vector::zeros(n);
+    // a_initial = set_Kalman_smoother_starting_values(...) (filter_initial_state), not
+    // predicted with the OccBin smoother
+    let a_initial = kalman_starting_values(&res, &full, &data.filter_initial_state);
     let decl = |alpha: &Vector| -> Vec<f64> {
         let mut e = vec![0.0; n];
         for k in 0..n {
@@ -357,7 +379,7 @@ pub fn occbin_smoother(
         s
     };
     // 1. realtime smoother
-    let realtime = h3z(&mut c, &zero_a, &pstar, &[], None);
+    let realtime = h3z(&mut c, &a_initial, &pstar, &[], None);
     let realtime_ok = realtime.is_ok();
     let filtered = realtime.as_ref().map_or_else(|_| lin.out.filtered.clone(), |p| p.filtered.clone());
     let (mut alphahat, mut etahat, mut ahat, mut alphahat0, mut regime_history) = match &realtime {
@@ -381,14 +403,20 @@ pub fn occbin_smoother(
     let mut error_flag = 0;
     let mut warning_flag = 0;
     let mut last_sim_ok = true;
-    let mut out = match c.pm.solve(&so) {
-        Ok(o) => o,
-        Err(_) => bail!(
-            "OccBin smoother: the simulation with the realtime smoothed shocks did not converge (Dynare stops here too)"
-        ),
+    // when the simulation fails, Dynare keeps the regimes of the last smoother run and the
+    // partial (NaN) matrices of the solver, which no later step uses: error_flag = 321 rules
+    // out the conditional smoother's convergence and the iterations below
+    let mut tv = match c.pm.solve(&so) {
+        Ok(out) => {
+            regime_history = out.regime_history.clone();
+            time_varying(&out, &order_var)
+        }
+        Err(_) => {
+            last_sim_ok = false;
+            error_flag = 321;
+            TimeVarying { tt: Vec::new(), rr: Vec::new(), cc: Vec::new() }
+        }
     };
-    regime_history = out.regime_history.clone();
-    let mut tv = time_varying(&out, &order_var);
     let mut is_changed = regime_history0[0] != regime_history;
     let mut iter = 1usize;
     let mut is_periodic = false;
@@ -401,10 +429,11 @@ pub fn occbin_smoother(
     let sto_realtime = realtime_ok.then(|| {
         (alphahat.clone(), etahat.clone(), ahat.clone(), alphahat0.clone(), regime_history.clone(), so.clone())
     });
-    // conditional smoother (initial state known: lik_init = 2, Harvey_scale_factor = 0)
-    if !realtime_converged {
+    // conditional smoother (initial state known: lik_init = 2, Harvey_scale_factor = 0); the
+    // initial state M_.endo_initial_state.values(dr.state_var) covers all nspred states
+    if !realtime_converged && !(opts.lik_init == 2 && HARVEY_SCALE_FACTOR == 0.0) {
         let mut a_init = Vector::zeros(n);
-        for k in dr.nstatic..dr.nstatic + dr.npred {
+        for k in dr.nstatic..dr.nstatic + dr.nspred {
             a_init[k] = (alphahat0[k] + res.steady_state[order_var[k]]) - res.steady_state[order_var[k]];
         }
         let pzero = Mat::zeros(n, n);
@@ -424,7 +453,7 @@ pub fn occbin_smoother(
                     }
                     Err(_) => {
                         error_flag = 321;
-                        ctv = time_varying(&out, &order_var);
+                        ctv = tv.clone();
                         sim_rh = rh.clone();
                     }
                 }
@@ -450,7 +479,7 @@ pub fn occbin_smoother(
             error_flag = 0;
         }
         iter += 1;
-        let pass = h3z(&mut c, &zero_a, &pstar, &[], Some(&tv))
+        let pass = h3z(&mut c, &a_initial, &pstar, &[], Some(&tv))
             .map_err(|e| anyhow!("OccBin smoother: time-varying smoother failed ({e})"))?;
         alphahat = pass.alphahat;
         etahat = pass.etahat;
@@ -460,14 +489,14 @@ pub fn occbin_smoother(
         sto_tv = tv.clone();
         so.shocks = shocks_of(&etahat);
         so.endo_init = decl(&alphahat0);
-        match c.pm.solve(&so) {
-            Ok(o) => out = o,
+        let out = match c.pm.solve(&so) {
+            Ok(o) => o,
             Err(_) => {
                 error_flag = 321;
                 last_sim_ok = false;
                 break;
             }
-        }
+        };
         regime_history = out.regime_history.clone();
         tv = time_varying(&out, &order_var);
         let prev = &regime_history0[iter - 1];
@@ -548,6 +577,7 @@ pub fn occbin_smoother(
         linear_alphahat: lin.out.alphahat.clone(),
         linear_etahat: lin.out.etahat.clone(),
         steady_state: res.steady_state.clone(),
+        trend,
         order_var,
     })
 }

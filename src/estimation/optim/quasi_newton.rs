@@ -165,10 +165,13 @@ pub fn quasi_newton(
     let grad = |x: &[f64], fx: f64| -> Vec<f64> {
         if opts.analytic {
             // ---- estimation completion ---- analytic_gradient_wrapper.m
-            return obj
-                .eval_grad(x, crate::estimation::analytic::AnalyticHessian::None)
-                .map(|e| e.grad)
-                .unwrap_or_else(|| vec![f64::NAN; n]);
+            return crate::estimation::analytic::eval_with_gradient(
+                obj,
+                x,
+                crate::estimation::analytic::AnalyticHessian::None,
+            )
+            .map(|e| e.grad)
+            .unwrap_or_else(|| vec![f64::NAN; n]);
         }
         let coord = |i: usize| -> f64 {
             let h = step_rel * x[i].abs().max(1.0);

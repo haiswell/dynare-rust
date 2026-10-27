@@ -41,7 +41,11 @@ pub use steady::{SteadyStateModel, evaluate_steady_state};
 /// across commands, as in Dynare.
 #[derive(Clone, Debug)]
 pub struct SimulOptions {
-    /// `options_.periods`.
+    /// `options_.periods` (0: the horizon comes from `first_simulation_period` and
+    /// `last_simulation_period`).
+    pub periods_option: usize,
+    /// Number of simulation periods, `get_simulation_periods(options_)` (set by
+    /// [`DetState::simulation_periods`]).
     pub periods: usize,
     /// `options_.simul.maxit` (50).
     pub maxit: usize,
@@ -78,6 +82,7 @@ pub struct SimulOptions {
 impl Default for SimulOptions {
     fn default() -> Self {
         SimulOptions {
+            periods_option: 0,
             periods: 0,
             maxit: 50,
             tolf: 1e-5,
@@ -156,6 +161,12 @@ const PF_OPTIONS: &[&str] = &[
 ];
 
 impl SimulOptions {
+    /// `options_.periods = p` (the `periods` option, `initval_file`, the expectation-errors solver).
+    pub fn set_periods(&mut self, p: usize) {
+        self.periods_option = p;
+        self.periods = p;
+    }
+
     /// Applies the options of one command.
     pub fn update(&mut self, o: &Options) {
         for (k, _) in o {
@@ -166,7 +177,7 @@ impl SimulOptions {
             }
         }
         if let Some(v) = num(o, "periods") {
-            self.periods = v as usize;
+            self.set_periods(v as usize);
         }
         // ---- shocks/shock_paths: dates of the simulation (get_simulation_periods.m)
         for (k, slot) in [
@@ -189,12 +200,8 @@ impl SimulOptions {
             self.tolx = v;
         }
         if let Some(v) = num(o, "stack_solve_algo") {
-            self.stack_solve_algo = v as u8; // every value 0..=10 (pf_q1::core)
-            if v < 0.0 || v > 10.0 || matches!(self.stack_solve_algo, 4 | 5) {
-                println!(
-                    "ERROR: PERFECT_FORESIGHT_SOLVER: you must use stack_solve_algo={{0,1,2,3,6,7,8,9,10}} when not using block nor bytecode option"
-                );
-            }
+            // values outside 0..=10 are rejected by perfect_foresight_solver (check_input_arguments)
+            self.stack_solve_algo = if v < 0.0 { u8::MAX } else { v.min(255.0) as u8 };
         }
         self.q1.update(o);
         if let Some(b) = flag(o, "noprint") {
@@ -269,6 +276,22 @@ pub struct SimulationStatus {
     pub iterations: usize,
 }
 
+/// A raw simulation of a linearization fallback, `oo_.deterministic_simulation.sim1` (the
+/// partial simulation) or `.sim2` (the extra simulation of the marginal linearization).
+#[derive(Clone, Debug)]
+pub struct RawSim {
+    pub endo_simul: Mat,
+    pub exo_simul: Mat,
+    pub homotopy_completion_share: f64,
+}
+
+/// `marginal_linearization_previous_raw_sims` of `perfect_foresight_solver.m`.
+#[derive(Clone, Debug)]
+pub struct MarginalRawSims {
+    pub sim1: RawSim,
+    pub sim2: RawSim,
+}
+
 /// The parts of Dynare's `oo_` (and `M_.endo_histval`) that deterministic commands use.
 pub struct DetState {
     pub params: Vec<f64>,
@@ -291,6 +314,9 @@ pub struct DetState {
     pub simul: SimulOptions,
     pub ssm: Option<SteadyStateModel>,
     pub last: SimulationStatus,
+    /// `oo_.deterministic_simulation.sim1` / `.sim2` (linearization fallbacks).
+    pub sim1: Option<RawSim>,
+    pub sim2: Option<RawSim>,
     pub maximum_lag: usize,
     pub maximum_lead: usize,
     /// Stream EP: `oo_.deterministic_simulation.controlled_paths_by_period`
@@ -406,6 +432,8 @@ impl DetState {
             simul: SimulOptions::default(),
             ssm: SteadyStateModel::from_modfile(mf)?,
             last: SimulationStatus::default(),
+            sim1: None,
+            sim2: None,
             maximum_lag,
             maximum_lead,
             pfwee: None,
@@ -499,11 +527,14 @@ impl DetState {
         }
     }
 
-    /// The `endval` block at its position: `oo_.initial_steady_state` <- `oo_.steady_state`,
-    /// then the new values (expressions read the current values, as the generated driver).
+    /// The `endval` block at its position: `oo_.initial_steady_state` <- `oo_.steady_state` at
+    /// the first `endval` block only (`if isempty(oo_.initial_steady_state)` in the generated
+    /// driver), then the new values (expressions read the current values, as the generated driver).
     pub fn endval(&mut self, model: &Model, entries: &[(String, String)]) -> Result<()> {
-        self.initial_steady_state = Some(self.steady_state.clone());
-        self.initial_exo_steady_state = Some(self.exo_steady_state.clone());
+        if self.initial_steady_state.is_none() {
+            self.initial_steady_state = Some(self.steady_state.clone());
+            self.initial_exo_steady_state = Some(self.exo_steady_state.clone());
+        }
         for (name, src) in entries {
             let e = model.compile_expr(src).map_err(|e| anyhow!("endval: {name} = {src}: {e}"))?;
             let v = e.eval(&self.steady_state, &self.exo_steady_state, &self.params);
@@ -532,16 +563,16 @@ impl DetState {
         let model = &mf.model;
         match name {
             "perfect_foresight_setup" => {
-                self.simul.update(o);
+                self.update_options(o);
                 self.setup(mf)
             }
             "perfect_foresight_solver" => {
-                self.simul.update(o);
+                self.update_options(o);
                 self.solve(model)?;
                 self.write_results(model, dir, fname)
             }
             "simul" => {
-                self.simul.update(o);
+                self.update_options(o);
                 self.setup(mf)?;
                 self.solve(model)?;
                 self.write_results(model, dir, fname)
@@ -590,17 +621,29 @@ impl DetState {
         }
     }
 
+    /// Applies the options of a perfect-foresight command. `solve_algo` is the global
+    /// `options_.solve_algo` that `steady` also sets (the preprocessor writes
+    /// `options_.solve_algo = ...` for both commands).
+    pub fn update_options(&mut self, o: &Options) {
+        self.simul.update(o);
+        if let Some(v) = num(o, "solve_algo") {
+            self.steady_opts.solve_algo = v as u8;
+        }
+    }
+
     // ---- shocks/shock_paths ----
     /// `get_simulation_periods(options_)`: (periods, first_simulation_period,
-    /// last_simulation_period); `options_.periods` is set from the dates when it is 0.
+    /// last_simulation_period). The number of periods is kept in `simul.periods` for the
+    /// solvers; `options_.periods` itself is not changed (a later command with other dates
+    /// recomputes the horizon from them).
     pub fn simulation_periods(&mut self) -> Result<(usize, Option<crate::dates::Date>, Option<crate::dates::Date>)> {
         let s = &self.simul;
-        if s.periods == 0 && (s.first_simulation_period.is_none() || s.last_simulation_period.is_none()) {
+        if s.periods_option == 0 && (s.first_simulation_period.is_none() || s.last_simulation_period.is_none()) {
             bail!(
                 "perfect_foresight_setup: the `periods` option must be set (or both first_simulation_period and last_simulation_period)"
             );
         }
-        let r = periods::get_simulation_periods(s.periods, s.first_simulation_period, s.last_simulation_period)?;
+        let r = periods::get_simulation_periods(s.periods_option, s.first_simulation_period, s.last_simulation_period)?;
         self.simul.periods = r.0;
         Ok(r)
     }
@@ -787,26 +830,66 @@ impl DetState {
     }
 
     /// `M_.endo_histval` / `M_.exo_histval` as the generated histval code builds them: a
-    /// zero-initialized series over `orig_maximum_lag` periods, the histval entries, aux lag
-    /// variables from their definitions (`dynamic_set_auxiliary_series`), NaN -> 0, last
-    /// `maximum_lag` periods.
+    /// zero-initialized series over `orig_maximum_lag_with_diffs_expanded` periods (original
+    /// endogenous variables, Lagrange multipliers and exogenous variables), the histval
+    /// entries, the auxiliary variables from their definitions
+    /// (`<fname>.dynamic_set_auxiliary_series`, NaN where a lag or lead falls outside the
+    /// series), NaN -> 0 for the endogenous variables, last `maximum_lag` periods.
     pub fn histval(&self, mf: &ModFile) -> (Mat, Mat) {
         let m = &mf.model;
         let (n, nx) = (m.n_endo(), m.n_exo());
-        let ll = m.orig_maximum_lag.max(1) as i32;
-        // series index: d in -(ll-1)..=0 -> d + ll - 1
-        let mut endo = vec![vec![0.0; ll as usize]; m.orig_endo_nbr];
-        let mut exo = vec![vec![0.0; ll as usize]; nx];
+        let ll = m.orig_maximum_lag_with_diffs_expanded.max(1) as i32;
+        // series index: d in -(ll-1)..=0 -> d + ll - 1; one column per series date
+        let mut endo = Mat::zeros(n, ll as usize);
+        let mut exo = Mat::zeros(nx, ll as usize);
+        let computed: Vec<usize> = m.aux_vars.iter().filter(|a| a.ty != 6).map(|a| a.endo_index).collect();
+        for &j in &computed {
+            endo.row_mut(j).fill(f64::NAN);
+        }
         let mut direct = Vec::new(); // auxiliary rows set directly (smoother2histval)
         for &(is_endo, idx, lag, v) in &mf.histval {
             let d = lag + ll - 1;
-            if is_endo && idx >= m.orig_endo_nbr {
+            if is_endo && computed.contains(&idx) {
                 direct.push((idx, lag, v));
             } else if d >= 0 {
                 if is_endo {
-                    endo[idx][d as usize] = v;
+                    endo[(idx, d as usize)] = v;
                 } else {
-                    exo[idx][d as usize] = v;
+                    exo[(idx, d as usize)] = v;
+                }
+            }
+        }
+        // dynamic_set_auxiliary_series: each auxiliary equation `AUX = f(...)` evaluated date by
+        // date (repeated sweeps let an auxiliary variable use another one at the same date)
+        let params = m.params_with_steady_state(&self.params, &self.steady_state);
+        let mut y3 = vec![0.0; 3 * n];
+        let mut res = vec![0.0; m.n_equations()];
+        for s in 0..ll as usize {
+            let x: Vec<f64> = exo.column(s).iter().copied().collect();
+            for _ in 0..=computed.len() {
+                let mut changed = false;
+                // the equation of aux variable k follows the written equations, in order
+                for (k, a) in m.aux_vars.iter().enumerate().filter(|(_, a)| a.ty != 6) {
+                    let row = m.orig_eq_nbr + k;
+                    if row >= res.len() {
+                        continue;
+                    }
+                    for i in 0..n {
+                        y3[i] = if s > 0 { endo[(i, s - 1)] } else { f64::NAN };
+                        y3[n + i] = endo[(i, s)];
+                        y3[2 * n + i] = if s + 1 < ll as usize { endo[(i, s + 1)] } else { f64::NAN };
+                    }
+                    // `AUX - f(...)`: the residual at AUX = 0 is -f
+                    y3[n + a.endo_index] = 0.0;
+                    m.dynamic_residuals(&y3, &x, &params, &mut res);
+                    let v = -res[row];
+                    if v.to_bits() != endo[(a.endo_index, s)].to_bits() {
+                        endo[(a.endo_index, s)] = v;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
                 }
             }
         }
@@ -814,24 +897,16 @@ impl DetState {
         let mut eh = Mat::zeros(n, ml);
         let mut xh = Mat::zeros(nx, ml);
         for c in 0..ml {
-            let d = c as i32 - ml as i32 + 1; // date 1-ml .. 0
-            let at = |s: &Vec<f64>, d: i32| -> f64 {
-                let i = d + ll - 1;
-                if i >= 0 && i < ll { s[i as usize] } else { 0.0 }
-            };
-            for j in 0..m.orig_endo_nbr {
-                eh[(j, c)] = at(&endo[j], d);
+            let i = c as i32 - ml as i32 + ll; // date 1-ml .. 0
+            if i < 0 {
+                continue;
+            }
+            for j in 0..n {
+                let v = endo[(j, i as usize)];
+                eh[(j, c)] = if v.is_nan() { 0.0 } else { v };
             }
             for k in 0..nx {
-                xh[(k, c)] = at(&exo[k], d);
-            }
-            for a in &m.aux_vars {
-                let v = match (a.ty, a.orig_index, a.orig_lead_lag) {
-                    (1, Some(o), Some(l)) => at(&endo[o], d + l),
-                    (3, Some(o), Some(l)) => at(&exo[o], d + l),
-                    _ => 0.0,
-                };
-                eh[(a.endo_index, c)] = v;
+                xh[(k, c)] = exo[(k, i as usize)];
             }
         }
         for (idx, lag, v) in direct {
@@ -842,38 +917,19 @@ impl DetState {
         }
         (eh, xh)
     }
-
     /// Port of `perfect_foresight_solver.m` (homotopy loop, linearization fallback).
     pub fn solve(&mut self, model: &Model) -> Result<()> {
+        self.solve_with(model, None)
+    }
+
+    /// `perfect_foresight_solver(M_, options_, oo_, marginal_linearization_previous_raw_sims)`:
+    /// with `prev`, the homotopy starts from the raw simulations of the previous informational
+    /// period of `perfect_foresight_with_expectation_errors_solver` (`shareorig` < 1).
+    pub fn solve_with(&mut self, model: &Model, prev: Option<&MarginalRawSims>) -> Result<()> {
+        self.check_input_arguments(model)?;
         let o = self.simul.clone();
-        let (endo0, exo0) = match (&self.endo_simul, &self.exo_simul) {
-            (Some(e), Some(x)) if e.ncols() == self.ncols() => (e.clone(), x.clone()),
-            _ => bail!(
-                "PERFECT_FORESIGHT_SOLVER: 'oo_.endo_simul' has wrong size. Did you run 'perfect_foresight_setup' ?"
-            ),
-        };
-        if o.homotopy_initial_step_size > 1.0 || o.homotopy_initial_step_size < 0.0 {
-            bail!(
-                "perfect_foresight_solver: The value given to homotopy_initial_step_size option must be in the [0,1] interval"
-            );
-        }
-        if model.block_solve.as_ref().is_some_and(|b| b.dynamic.is_some()) {
-            // perfect_foresight_solver_core.m, options_.block
-            if o.linear_approximation {
-                bail!("perfect_foresight_solver: option linear_approximation is not available with the block option");
-            }
-            if o.endogenous_terminal_period {
-                bail!(
-                    "perfect_foresight_solver: option endogenous_terminal_period is not available with the block option"
-                );
-            }
-            if self.controlled.is_some() {
-                bail!(
-                    "perfect_foresight_solver: perfect_foresight_controlled_paths or shock_paths+exogenize is not available with the block option"
-                );
-            }
-        }
-        // ---- homotopy_marginal_linearization_fallback
+        let (endo0, exo0) = (self.endo_simul.clone().unwrap(), self.exo_simul.clone().unwrap());
+        // Various sanity checks
         let mlf = o.q1.homotopy_marginal_linearization_fallback;
         if o.no_homotopy
             && (o.homotopy_initial_step_size != 1.0
@@ -885,9 +941,29 @@ impl DetState {
                 "perfect_foresight_solver: the no_homotopy option is incompatible with homotopy_initial_step_size, homotopy_max_completion_share, homotopy_linearization_fallback and homotopy_marginal_linearization_fallback options"
             );
         }
+        if o.homotopy_initial_step_size > 1.0 || o.homotopy_initial_step_size < 0.0 {
+            bail!(
+                "perfect_foresight_solver: The value given to homotopy_initial_step_size option must be in the [0,1] interval"
+            );
+        }
+        if o.homotopy_min_step_size > 1.0 || o.homotopy_min_step_size < 0.0 {
+            bail!(
+                "perfect_foresight_solver: The value given to homotopy_min_step_size option must be in the [0,1] interval"
+            );
+        }
+        if o.homotopy_max_completion_share > 1.0 || o.homotopy_max_completion_share < 0.0 {
+            bail!(
+                "perfect_foresight_solver: The value given to homotopy_max_completion_share option must be in the [0,1] interval"
+            );
+        }
         if !(0.0..=1.0).contains(&mlf) {
             bail!(
                 "perfect_foresight_solver: The value given to homotopy_marginal_linearization_fallback option must be in the [0,1] interval"
+            );
+        }
+        if o.homotopy_initial_step_size < o.homotopy_min_step_size {
+            bail!(
+                "perfect_foresight_solver: The value given to homotopy_initial_step_size option must be greater or equal to that given to homotopy_min_step_size option"
             );
         }
         if o.homotopy_linearization_fallback && mlf > 0.0 {
@@ -899,6 +975,27 @@ impl DetState {
             bail!(
                 "perfect_foresight_solver: Option homotopy_max_completion_share has a value less than 1, so you must also specify either homotopy_linearization_fallback or homotopy_marginal_linearization_fallback"
             );
+        }
+        if let Some(cp) = &self.controlled
+            && !o.homotopy_exclude_varexo.is_empty()
+        {
+            for c in cp.iter().filter(|c| !c.exogenize.is_empty()) {
+                // [is_excluded, excluded_exo_ids] = ismember(homotopy_exclude_varexo, M_.exo_names(exo_ids))
+                let loc = |v: &String| c.endogenize.iter().position(|&k| &model.exo_names[k] == v);
+                if o.homotopy_exclude_varexo.iter().any(|v| loc(v).is_some()) {
+                    // M_.exo_names{excluded_exo_ids(1)}: the position in exo_ids of the first
+                    // excluded variable, used as an index into M_.exo_names
+                    let Some(q) = loc(&o.homotopy_exclude_varexo[0]) else {
+                        bail!(
+                            "Index in position 1 is invalid. Array indices must be positive integers or logical values."
+                        );
+                    };
+                    bail!(
+                        "Exogenous {} cannot be in the homotopy_exclude_varexo option and a perfect_foresight_controlled_paths or shock_paths+exogenize block at the same time",
+                        model.exo_names[q]
+                    );
+                }
+            }
         }
         let (ml, ncols) = (self.maximum_lag, self.ncols());
         let periods = o.periods;
@@ -919,7 +1016,20 @@ impl DetState {
         } else {
             false
         };
-        let h = self.homotopy_loop(model, &o, &endo0, &exo0, &endobase, &exobase, recompute)?;
+        // Perform the homotopy loop
+        let (shareorig, endoorig, exoorig) = self.orig_scenario(prev.map(|p| &p.sim1), &endo0, &exo0, &exobase);
+        let h = self.homotopy_loop(
+            model,
+            &o,
+            shareorig,
+            &endoorig,
+            &exoorig,
+            &endobase,
+            &exobase,
+            recompute,
+            &self.steady_state,
+            &self.exo_steady_state,
+        )?;
         self.last = SimulationStatus {
             status: false,
             error: h.maxerror,
@@ -940,6 +1050,11 @@ impl DetState {
             }
             self.last.status = true;
         } else if o.homotopy_linearization_fallback && h.completed_share > 0.0 {
+            self.sim1 = Some(RawSim {
+                endo_simul: h.endo.clone(),
+                exo_simul: h.exo.clone(),
+                homotopy_completion_share: h.completed_share,
+            });
             let s = h.completed_share;
             let e = Mat::from_fn(n, ncols, |j, c| endobase[(j, c)] + (h.endo[(j, c)] - endobase[(j, c)]) / s);
             if recompute {
@@ -968,6 +1083,13 @@ impl DetState {
         } else if mlf > 0.0 && h.completed_share > mlf {
             // ---- homotopy_marginal_linearization_fallback (perfect_foresight_solver.m)
             let completed = h.completed_share;
+            self.sim1 = Some(RawSim {
+                endo_simul: h.endo.clone(),
+                exo_simul: h.exo.clone(),
+                homotopy_completion_share: completed,
+            });
+            // Now compute extra simulation. First try using the first simulation as guess value.
+            let (shareorig, endoorig, exoorig) = self.orig_scenario(prev.map(|p| &p.sim2), &endo0, &exo0, &exobase);
             let extra_share = completed - mlf;
             if !o.noprint {
                 print!(
@@ -983,21 +1105,30 @@ impl DetState {
                 model,
                 &o,
                 extra_share,
-                &endo0,
-                &exo0,
+                shareorig,
+                &endoorig,
+                &exoorig,
                 &endobase,
                 &exobase,
                 recompute,
                 &h.endo,
                 &h.exo,
+                &h.steady_state,
+                &h.exo_steady_state,
                 &excluded,
             );
             let (mut ok, mut extra) = (false, None);
             if sc.steady_success {
-                let (ss, xs) =
-                    sc.steady.clone().unwrap_or_else(|| (h.steady_state.clone(), h.exo_steady_state.clone()));
                 let (mut e, mut x) = (sc.endo, sc.exo);
-                let r = self.core(model, &o, &mut e, &mut x, &ss, &xs, sc.cp_scaled.as_deref());
+                let r = self.core(
+                    model,
+                    &o,
+                    &mut e,
+                    &mut x,
+                    &sc.steady_state,
+                    &sc.exo_steady_state,
+                    sc.cp_scaled.as_deref(),
+                )?;
                 ok = r.0;
                 extra = Some((e, x));
             }
@@ -1011,13 +1142,29 @@ impl DetState {
                 }
                 let mut o2 = o.clone();
                 o2.homotopy_max_completion_share = extra_share;
-                let h2 = self.homotopy_loop(model, &o2, &endo0, &exo0, &endobase, &exobase, recompute)?;
+                let h2 = self.homotopy_loop(
+                    model,
+                    &o2,
+                    shareorig,
+                    &endoorig,
+                    &exoorig,
+                    &endobase,
+                    &exobase,
+                    recompute,
+                    &self.steady_state,
+                    &self.exo_steady_state,
+                )?;
                 ok = h2.completed_share == extra_share;
                 extra = Some((h2.endo, h2.exo));
             }
             let el = t0.elapsed().as_secs_f64();
             if ok {
                 let (ee, ex) = extra.unwrap();
+                self.sim2 = Some(RawSim {
+                    endo_simul: ee.clone(),
+                    exo_simul: ex.clone(),
+                    homotopy_completion_share: extra_share,
+                });
                 let f = (1.0 - completed) / mlf;
                 let e = Mat::from_fn(n, ncols, |j, c| h.endo[(j, c)] + (h.endo[(j, c)] - ee[(j, c)]) * f);
                 if recompute {
@@ -1064,15 +1211,83 @@ impl DetState {
         Ok(())
     }
 
-    /// `create_scenario` of `perfect_foresight_solver.m` (`shareorig = 1`): exogenous paths and
-    /// initial conditions at `share` of the shock, terminal steady state recomputed (or
-    /// interpolated), controlled paths scaled; `endo`/`exo` are the guesses.
+    /// `check_input_arguments` of `perfect_foresight_solver.m` (also sets `simul.periods` from
+    /// `get_simulation_periods`).
+    fn check_input_arguments(&mut self, model: &Model) -> Result<()> {
+        let (periods, _, _) = self.simulation_periods()?;
+        let ssa = self.simul.stack_solve_algo;
+        let block = model.block_solve.as_ref().is_some_and(|b| b.dynamic.is_some());
+        if ssa > 10 {
+            bail!("PERFECT_FORESIGHT_SOLVER: stack_solve_algo must be between 0 and 10");
+        }
+        if !block && matches!(ssa, 4 | 5) {
+            bail!(
+                "PERFECT_FORESIGHT_SOLVER: you must use stack_solve_algo={{0,1,2,3,6,7,8,9,10}} when not using block nor bytecode option"
+            );
+        }
+        if block && ssa == 5 {
+            bail!("PERFECT_FORESIGHT_SOLVER: you can't use stack_solve_algo = 5 without bytecode option");
+        }
+        let ncols = self.maximum_lag + periods + self.maximum_lead;
+        let initval_file = self.initval_series.is_some();
+        if !matches!(&self.endo_simul, Some(e) if e.nrows() == model.n_endo() && e.ncols() == ncols) {
+            if initval_file {
+                print!(
+                    "PERFECT_FORESIGHT_SOLVER: 'oo_.endo_simul' has wrong size. Check whether your initval-file provides {} periods.",
+                    ncols
+                );
+            }
+            bail!("PERFECT_FORESIGHT_SOLVER: 'oo_.endo_simul' has wrong size. Did you run 'perfect_foresight_setup' ?");
+        }
+        if model.n_exo() > 0 && !matches!(&self.exo_simul, Some(x) if x.nrows() == ncols && x.ncols() == model.n_exo())
+        {
+            if initval_file {
+                print!(
+                    "PERFECT_FORESIGHT_SOLVER: 'oo_.exo_simul' has wrong size. Check whether your initval-file provides {} periods.",
+                    ncols
+                );
+                bail!("PERFECT_FORESIGHT_SOLVER: 'oo_.exo_simul' has wrong size.");
+            }
+            bail!("PERFECT_FORESIGHT_SOLVER: 'oo_.exo_simul' has wrong size. Did you run 'perfect_foresight_setup' ?");
+        }
+        if self.exo_simul.is_none() {
+            self.exo_simul = Some(Mat::zeros(ncols, 0));
+        }
+        Ok(())
+    }
+
+    /// `shareorig`, `endoorig` and `exoorig` of `perfect_foresight_solver.m`: the full shock
+    /// (`oo_.endo_simul`, `oo_.exo_simul`) or, with a raw simulation of
+    /// `marginal_linearization_previous_raw_sims`, its completion share and paths (the
+    /// endogenized exogenous variables of controlled paths taken from the raw simulation).
+    fn orig_scenario(&self, raw: Option<&RawSim>, endo0: &Mat, exo0: &Mat, exobase: &Mat) -> (f64, Mat, Mat) {
+        let Some(raw) = raw else {
+            return (1.0, endo0.clone(), exo0.clone());
+        };
+        let s = raw.homotopy_completion_share;
+        let mut exoorig =
+            Mat::from_fn(exo0.nrows(), exo0.ncols(), |r, k| s * exo0[(r, k)] + (1.0 - s) * exobase[(r, k)]);
+        if let Some(cp) = &self.controlled {
+            for (p, c) in cp.iter().enumerate().filter(|(_, c)| !c.exogenize.is_empty()) {
+                for &k in &c.endogenize {
+                    exoorig[(self.maximum_lag + p, k)] = raw.exo_simul[(self.maximum_lag + p, k)];
+                }
+            }
+        }
+        (s, raw.endo_simul.clone(), exoorig)
+    }
+
+    /// `create_scenario` of `perfect_foresight_solver.m`: exogenous paths and initial
+    /// conditions at `share` of the shock (`endoorig`, `exoorig` being `shareorig` of it),
+    /// terminal steady state recomputed (or interpolated), controlled paths scaled;
+    /// `endo`/`exo` are the guesses, `ss`/`xs` the steady state kept without recomputation.
     #[allow(clippy::too_many_arguments)]
     fn create_scenario(
         &self,
         model: &Model,
         o: &SimulOptions,
         new_share: f64,
+        shareorig: f64,
         endoorig: &Mat,
         exoorig: &Mat,
         endobase: &Mat,
@@ -1080,27 +1295,30 @@ impl DetState {
         recompute: bool,
         endo: &Mat,
         exo: &Mat,
+        ss: &[f64],
+        xs: &[f64],
         excluded: &[usize],
     ) -> Scenario {
         let ml = self.maximum_lag;
         let periods = o.periods;
         let ncols = self.ncols();
+        let r = new_share / shareorig;
         let mut e2 = endo.clone();
-        let mut x2 = Mat::from_fn(ncols, model.n_exo(), |r, k| {
-            exoorig[(r, k)] * new_share + exobase[(r, k)] * (1.0 - new_share)
+        let mut x2 = Mat::from_fn(ncols, model.n_exo(), |t, k| {
+            exoorig[(t, k)] * new_share / shareorig + exobase[(t, k)] * (1.0 - r)
         });
         for &k in excluded {
-            for r in 0..ncols {
-                x2[(r, k)] = exoorig[(r, k)];
+            for t in 0..ncols {
+                x2[(t, k)] = exoorig[(t, k)];
             }
         }
         for c in 0..ml {
             for j in 0..model.n_endo() {
-                e2[(j, c)] = new_share * endoorig[(j, c)] + (1.0 - new_share) * endobase[(j, c)];
+                e2[(j, c)] = r * endoorig[(j, c)] + (1.0 - r) * endobase[(j, c)];
             }
         }
         let mut steady_success = true;
-        let mut steady = None;
+        let (mut steady_state, mut exo_steady_state) = (ss.to_vec(), xs.to_vec());
         if recompute {
             let mut so = o.steady;
             so.linear = model.linear;
@@ -1127,14 +1345,13 @@ impl DetState {
                     }
                 }
             }
-            if steady_success {
-                steady =
-                    Some((e2.column(ncols - 1).iter().copied().collect(), x2.row(ncols - 1).iter().copied().collect()));
-            }
+            // also when the recomputation failed (from the restored terminal condition)
+            steady_state = e2.column(ncols - 1).iter().copied().collect();
+            exo_steady_state = x2.row(ncols - 1).iter().copied().collect();
         } else {
             for c in ml + periods..ncols {
                 for j in 0..model.n_endo() {
-                    e2[(j, c)] = new_share * endoorig[(j, c)] + (1.0 - new_share) * endobase[(j, c)];
+                    e2[(j, c)] = r * endoorig[(j, c)] + (1.0 - r) * endobase[(j, c)];
                 }
             }
         }
@@ -1142,19 +1359,24 @@ impl DetState {
         // endogenized exogenous guesses kept from the current iterate)
         let cp_scaled =
             self.controlled.as_ref().map(|cp| crate::ep::controlled::scale(cp, new_share, endobase, exo, &mut x2, ml));
-        Scenario { steady_success, endo: e2, exo: x2, steady, cp_scaled }
+        Scenario { steady_success, endo: e2, exo: x2, steady_state, exo_steady_state, cp_scaled }
     }
 
+    /// `homotopy_loop` of `perfect_foresight_solver.m` (target share
+    /// `o.homotopy_max_completion_share`, from `shareorig` of the shock in `endoorig`/`exoorig`).
     #[allow(clippy::too_many_arguments)]
     fn homotopy_loop(
         &self,
         model: &Model,
         o: &SimulOptions,
+        shareorig: f64,
         endoorig: &Mat,
         exoorig: &Mat,
         endobase: &Mat,
         exobase: &Mat,
         recompute: bool,
+        steady_state: &[f64],
+        exo_steady_state: &[f64],
     ) -> Result<Homotopy> {
         let ml = self.maximum_lag;
         let periods = o.periods;
@@ -1174,8 +1396,8 @@ impl DetState {
         let mut iteration = 0;
         let mut endo = endoorig.clone();
         let mut exo = exoorig.clone();
-        let mut ss = self.steady_state.clone();
-        let mut xs = self.exo_steady_state.clone();
+        let mut ss = steady_state.to_vec();
+        let mut xs = exo_steady_state.to_vec();
         let mut maxerror = f64::NAN;
         let mut solver_iter = 0;
         let mut table: Vec<String> = Vec::new();
@@ -1189,21 +1411,20 @@ impl DetState {
             }
             let t0 = Instant::now();
             let sc = self.create_scenario(
-                model, o, new_share, endoorig, exoorig, endobase, exobase, recompute, &endo, &exo, &excluded,
+                model, o, new_share, shareorig, endoorig, exoorig, endobase, exobase, recompute, &endo, &exo, &ss, &xs,
+                &excluded,
             );
             let steady_success = sc.steady_success;
-            if let Some((s2, x2s)) = sc.steady {
-                ss = s2;
-                xs = x2s;
-            }
+            ss = sc.steady_state;
+            xs = sc.exo_steady_state;
             let cp_scaled = sc.cp_scaled;
             endo = sc.endo;
             exo = sc.exo;
             let mut success = false;
             if steady_success {
                 if completed == 0.0 {
-                    if iteration == 1 && new_share == 1.0 {
-                        // initial guess from perfect_foresight_setup
+                    if iteration == 1 && new_share == shareorig {
+                        // initial guess from perfect_foresight_setup (or the raw simulation)
                     } else if self.maximum_lead > 0 {
                         let last = endo.column(ml + periods).clone_owned();
                         for c in ml..ml + periods {
@@ -1216,7 +1437,7 @@ impl DetState {
                     }
                     // ---- stream EP: with controlled paths, the exogenous guesses over the
                     // simulation periods restart from the base path (all of them, as Dynare)
-                    if self.controlled.is_some() && !(iteration == 1 && new_share == 1.0) {
+                    if self.controlled.is_some() && !(iteration == 1 && new_share == shareorig) {
                         for r in ml..ml + periods {
                             for k in 0..model.n_exo() {
                                 exo[(r, k)] = exobase[(r, k)];
@@ -1224,7 +1445,7 @@ impl DetState {
                         }
                     }
                 }
-                let r = self.core(model, o, &mut endo, &mut exo, &ss, &xs, cp_scaled.as_deref());
+                let r = self.core(model, o, &mut endo, &mut exo, &ss, &xs, cp_scaled.as_deref())?;
                 success = r.0;
                 maxerror = r.1;
                 solver_iter = r.2;
@@ -1303,8 +1524,11 @@ impl DetState {
         })
     }
 
-    /// `perfect_foresight_solver_core.m` (non-block, non-bytecode): `sim1_linear` for linear
-    /// models / `linear_approximation`, `sim1` otherwise. Returns (success, maxerror, iterations).
+    /// Port of `perfect_foresight_solver_core.m`: the option checks, then block-wise solving,
+    /// the purely backward/forward/static simulations, `sim1_linear` for linear models /
+    /// `linear_approximation`, `sim1` / `sim1_lbj` / `solve_stacked_problem` by
+    /// `stack_solve_algo`. Returns (success, maxerror, iterations); errors are Dynare's
+    /// `error()` calls, which end the command.
     #[allow(clippy::too_many_arguments)]
     fn core(
         &self,
@@ -1315,26 +1539,117 @@ impl DetState {
         ss: &[f64],
         xs: &[f64],
         cp: Option<&[crate::ep::controlled::ControlledPeriod]>,
-    ) -> (bool, f64, usize) {
-        let has_lead_lag = self.maximum_lag > 0 && self.maximum_lead > 0;
-        let linear = o.linear_approximation
-            || (model.linear && has_lead_lag && o.stack_solve_algo != 1 && o.stack_solve_algo != 6);
+    ) -> Result<(bool, f64, usize)> {
+        // options_.lmmcp.status sets stack_solve_algo = 7 and solve_algo = 10
+        let (stack, solve_algo) = if o.q1.lmmcp { (7, 10) } else { (o.stack_solve_algo, self.steady_opts.solve_algo) };
+        let block = model.block_solve.as_ref().and_then(|b| b.dynamic.as_ref());
+        let purely = self.maximum_lead == 0 || self.maximum_lag == 0;
+        if o.linear_approximation {
+            if !matches!(stack, 0 | 7) {
+                bail!(
+                    "perfect_foresight_solver: option linear_approximation is only available with stack_solve_algo option equal to 0 or 7"
+                );
+            }
+            if block.is_some() {
+                bail!("perfect_foresight_solver: option linear_approximation is not available with the block option");
+            }
+            if purely {
+                bail!(
+                    "perfect_foresight_solver: option linear_approximation is not available with purely backward, purely forward or static models"
+                );
+            }
+        }
+        if o.endogenous_terminal_period {
+            if stack != 0 {
+                bail!(
+                    "perfect_foresight_solver: option endogenous_terminal_period is only available with stack_solve_algo option equal to 0"
+                );
+            }
+            if block.is_some() {
+                bail!(
+                    "perfect_foresight_solver: option endogenous_terminal_period is not available with the block option"
+                );
+            }
+            if purely {
+                bail!(
+                    "perfect_foresight_solver: option endogenous_terminal_period is not available with purely backward, purely forward or static models"
+                );
+            }
+        }
+        if cp.is_some() {
+            if !matches!(stack, 0..=3 | 6..=10) {
+                bail!(
+                    "perfect_foresight_controlled_paths or shock_paths+exogenize is only available with stack_solve_algo option equal to 0, 1, 2, 3, 6, 7, 8, 9, 10"
+                );
+            }
+            if stack == 7 && matches!(solve_algo, 10 | 11) {
+                bail!(
+                    "perfect_foresight_controlled_paths or shock_paths+exogenize is not available for mixed-complementarity problems (LMMCP or PATH solvers)"
+                );
+            }
+            if block.is_some() {
+                bail!(
+                    "perfect_foresight_controlled_paths or shock_paths+exogenize is not available with the block option"
+                );
+            }
+            if purely {
+                bail!(
+                    "perfect_foresight_controlled_paths or shock_paths+exogenize is not available with purely backward, purely forward or static models"
+                );
+            }
+        }
+        let linear = o.linear_approximation || (model.linear && !purely && matches!(stack, 0 | 2 | 3 | 7..=10));
         // stream PP: STEADY_STATE() in the model reads oo_.steady_state (perfect_foresight_problem.m)
         let params = model.params_with_steady_state(&self.params, ss);
-        // ---- stream EP: perfect_foresight_controlled_paths (sim1 / sim1_linear with a controlled_paths_by_period)
-        if let Some(cp) = cp {
-            return crate::ep::controlled::sim1(model, o, endo, exo, ss, xs, &params, self.maximum_lag, cp, linear);
-        }
         // ---- model(block): block-wise solving (solve_block_decomposed_problem.m)
-        if let Some(bs) = model.block_solve.as_ref().and_then(|b| b.dynamic.as_ref()) {
-            return block_solve::solve_block_decomposed(model, bs, o, endo, exo, &params, self.maximum_lag);
+        if let Some(bs) = block {
+            return Ok(block_solve::solve_block_decomposed(model, bs, o, endo, exo, &params, self.maximum_lag));
+        }
+        // ---- stream EP: perfect_foresight_controlled_paths (sim1 / sim1_linear / sim1_lbj /
+        // solve_stacked_problem with a controlled_paths_by_period)
+        if let Some(cp) = cp {
+            let ml = self.maximum_lag;
+            if stack == 7 {
+                if linear {
+                    bail!(
+                        "The combination of the linear or linear_approximation option, stack_solve_algo=7 and perfect_foresight_controlled_paths or shock_paths+exogenize is not supported"
+                    );
+                }
+                return Ok(crate::ep::controlled::solve_stacked_problem(
+                    model, o, solve_algo, endo, exo, &params, ml, cp,
+                ));
+            }
+            if matches!(stack, 1 | 6) && !linear {
+                // sim1_lbj.m with the controlled paths
+                return Ok(pf_q1::sim1_lbj_controlled(model, o, endo, exo, &params, ml, Some(cp)));
+            }
+            if o.endogenous_terminal_period && !linear {
+                bail!(
+                    "The endogenous_terminal_period option not available with perfect_foresight_controlled_paths or shock_paths+exogenize"
+                );
+            }
+            // the Newton iterations of sim1_lbj (stack_solve_algo 1/6) and of the iterative
+            // linear solvers are those of the direct solve, up to the linear solver's precision
+            return crate::ep::controlled::sim1(
+                model,
+                o,
+                endo,
+                exo,
+                ss,
+                xs,
+                &params,
+                ml,
+                cp,
+                linear,
+                self.steady_opts.tolf,
+            );
         }
         // ---- stack_solve_algo 1-3 and 6-10, lmmcp, robust_lin_solve, purely
         // backward/forward/static models
         if let Some(r) = pf_q1::core(
             model,
             o,
-            self.steady_opts.solve_algo,
+            solve_algo,
             endo,
             exo,
             &params,
@@ -1343,12 +1658,12 @@ impl DetState {
             self.maximum_lead,
             linear,
         ) {
-            return r;
+            return Ok(r);
         }
         if linear {
-            sim1_linear(model, o, endo, exo, ss, xs, &params, self.maximum_lag)
+            sim1_linear(model, o, endo, exo, ss, xs, &params, self.maximum_lag, self.steady_opts.tolf)
         } else {
-            sim1(model, o, endo, exo, &params, self.maximum_lag)
+            Ok(sim1(model, o, endo, exo, &params, self.maximum_lag))
         }
     }
 
@@ -1451,8 +1766,10 @@ struct Scenario {
     steady_success: bool,
     endo: Mat,
     exo: Mat,
-    /// Recomputed terminal steady state (endogenous, exogenous).
-    steady: Option<(Vec<f64>, Vec<f64>)>,
+    /// Terminal steady state (endogenous, exogenous): the last column / row when it is
+    /// recomputed, the input otherwise.
+    steady_state: Vec<f64>,
+    exo_steady_state: Vec<f64>,
     cp_scaled: Option<Vec<crate::ep::controlled::ControlledPeriod>>,
 }
 
@@ -1643,7 +1960,8 @@ fn lin_solve(a: &mut StackedJacobian, s: &stacked::StackedStructure, b: &[f64]) 
 }
 
 /// Port of `sim1_linear.m` (no controlled paths): one solve of the system linearized at the
-/// steady state `ss`, `xs`.
+/// steady state `ss`, `xs`; `solve_tolf` (`options_.solve_tolf`) bounds the residuals at the
+/// steady state.
 #[allow(clippy::too_many_arguments)]
 pub fn sim1_linear(
     model: &Model,
@@ -1654,7 +1972,8 @@ pub fn sim1_linear(
     xs: &[f64],
     params: &[f64],
     ml: usize,
-) -> (bool, f64, usize) {
+    solve_tolf: f64,
+) -> Result<(bool, f64, usize)> {
     let verbose = o.verbosity > 0;
     let n = model.n_endo();
     let periods = o.periods;
@@ -1675,9 +1994,8 @@ pub fn sim1_linear(
     let mut vals = vec![0.0; pattern.len()];
     let mut ws = model.workspace();
     model.dynamic_jacobian_values_with(&y3n, xs, params, &mut ws, &mut vals);
-    if !o.steadystate_nocheck && d1.iter().any(|v| v.abs() > f64::EPSILON.cbrt()) {
-        println!("ERROR: Jacobian is not evaluated at the steady state!");
-        return (false, f64::NAN, 1);
+    if !o.steadystate_nocheck && d1.iter().fold(0.0f64, |m, v| m.max(v.abs())) > solve_tolf {
+        bail!("Jacobian is not evaluated at the steady state!");
     }
     // deviations from the steady state
     let mut dev = endo.clone();
@@ -1732,7 +2050,7 @@ pub fn sim1_linear(
             println!();
             println!("Singularity problem! The jacobian matrix of the stacked model cannot be inverted.");
         }
-        return (false, f64::NAN, 1);
+        return Ok((false, f64::NAN, 1));
     }
     for v in &mut bx {
         if !v.is_finite() {
@@ -1769,7 +2087,7 @@ pub fn sim1_linear(
     if verbose {
         println!();
     }
-    (success, err, 1)
+    Ok((success, err, 1))
 }
 
 /// A light `model_diagnostics.m`: static Jacobian rank and collinear equations at the

@@ -425,6 +425,11 @@ fn diag_mat(v: &[f64]) -> Mat {
     Mat::from_diagonal(&crate::linalg::Vector::from_vec(v.to_vec()))
 }
 
+/// MATLAB `sign` (`sign(0) = 0`; `f64::signum` gives 1 for 0.0).
+fn matlab_sign(x: f64) -> f64 {
+    if x == 0.0 || x.is_nan() { x } else { x.signum() }
+}
+
 fn linspace7(a: f64, b: f64) -> [f64; 7] {
     let mut out = [0.0; 7];
     for (k, o) in out.iter_mut().enumerate() {
@@ -476,7 +481,7 @@ fn mr_gstep(
             fcount += fc;
             if retcode != 0 && robust {
                 let xa = if x[i].abs() < 1e-6 {
-                    linspace7(x[i] / 2.0, x[i].signum() * 1e-6 * 3.0 / 2.0)
+                    linspace7(x[i] / 2.0, matlab_sign(x[i]) * 1e-6 * 3.0 / 2.0)
                 } else {
                     linspace7(x[i] / 2.0, x[i] * 3.0 / 2.0)
                 };
@@ -925,5 +930,19 @@ fn disp_eigenvalues_gradient(gg: &[f64], hh: Option<&Mat>) {
         let (w, _) = sym_eig(h);
         println!("Minimum Hessian eigenvalue {}", w.iter().cloned().fold(f64::INFINITY, f64::min));
         println!("Maximum Hessian eigenvalue {}", w.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matlab_sign;
+
+    /// mr_gstep.m:103 `sign(x(i))`: MATLAB's `sign(0)` is 0 (`f64::signum(0.0)` is 1).
+    #[test]
+    fn matlab_sign_of_zero_is_zero() {
+        assert_eq!(matlab_sign(0.0), 0.0);
+        assert_eq!(matlab_sign(-0.0), 0.0);
+        assert_eq!(matlab_sign(3e-7), 1.0);
+        assert_eq!(matlab_sign(-3e-7), -1.0);
     }
 }

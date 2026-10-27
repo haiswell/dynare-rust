@@ -149,8 +149,15 @@ fn order2_forecasts() {
             .unwrap();
         let periods = r["replay_periods"].as_u64().unwrap() as usize;
         let tmp = scratch(name);
-        let mut fo =
-            ForecastOrder { order, pruning, periods, replic: 50, seed: 0, replay: Some(vecf(&r["replay_normals"])) };
+        let mut fo = ForecastOrder {
+            order,
+            pruning,
+            periods,
+            replic: 50,
+            seed: 0,
+            replay: Some(vecf(&r["replay_normals"])),
+            ..ForecastOrder::first()
+        };
         let f = forecast_command(&mf, None, &forecast_opts(periods), &vars, &tmp, name, &tmp, &fo).unwrap();
         check_forecast(name, &f, &r["replay_forecast"], true, 1e-10);
         // the run's own forecast (1000 simulations): same mean

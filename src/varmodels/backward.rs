@@ -185,8 +185,126 @@ fn chol_upper(a: &Mat) -> Result<Mat> {
     Ok(c.l().transpose())
 }
 
-/// `simul_backward_model(initialconditions, samplesize[, innovations])`. `init` None: the
-/// initial conditions are zero (`M_.endo_histval` without `histval`), dated 1Y.
+/// The values of the innovations (third argument) for the `samplesize` simulated periods: the
+/// first `samplesize` observations, zero for the exogenous variables it lacks.
+fn innovations_matrix(model: &Model, s: &Series, samplesize: usize) -> Result<Mat> {
+    if s.data.nrows() < samplesize {
+        bail!(
+            "Time span in third argument is too short (should not be less than {samplesize}, the value of the second argument)"
+        );
+    }
+    let mut shocks = Mat::zeros(samplesize, model.n_exo());
+    for (k, e) in model.exo_names.iter().enumerate() {
+        match s.col(e) {
+            Some(j) => shocks.column_mut(k).copy_from(&s.data.view((0, j), (samplesize, 1))),
+            None => println!("Exogenous variable {e} is not available in third argument, default value is zero."),
+        }
+    }
+    Ok(shocks)
+}
+
+/// The initial conditions of an empty first argument (`+backward_model/initialize.m`, the
+/// `isempty(initialconditions)` branch): a dseries of `M_.orig_maximum_lag` periods from 1Y.
+///
+/// `M_.endo_histval` (zero without `histval`) goes into the first column of `yinitdata`, the
+/// `AUX_ENDO_LAG` rows of `M_.endo_histval` into the column of their lag, and the columns are
+/// flipped when `M_.orig_maximum_endo_lag > 1` (here: when the model has an `AUX_ENDO_LAG`
+/// variable). The exogenous variables are zero except the `AUX_EXO_LAG` entries, which Dynare
+/// reads at the linear index `M_.orig_endo_nbr+i` of `M_.exo_histval` (exo_nbr x
+/// `M_.maximum_lag`, i.e. one value per exogenous variable in a backward model), and fails
+/// when that index is out of bounds.
+fn histval_initial_conditions(model: &Model, origs: &[usize], histval: &[(bool, usize, i32, f64)]) -> Result<Series> {
+    let nx = model.n_exo();
+    let maxlag = model.orig_maximum_lag;
+    let endo_histval =
+        crate::analysis::stochastic_histval_of(model, histval).unwrap_or_else(|| vec![0.0; model.n_endo()]);
+    let exo_histval =
+        |k: usize| -> f64 { histval.iter().rev().find(|&&(e, j, l, _)| !e && j == k && l == 0).map_or(0.0, |h| h.3) };
+    let mut yinitdata = Mat::zeros(origs.len(), maxlag);
+    for (r, &i) in origs.iter().enumerate() {
+        yinitdata[(r, 0)] = endo_histval[i];
+    }
+    let mut xinitdata = Mat::zeros(nx, maxlag);
+    if model.aux_vars.iter().any(|a| a.ty == 1) {
+        for a in model.aux_vars.iter().filter(|a| a.ty == 1) {
+            if let (Some(o), Some(l)) = (a.orig_index, a.orig_lead_lag)
+                && let Some(r) = origs.iter().position(|&i| i == o)
+            {
+                yinitdata[(r, l.unsigned_abs() as usize)] = endo_histval[a.endo_index];
+            }
+        }
+        yinitdata = Mat::from_fn(yinitdata.nrows(), maxlag, |r, c| yinitdata[(r, maxlag - 1 - c)]);
+    }
+    if model.aux_vars.iter().any(|a| a.ty == 3) {
+        for (i, a) in model.aux_vars.iter().enumerate().filter(|(_, a)| a.ty == 3) {
+            // M_.exo_histval(M_.orig_endo_nbr+i), 1-based linear index
+            let idx = origs.len() + i + 1;
+            if idx > nx {
+                bail!("Index exceeds the number of array elements. Index must not exceed {nx}.");
+            }
+            if let (Some(o), Some(l)) = (a.orig_index, a.orig_lead_lag) {
+                xinitdata[(o, l.unsigned_abs() as usize)] = exo_histval(idx - 1);
+            }
+        }
+        xinitdata = Mat::from_fn(nx, maxlag, |r, c| xinitdata[(r, maxlag - 1 - c)]);
+    }
+    let mut names: Vec<String> = origs.iter().map(|&i| model.endo_names[i].clone()).collect();
+    names.extend(model.exo_names.iter().cloned());
+    let data = Mat::from_fn(maxlag, origs.len() + nx, |t, j| {
+        if j < origs.len() { yinitdata[(j, t)] } else { xinitdata[(j - origs.len(), t)] }
+    });
+    Ok(Series { init: Date::parse("1Y").unwrap(), names, data })
+}
+
+/// Port of `+backward_model/simul_static_model.m` with the innovations given (third argument):
+/// each period solves the static model from zero (`dynare_solve`, default `options_.solve_algo`,
+/// `options_.simul.maxit`, `options_.dynatol.{f,x}`); a period where the solver fails is NaN.
+/// The dseries starts at the first date of the innovations.
+fn simul_static_model(
+    model: &Model,
+    params: &[f64],
+    samplesize: usize,
+    innovations: &Series,
+    origs: &[usize],
+) -> Result<Series> {
+    let n = model.n_endo();
+    let nx = model.n_exo();
+    let shocks = innovations_matrix(model, innovations, samplesize)?;
+    let opts = crate::solver::SteadyOptions { maxit: 50, tolf: 1e-5, tolx: 1e-5, ..Default::default() };
+    let mut y = Mat::from_element(n, samplesize, f64::NAN);
+    for t in 0..samplesize {
+        let xt: Vec<f64> = shocks.row(t).iter().copied().collect();
+        let f = |z: &[f64]| -> (Vec<f64>, Mat) {
+            let mut res = vec![0.0; model.n_equations()];
+            model.static_residuals(z, &xt, params, &mut res);
+            (res, model.static_jacobian(z, &xt, params))
+        };
+        let out = crate::solver::dynare_solve(&f, &vec![0.0; n], &opts);
+        if out.errorflag {
+            println!(
+                "simul_static_mode: Nonlinear solver failed with errorcode={} in period {}.",
+                out.errorcode,
+                t + 1
+            );
+        } else {
+            for i in 0..n {
+                y[(i, t)] = out.x[i];
+            }
+        }
+    }
+    let mut names: Vec<String> = origs.iter().map(|&i| model.endo_names[i].clone()).collect();
+    names.extend(model.exo_names.iter().cloned());
+    let orig = origs.len();
+    let data =
+        Mat::from_fn(samplesize, orig + nx, |t, j| if j < orig { y[(origs[j], t)] } else { shocks[(t, j - orig)] });
+    Ok(Series { init: innovations.init, names, data })
+}
+
+/// `simul_backward_model(initialconditions, samplesize[, innovations])`. `init` None is the
+/// empty first argument (`[]`): the initial conditions then come from `M_.endo_histval` and
+/// `M_.exo_histval`, i.e. the `histval` entries in force (`histval`, see
+/// [`histval_initial_conditions`]), and the innovations need not follow them in time.
+#[allow(clippy::too_many_arguments)]
 pub fn simul_backward_model(
     model: &Model,
     params: &[f64],
@@ -195,27 +313,32 @@ pub fn simul_backward_model(
     samplesize: usize,
     innovations: Option<&Series>,
     hidden: &[String],
+    histval: &[(bool, usize, i32, f64)],
 ) -> Result<Series> {
     let n = model.n_endo();
     let nx = model.n_exo();
     if model.lead_lag_incidence.iter().any(|l| l[2] != 0) {
         bail!("simul_backward_model: the model is not backward or static.");
     }
-    if model.lead_lag_incidence.iter().all(|l| l[0] == 0) {
-        bail!("simul_backward_model: the model is static (simul_static_model is not supported by dynare-rust).");
-    }
     let hidden: Vec<usize> = hidden.iter().filter_map(|h| model.endo_names.iter().position(|x| x == h)).collect();
     let origs: Vec<usize> = (0..model.orig_endo_nbr).filter(|i| !hidden.contains(i)).collect();
+    if model.lead_lag_incidence.iter().all(|l| l[0] == 0) {
+        println!("The model is static. Use simul_static_model instead.");
+        // Dynare passes its third argument on, undefined when it is not given
+        let s = innovations.ok_or_else(|| {
+            anyhow!("simul_backward_model: the model is static and needs the innovations (third argument)")
+        })?;
+        return simul_static_model(model, params, samplesize, s, &origs);
+    }
     let orig = origs.len();
     let orig_names: Vec<String> = origs.iter().map(|&i| model.endo_names[i].clone()).collect();
-    let zero_init;
+    let histval_init;
+    let init_given = init.is_some();
     let init = match init {
         Some(i) => i,
         None => {
-            let mut names = orig_names.clone();
-            names.extend(model.exo_names.iter().cloned());
-            zero_init = Series { init: Date::parse("1Y").unwrap(), names, data: Mat::zeros(1, orig + nx) };
-            &zero_init
+            histval_init = histval_initial_conditions(model, &origs, histval)?;
+            &histval_init
         }
     };
     let nobs = init.data.nrows();
@@ -238,22 +361,11 @@ pub fn simul_backward_model(
     let mut shocks = Mat::zeros(samplesize, nx);
     match innovations {
         Some(s) => {
-            if s.init.diff(init.init.add(nobs as i64 - 1)) != Some(-1) {
+            // the dates are compared only when the first argument is a dseries
+            if init_given && s.init.diff(init.init.add(nobs as i64 - 1)) != Some(-1) {
                 bail!("Time spans in first and third arguments should be contiguous!");
             }
-            if s.data.nrows() < samplesize {
-                bail!(
-                    "Time span in third argument is too short (should not be less than {samplesize}, the value of the second argument)"
-                );
-            }
-            for (k, e) in model.exo_names.iter().enumerate() {
-                match s.col(e) {
-                    Some(j) => shocks.column_mut(k).copy_from(&s.data.view((0, j), (samplesize, 1))),
-                    None => {
-                        println!("Exogenous variable {e} is not available in third argument, default value is zero.")
-                    }
-                }
-            }
+            shocks = innovations_matrix(model, s, samplesize)?;
         }
         None => {
             use rand::SeedableRng;

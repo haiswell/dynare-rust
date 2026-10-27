@@ -407,15 +407,16 @@ fn discretionary_policy_tol_and_planner_discount() {
     );
 }
 
-/// `ramsey_constraints` (ignored by Dynare 7.1): a non-binding constraint leaves the steady
-/// state unchanged; one that excludes the only root of the static problem is reported.
+/// `ramsey_constraints` have no effect on the static problem in Dynare 7.2 (`evaluate_steady_state.m`
+/// takes the Ramsey branch, `dyn_ramsey_static.m` never reads `static_complementarity_conditions`):
+/// the steady state is the reference one whether the constraint is slack or violated.
 #[test]
 fn ramsey_constraints_in_the_static_problem() {
     let r = reference("ramsey_cmr_ssm").expect("reference/setup unavailable");
     let src = std::fs::read_to_string(root().join("ramsey_cmr_ssm.mod")).unwrap();
     let dir = std::env::temp_dir().join(format!("dynare_rust_rc_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for (tag, bound, ok) in [("loose", "R > 0", true), ("upper", "R < 0.05", true), ("binding", "R > 0.02", false)] {
+    for (tag, bound) in [("loose", "R > 0"), ("upper", "R < 0.05"), ("violated", "R > 0.02")] {
         let text = src.replace("ramsey_model(", &format!("ramsey_constraints;\n{bound};\nend;\nramsey_model("));
         let path = dir.join(format!("rc_{tag}.mod"));
         std::fs::write(&path, text).unwrap();
@@ -431,13 +432,8 @@ fn ramsey_constraints_in_the_static_problem() {
                 }
             }
         }
-        if ok {
-            assert!(err.is_none(), "{tag}: {err:?}");
-            close(&s.dr.as_ref().unwrap().ys, &nums(&r["ys"]), 1e-9, "steady state");
-        } else {
-            let e = err.expect("binding constraint must be reported");
-            assert!(e.to_string().contains("Ramsey"), "{e}");
-        }
+        assert!(err.is_none(), "{tag}: {err:?}");
+        close(&s.dr.as_ref().unwrap().ys, &nums(&r["ys"]), 1e-9, "steady state");
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

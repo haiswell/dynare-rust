@@ -99,6 +99,9 @@ impl Tape {
                 Node::Param(p) => Ins::P(p),
                 // stream PP: STEADY_STATE(y_j) reads the extended parameter vector [params; ys]
                 Node::SteadyState(j, _) => Ins::P(dag.ss_offset + j),
+                // ss_param_deriv / ss_param_2nd_deriv: the dys / d2ys blocks that follow
+                Node::SteadyStateParamDeriv(j, q) => Ins::P(dag.ss_param_deriv_slot(j, q)),
+                Node::SteadyStateParam2ndDeriv(j, q1, q2) => Ins::P(dag.ss_param_2nd_deriv_slot(j, q1, q2)),
                 Node::Unary(UnaryOp::Neg, a) => Ins::Neg(s(a)),
                 Node::Unary(op, a) => Ins::Un(op, s(a)),
                 Node::Binary(BinaryOp::Add, a, b) => Ins::Add(s(a), s(b)),

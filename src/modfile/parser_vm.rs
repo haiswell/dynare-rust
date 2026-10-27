@@ -12,7 +12,7 @@ use crate::model::SymbolKind;
 use crate::model::expr::BinaryOp;
 use crate::modfile::lexer::{Loc, Tok, Token};
 use crate::modfile::{Command, OptValue};
-use crate::varmodels::{self as vm, Discount, Horizon, TrendComponentModel, VarExpectationModel, VarModel};
+use crate::varmodels::{self as vm, Discount, Horizon, TrendComponentModel, VarExpectationModel, VarModel, VarModels};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 
@@ -416,4 +416,46 @@ pub(super) fn ve_placeholder(c: &mut Cursor, loc: &Loc) -> Result<Ast> {
     };
     c.expect(")")?;
     Ok(Ast::Var { name: format!("{}{}", vm::VE_PLACEHOLDER, n), lag: 0, loc: loc.clone() })
+}
+
+/// In a `var_model` whose LHS is `diff(z)` the VAR variable is the auxiliary variable
+/// `AUX_DIFF_<n>` of the preprocessor, which names the `var_expectation_model_<m>_*`
+/// parameters (`var_expectation_model_ve_AUX_DIFF_10_0`): renamed once the model is built.
+pub(super) fn rename_aux_diff(models: &mut VarModels, model: &mut crate::model::Model) {
+    // The preprocessor numbers the nodes of its DataTree in creation order, and the
+    // `expression` of a var_expectation_model (declared before the model block) creates its
+    // variable nodes first: AUX_DIFF_<n> is shifted by the nodes created before `z`.
+    let mut created: Vec<String> = Vec::new();
+    for e in &models.expectations {
+        for t in &e.expr {
+            if !created.contains(&t.var) {
+                created.push(t.var.clone());
+            }
+        }
+    }
+    for e in &mut models.expectations {
+        let Some(vmod) = models.vars.iter().find(|m| m.name == e.auxiliary_model_name) else { continue };
+        for eq in vmod.eqs.iter().filter(|q| q.lhs_diff) {
+            let Some(zi) = model.endo_index(&eq.lhs) else { continue };
+            let Some(aux) = model
+                .aux_vars
+                .iter()
+                .find(|a| a.ty == 8 && a.orig_index == Some(zi) && a.orig_lead_lag == Some(0))
+                .map(|a| model.endo_names[a.endo_index].clone())
+            else {
+                continue;
+            };
+            let n0 = aux.strip_prefix("AUX_DIFF_").unwrap_or(&aux);
+            let shift = created.iter().position(|v| *v == eq.lhs).unwrap_or(created.len());
+            let n = n0.parse::<usize>().map_or_else(|_| n0.to_string(), |k| (k + shift).to_string());
+            for p in &mut e.param_names {
+                let old = format!("var_expectation_model_{}_{}_", e.name, eq.lhs);
+                if let Some(k) = p.strip_prefix(&old) {
+                    let new = format!("var_expectation_model_{}_AUX_DIFF_{n}_{k}", e.name);
+                    model.rename_param(p, &new);
+                    *p = new;
+                }
+            }
+        }
+    }
 }

@@ -17,11 +17,13 @@ use super::pkf::{self, PkfOptions, PointModel};
 use super::regimes::Regimes;
 use super::solver::SimulOptions;
 use super::{Session, boolean, count, num};
-use crate::dsge::{DsgeModel, EvalFailure, LikelihoodData, Resolved};
+use crate::dsge::{DsgeModel, EvalFailure, LikelihoodData, Resolved, endogenous_prior};
 use crate::estimation::{Bounds, Evaluation, Objective};
-use crate::kalman::lyapunov_solver;
+use crate::kalman::lik_init::{HARVEY_SCALE_FACTOR, initial_pstar};
+use crate::kalman::lyapunov::lyapunov_solver_opts;
 use crate::linalg::Mat;
 use crate::modfile::{ModFile, OptValue};
+use crate::solver::StateSpaceIndex;
 
 /// `options_.occbin.likelihood` (defaults of `occbin.set_default_options`).
 #[derive(Clone, Debug)]
@@ -214,13 +216,19 @@ impl OccbinEstimation {
             bail!("initial_estimation_checks:: OccBin is incompatible with the selected univariate Kalman filter.");
         }
         if dsge.loglinear {
-            bail!("OccBin estimation with loglinear is not supported by dynare-rust");
+            // +occbin has no loglinear handling: occbin.get_deriv evaluates the level dynamic
+            // function of the regimes while stochastic_solvers.m:349 rescales the base Jacobian
+            // by the steady state, so Dynare 7.2 mixes levels and logs for such a model
+            bail!(
+                "OccBin estimation with loglinear is not supported (Dynare 7.2's +occbin mixes the log-linearised base solution with level Jacobians for the regimes)"
+            );
         }
-        if data.endogenous_prior {
-            bail!("OccBin estimation with endogenous_prior is not supported by dynare-rust");
+        if !l.inversion_filter && data.kalman.lik_init == 3 {
+            bail!("OccBin's piecewise Kalman filter: lik_init = 3 (diffuse_filter) is not ported");
         }
-        if !l.inversion_filter && data.kalman.lik_init != 1 {
-            bail!("OccBin's piecewise Kalman filter: only lik_init = 1 is ported (no diffuse_filter)");
+        if !l.inversion_filter && data.endogenous_prior && data.kalman.lik_init == 2 {
+            // dsge_likelihood.m (raised at the first evaluation)
+            bail!("Endogenous prior not supported with non-stationary models");
         }
         // dynare_estimation_init.m: IVF_shock_observable_mapping = find(diag(Sigma_e) ~= 0)
         let mut err_index = Vec::new();
@@ -281,6 +289,21 @@ impl OccbinEstimation {
     }
 }
 
+/// Port of `set_Kalman_starting_values` (`dsge_likelihood.m`) and of
+/// `set_Kalman_smoother_starting_values` (`DsgeSmoother.m`, with the full state space) for
+/// `M_.filter_initial_state`: `a(restrict_columns) = value - ys` for the states given in
+/// `entries` (endogenous index, level), zero elsewhere; the state before any prediction.
+pub(super) fn kalman_starting_values(res: &Resolved, idx: &StateSpaceIndex, entries: &[(usize, f64)]) -> DVector<f64> {
+    let mut a = DVector::zeros(idx.restrict_var_list.len());
+    for &pos in &idx.restrict_columns {
+        let endo = res.dr.order_var[idx.restrict_var_list[pos]];
+        if let Some(&(_, v)) = entries.iter().find(|(e, _)| *e == endo) {
+            a[pos] = v - res.steady_state[endo];
+        }
+    }
+    a
+}
+
 /// Everything one OccBin evaluation produces.
 pub struct OccbinEvaluated {
     pub fval: f64,
@@ -331,17 +354,50 @@ impl OccbinPosterior<'_> {
         }
         let idx = &self.dsge.ss_index;
         let opts = &self.data.kalman;
+        // Y = data - constant - trend (observation_trends); the constant is zero with
+        // `noconstant` (dsge_likelihood.m:204)
         let mut y = self.data.y.clone();
-        for (i, &v) in idx.mfys.iter().enumerate() {
-            let c = res.steady_state[v];
-            for j in 0..y.ncols() {
-                y[(i, j)] -= c;
+        if !opts.noconstant {
+            for (i, &v) in idx.mfys.iter().enumerate() {
+                let c = res.steady_state[v];
+                for j in 0..y.ncols() {
+                    y[(i, j)] -= c;
+                }
             }
         }
-        let pstar = lyapunov_solver(&res.t, &res.r, &res.q, opts.qz_criterium, opts.lyapunov_complex_threshold)
-            .map_err(|_| EvalFailure { info: 50, penalty: 0.1 })?;
+        if let Some(tr) = self.dsge.trend_addition(&res.params, self.data.first_obs, y.ncols(), false) {
+            y -= tr;
+        }
+        // initial condition of the Kalman filter: a = set_Kalman_starting_values(...),
+        // a_0_given_tm1 = T*a, except with lik_init = 2 (first_period_occbin_update = 1)
+        let a = kalman_starting_values(&res, idx, &self.data.filter_initial_state);
+        let (a_0_given_tm1, pstar) = match opts.lik_init {
+            1 => {
+                let p = lyapunov_solver_opts(&res.t, &res.r, &res.q, opts)
+                    .map_err(|_| EvalFailure { info: 50, penalty: 0.1 })?;
+                (&res.t * a, p)
+            }
+            2 => {
+                let mm = res.t.nrows();
+                (a, Mat::identity(mm, mm) * HARVEY_SCALE_FACTOR)
+            }
+            k => {
+                let p = initial_pstar(
+                    k,
+                    &res.t,
+                    &res.r,
+                    &res.q,
+                    Some(&res.h),
+                    &idx.mf,
+                    opts.qz_criterium,
+                    opts.lyapunov_complex_threshold,
+                    false,
+                )
+                .map_err(|_| EvalFailure { info: 50, penalty: 0.1 })?;
+                (&res.t * a, p)
+            }
+        };
         let mut pm = self.occ.point_model(self.dsge, &res);
-        let mm = res.t.nrows();
         let out = pkf::pkf(
             &mut pm,
             &y,
@@ -349,7 +405,7 @@ impl OccbinPosterior<'_> {
             &idx.mf,
             &res.q,
             &res.h,
-            DVector::zeros(mm),
+            a_0_given_tm1,
             &pstar,
             opts.presample,
             &self.occ.pkf,
@@ -367,9 +423,15 @@ impl OccbinPosterior<'_> {
         if !log_prior.is_finite() {
             return Err(EvalFailure { info: 40, penalty: 0.1 });
         }
+        // dsge_likelihood.m: fval = likelihood - lnprior - lnpriormom
+        let lnpriormom = if self.data.endogenous_prior {
+            endogenous_prior(&y, &self.data.missing, &pstar, &idx.mf, &res.h)
+        } else {
+            0.0
+        };
         let nobs = self.data.y.ncols();
         Ok(OccbinEvaluated {
-            fval: out.minus_loglik - log_prior,
+            fval: out.minus_loglik - log_prior - lnpriormom,
             minus_loglik: out.minus_loglik,
             log_prior,
             lik: out.lik,
@@ -506,10 +568,23 @@ pub fn smoother_series(
         inv[v] = k;
     }
     let ys = &sm.steady_state;
-    let level = |m: &Mat| Mat::from_fn(nobs, norig, |t, v| m[(inv[v], t)] + ys[v]);
+    // store_smoother_results.m: + the observation trend for the observed variables (shifted by
+    // one period for the one-step-ahead filtered variables)
+    let trend_at = |ahead: bool, v: usize, t: usize| match (&sm.trend, dsge.varobs.iter().position(|&o| o == v)) {
+        (Some((tr, tr1)), Some(i)) => {
+            if ahead {
+                tr1[(i, t)]
+            } else {
+                tr[(i, t)]
+            }
+        }
+        _ => 0.0,
+    };
+    let level = |m: &Mat, ahead: bool| Mat::from_fn(nobs, norig, |t, v| m[(inv[v], t)] + ys[v] + trend_at(ahead, v, t));
     let me = dsge.base_h.iter().any(|&v| v != 0.0).then(|| {
         Mat::from_fn(nobs, dsge.varobs.len(), |t, i| {
-            data.y[(i, t)] - (sm.alphahat[(inv[dsge.varobs[i]], t)] + ys[dsge.varobs[i]])
+            let v = dsge.varobs[i];
+            data.y[(i, t)] - (sm.alphahat[(inv[v], t)] + ys[v] + trend_at(false, v, t))
         })
     });
     let j = serde_json::json!({
@@ -529,9 +604,9 @@ pub fn smoother_series(
         _ => println!("occbin.DSGE_smoother: smoother converged."),
     }
     let series = crate::driver::SmoothedSeries {
-        smoothed: level(&sm.alphahat),
+        smoothed: level(&sm.alphahat, false),
         shocks: sm.etahat.transpose(),
-        filtered: level(&sm.filtered),
+        filtered: level(&sm.filtered, true),
         measurement_errors: me,
     };
     Ok((series, sm.regime_history))

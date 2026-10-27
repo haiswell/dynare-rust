@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! port of `estimation/online/online_auxiliary_filter.m`
 //! (`posterior_sampling_method = 'online'`): Liu & West (2001) auxiliary particle filter over
-//! the states and the parameters jointly, at order 2 or 3 (dynare-rust's nonlinear reduced
-//! form). The particles are solved and moved in parallel, each with its own ChaCha8 stream
+//! the states and the parameters jointly, at order 1, 2 or 3 (dynare-rust's nonlinear
+//! reduced form; `solve_model_for_online_filter.m`). The particles are solved and moved in parallel, each with its own ChaCha8 stream
 //! (seed, period, particle), so the result does not depend on the number of threads.
 //!
 //! Ported as Dynare 7.2 has it: the first-stage weights use a Student-like kernel of the
@@ -75,6 +75,23 @@ fn col(m: &Mat, j: usize) -> Mat {
     m.columns(j, 1).into_owned()
 }
 
+/// The initial state particles (ns x n): draws from `N(0, state_variance)` centred on
+/// `solve_model_for_online_filter.m`'s `StateVectorMean = state_variables_steady_state` (the
+/// deterministic steady state of the states, not `constant(mf0)`, for every initialization).
+pub fn initial_particles(rf0: &super::ReducedForm, n: usize, seed: u64) -> Result<Mat> {
+    let s0 =
+        chol_lower(&rf0.state_variance).ok_or_else(|| anyhow!("online: chol of the initial state variance failed"))?;
+    let mut rng0 = stream(seed, u64::MAX, 0);
+    let z = Mat::from_fn(s0.ncols(), n, |_, _| rng0.sample(StandardNormal));
+    let mut states = &s0 * z;
+    for c in 0..n {
+        for i in 0..rf0.ns() {
+            states[(i, c)] += rf0.state_ss[i];
+        }
+    }
+    Ok(states)
+}
+
 /// Runs the filter from `xparam1` (initial state distribution) on `model.y`.
 pub fn online_auxiliary_filter(
     model: &NonlinearModel,
@@ -85,7 +102,10 @@ pub fn online_auxiliary_filter(
 ) -> Result<OnlineResult> {
     let npar = priors.len();
     let n = o.particles;
-    let pruning = model.particle.pruning && model.order > 1;
+    // the pruned recursions run at order 2 only: at order >= 3 Dynare takes the k-order
+    // solver path (`ReducedForm.use_k_order_solver`, local_state_space_iteration_k), which
+    // ignores pruning (the pruned states are still drawn and resampled, then never read)
+    let pruning = model.particle.pruning && model.order == 2;
     let rf0 = model
         .reduced_form(xparam1)
         .map_err(|e| anyhow!("online: the model has no solution at the initial values (info {})", e.info))?;
@@ -98,16 +118,7 @@ pub fn online_auxiliary_filter(
     let small_a = (3.0 * delta - 1.0) / (2.0 * delta);
     let b_square = 1.0 - small_a * small_a;
     // initial states
-    let s0 =
-        chol_lower(&rf0.state_variance).ok_or_else(|| anyhow!("online: chol of the initial state variance failed"))?;
-    let mut rng0 = stream(o.seed, u64::MAX, 0);
-    let z = Mat::from_fn(s0.ncols(), n, |_, _| rng0.sample(StandardNormal));
-    let mut states = &s0 * z;
-    for c in 0..n {
-        for i in 0..ns {
-            states[(i, c)] += rf0.state_mean[i];
-        }
-    }
+    let mut states = initial_particles(&rf0, n, o.seed)?;
     let (mut states_, _mf0_) = pruned_init(&rf0, &states);
     // parameter particles from the prior (those the model solves)
     let draws: Vec<Vec<f64>> = (0..n)

@@ -156,6 +156,26 @@ pub enum BinaryOp {
     Ge,
     Eq,
     Ne,
+    /// `getPowerDeriv(x, p, k)`: the `k`-th derivative of `x^p` w.r.t. `x`, the preprocessor's
+    /// `powerDeriv` node (derivatives of a power whose exponent is not a numeric constant).
+    PowerDeriv(u8),
+}
+
+/// Port of `getPowerDeriv.m`: `d^k (x^p) / dx^k`, exactly 0 at `x = 0` for an integer
+/// `p >= 0` below the order (where `x^(p-k) * p * (p-1) * ...` would give `Inf * 0`).
+pub fn get_power_deriv(x: f64, p: f64, k: u8) -> f64 {
+    let kf = f64::from(k);
+    if x.abs() < 1e-12 && p >= 0.0 && kf > p && (p - p.round()).abs() < 1e-12 {
+        0.0
+    } else {
+        let mut dxp = x.powf(p - kf);
+        let mut p = p;
+        for _ in 0..k {
+            dxp *= p;
+            p -= 1.0;
+        }
+        dxp
+    }
 }
 
 impl BinaryOp {
@@ -188,6 +208,7 @@ impl BinaryOp {
             Self::Ge => t(a >= b),
             Self::Eq => t(a == b),
             Self::Ne => t(a != b),
+            Self::PowerDeriv(k) => get_power_deriv(a, b, k),
         }
     }
 
@@ -206,6 +227,7 @@ impl BinaryOp {
             Self::Ge => ">=",
             Self::Eq => "==",
             Self::Ne => "!=",
+            Self::PowerDeriv(_) => "getPowerDeriv",
         }
     }
 
@@ -216,7 +238,7 @@ impl BinaryOp {
             Self::Add | Self::Sub => 2,
             Self::Mul | Self::Div => 3,
             Self::Pow => 5,
-            Self::Max | Self::Min => 6,
+            Self::Max | Self::Min | Self::PowerDeriv(_) => 6,
         }
     }
 }
@@ -236,6 +258,15 @@ pub enum Node {
     /// variable), equal to `x` in the static model. Compiled tapes read it from the extended
     /// parameter vector `[params; ys]` at `ss_offset + j` (see [`Dag::ss_offset`]).
     SteadyState(u32, i32),
+    /// `d STEADY_STATE(x) / d p` of endogenous variable `x` w.r.t. parameter `p`, the
+    /// preprocessor's `steadyStateParamDeriv` node (`ss_param_deriv(x, p)` in
+    /// `dynamic_params_derivs.m`): the `dys` of get_perturbation_params_derivs.m. Compiled
+    /// tapes read it from the extended parameter vector `[params; ys; dys(:); d2ys(:)]`
+    /// (see [`Dag::ss_param_deriv_slot`]).
+    SteadyStateParamDeriv(u32, u32),
+    /// `d2 STEADY_STATE(x) / d p1 d p2`, the preprocessor's `steadyStateParam2ndDeriv` node
+    /// (`ss_param_2nd_deriv(x, p1, p2)`): the `d2ys` of get_perturbation_params_derivs.m.
+    SteadyStateParam2ndDeriv(u32, u32, u32),
     Unary(UnaryOp, NodeId),
     Binary(BinaryOp, NodeId, NodeId),
     /// `external_function` call (or one of its derivatives): index into [`Dag::ext_call`].
@@ -283,6 +314,14 @@ pub struct Dag {
     /// Position of `STEADY_STATE(y_0)` in the parameter slice given to compiled tapes
     /// (the number of model parameters; set by `ModelBuilder::build`).
     pub ss_offset: u32,
+    /// Number of endogenous variables, the length of the `ys` block of the extended parameter
+    /// vector (set by `ModelBuilder::build`; locates the `dys` / `d2ys` blocks).
+    pub ss_n_endo: u32,
+    /// `M_.param_nbr`: `STEADY_STATE(y)` has a derivative w.r.t. `Param(q)` for
+    /// `q < ss_param_nbr` only. The `varexo_det` stand-ins appended after the parameters (and
+    /// the trend variables of the transform passes) are variables for the preprocessor, for
+    /// which `STEADY_STATE(y)` is a constant (set by `ModelBuilder::build`; 0 before).
+    pub ss_param_nbr: u32,
 }
 
 impl Default for Dag {
@@ -303,6 +342,8 @@ impl Dag {
             ext_calls: Vec::new(),
             ext_map: HashMap::new(),
             ss_offset: 0,
+            ss_n_endo: 0,
+            ss_param_nbr: 0,
         };
         d.intern(Node::Num(0f64.to_bits()));
         d.intern(Node::Num(1f64.to_bits()));
@@ -322,6 +363,12 @@ impl Dag {
         self.nodes[id as usize]
     }
 
+    /// Whether `id` is a `NumConstNode` of the preprocessor's DataTree: a constant that is not
+    /// negative (the DataTree writes `-c` as `uminus(c)`, folded here into one constant).
+    pub fn is_num_const(&self, id: NodeId) -> bool {
+        self.as_num(id).is_some_and(|v| !(v < 0.0))
+    }
+
     pub fn as_num(&self, id: NodeId) -> Option<f64> {
         match self.node(id) {
             Node::Num(b) => Some(f64::from_bits(b)),
@@ -334,7 +381,11 @@ impl Dag {
             return id;
         }
         let info = match n {
-            Node::Num(_) | Node::Param(_) | Node::SteadyState(..) => Info::default(),
+            Node::Num(_)
+            | Node::Param(_)
+            | Node::SteadyState(..)
+            | Node::SteadyStateParamDeriv(..)
+            | Node::SteadyStateParam2ndDeriv(..) => Info::default(),
             Node::Endo(_, l) => Info { max_endo_lead: l.max(0), max_endo_lag: (-l).max(0), ..Info::default() },
             Node::Exo(_, l) => Info { max_exo_lead: l.max(0), max_exo_lag: (-l).max(0), ..Info::default() },
             Node::Unary(_, a) => self.info[a as usize],
@@ -472,6 +523,38 @@ impl Dag {
         let mut leaves = Vec::new();
         self.collect_leaves(id, &mut leaves);
         leaves.iter().any(|l| matches!(l, Node::SteadyState(..)))
+    }
+
+    /// The parameters w.r.t. which `id` may have a non-zero derivative, sorted: its parameter
+    /// leaves, or every parameter (`0..ss_param_nbr`) when it holds a `STEADY_STATE` node (`prepareForDerivation`
+    /// adds all parameter deriv ids for `steadyState`, `steadyStateParamDeriv` and
+    /// `steadyStateParam2ndDeriv`, `DataTree::addAllParamDerivId`).
+    pub fn param_deps(&self, id: NodeId) -> Vec<u32> {
+        let mut leaves = Vec::new();
+        self.collect_leaves(id, &mut leaves);
+        if leaves.iter().any(|l| {
+            matches!(l, Node::SteadyState(..) | Node::SteadyStateParamDeriv(..) | Node::SteadyStateParam2ndDeriv(..))
+        }) {
+            return (0..self.ss_param_nbr).collect();
+        }
+        let mut ps: Vec<u32> =
+            leaves.iter().filter_map(|l| if let Node::Param(q) = l { Some(*q) } else { None }).collect();
+        ps.sort_unstable();
+        ps
+    }
+
+    /// Position of `ss_param_deriv(x_j, p_q)` (`dys(j, q)`, column-major `n_endo x n_params`)
+    /// in the extended parameter vector `[params; ys; dys(:); d2ys(:)]` of compiled tapes.
+    pub fn ss_param_deriv_slot(&self, j: u32, q: u32) -> u32 {
+        let (np, n) = (self.ss_offset, self.ss_n_endo);
+        np + n + q * n + j
+    }
+
+    /// Position of `ss_param_2nd_deriv(x_j, p_q1, p_q2)` (`d2ys(j, q1, q2)`, column-major
+    /// `n_endo x n_params x n_params`) in the extended parameter vector.
+    pub fn ss_param_2nd_deriv_slot(&self, j: u32, q1: u32, q2: u32) -> u32 {
+        let (np, n) = (self.ss_offset, self.ss_n_endo);
+        np + n + n * np + j + n * q1 + n * np * q2
     }
 
     pub fn max_endo_lead(&self, id: NodeId) -> i32 {
@@ -630,9 +713,13 @@ impl Dag {
             return r;
         }
         let r = match self.node(id) {
-            n @ (Node::Num(_) | Node::Endo(..) | Node::Exo(..) | Node::Param(_) | Node::SteadyState(..)) => {
-                f(self, n).unwrap_or(id)
-            }
+            n @ (Node::Num(_)
+            | Node::Endo(..)
+            | Node::Exo(..)
+            | Node::Param(_)
+            | Node::SteadyState(..)
+            | Node::SteadyStateParamDeriv(..)
+            | Node::SteadyStateParam2ndDeriv(..)) => f(self, n).unwrap_or(id),
             Node::Unary(op, a) => {
                 let a2 = self.map_vars(a, memo, f);
                 if a2 == a { id } else { self.unary(op, a2) }
@@ -663,7 +750,12 @@ impl Dag {
             }
             match self.node(n) {
                 Node::Num(_) => {}
-                l @ (Node::Endo(..) | Node::Exo(..) | Node::Param(_) | Node::SteadyState(..)) => {
+                l @ (Node::Endo(..)
+                | Node::Exo(..)
+                | Node::Param(_)
+                | Node::SteadyState(..)
+                | Node::SteadyStateParamDeriv(..)
+                | Node::SteadyStateParam2ndDeriv(..)) => {
                     if !out.contains(&l) {
                         out.push(l)
                     }
@@ -685,9 +777,24 @@ impl Dag {
             return r;
         }
         let r = match self.node(id) {
-            // STEADY_STATE: 0 w.r.t. dynamic variables. W.r.t. parameters Dynare uses the
-            // derivative of the steady state (`AddSteadyStateParamDeriv`), not available here.
-            Node::Num(_) | Node::SteadyState(..) => Self::ZERO,
+            Node::Num(_) => Self::ZERO,
+            // UnaryOpNode::composeDerivatives (dynamic model): STEADY_STATE(x) is a constant for
+            // the dynamic variables; w.r.t. a parameter it is `AddSteadyStateParamDeriv`, whose
+            // own parameter derivative is `AddSteadyStateParam2ndDeriv`.
+            Node::SteadyState(j, _) => match v {
+                DiffVar::Param(q) if q < self.ss_param_nbr => self.intern(Node::SteadyStateParamDeriv(j, q)),
+                _ => Self::ZERO,
+            },
+            Node::SteadyStateParamDeriv(j, q1) => match v {
+                DiffVar::Param(q2) if q2 < self.ss_param_nbr => self.intern(Node::SteadyStateParam2ndDeriv(j, q1, q2)),
+                _ => Self::ZERO,
+            },
+            Node::SteadyStateParam2ndDeriv(..) => match v {
+                DiffVar::Param(q) if q < self.ss_param_nbr => {
+                    panic!("3rd derivative of STEADY_STATE node w.r.t. three parameters not implemented")
+                }
+                _ => Self::ZERO,
+            },
             Node::Endo(j, l) => {
                 if v == DiffVar::Endo(j, l) {
                     Self::ONE
@@ -845,12 +952,16 @@ impl Dag {
                 }
             }
             BinaryOp::Pow => {
-                if db == Self::ZERO {
-                    // d(a^b) = da * b * a^(b-1)
+                if db == Self::ZERO && self.is_num_const(b) {
+                    // numeric exponent: d(a^b) = da * b * a^(b-1)
                     let bm1 = self.sub(b, Self::ONE);
                     let t12 = self.pow(a, bm1);
                     let t13 = self.mul(b, t12);
                     self.mul(da, t13)
+                } else if db == Self::ZERO {
+                    // other exponents: da * getPowerDeriv(a, b, 1) (`AddPowerDeriv`)
+                    let t = self.binary(BinaryOp::PowerDeriv(1), a, b);
+                    self.mul(da, t)
                 } else {
                     // d(a^b) = (db*log(a) + da*b/a) * a^b
                     let t11 = self.unary(UnaryOp::Log, a);
@@ -859,6 +970,45 @@ impl Dag {
                     let t14 = self.div(t13, a);
                     let t15 = self.add(t12, t14);
                     self.mul(t15, this)
+                }
+            }
+            BinaryOp::PowerDeriv(k) => {
+                if db == Self::ZERO {
+                    let t = self.binary(BinaryOp::PowerDeriv(k + 1), a, b);
+                    self.mul(da, t)
+                } else {
+                    // BinaryOpNode::composeDerivatives, `powerDeriv` with a varying exponent:
+                    // f = a^(b-k), first = f * (db*log(a) + da*(b-k)/a) * prod_{i<k} (b-i),
+                    // plus f * db * sum_i prod_{j!=i} (b-j)
+                    let t11 = self.unary(UnaryOp::Log, a);
+                    let t11 = self.mul(db, t11);
+                    let kn = self.num(f64::from(k));
+                    let t12 = self.sub(b, kn);
+                    let t13 = self.mul(da, t12);
+                    let t14 = self.div(t13, a);
+                    let t15 = self.add(t11, t14);
+                    let f = self.pow(a, t12);
+                    let mut first = self.mul(f, t15);
+                    for i in 0..k {
+                        let ci = self.num(f64::from(i));
+                        let t = self.sub(b, ci);
+                        first = self.mul(first, t);
+                    }
+                    let mut t13 = Self::ZERO;
+                    for i in 0..k {
+                        let mut t11 = Self::ONE;
+                        for j in 0..k {
+                            if i != j {
+                                let cj = self.num(f64::from(j));
+                                let t12 = self.sub(b, cj);
+                                t11 = self.mul(t11, t12);
+                            }
+                        }
+                        t13 = self.add(t13, t11);
+                    }
+                    let t13 = self.mul(db, t13);
+                    let t14 = self.mul(f, t13);
+                    self.add(first, t14)
                 }
             }
             BinaryOp::Max | BinaryOp::Min => {
@@ -879,7 +1029,12 @@ impl Dag {
     pub fn eval(&self, id: NodeId, leaf: &dyn Fn(Node) -> f64) -> f64 {
         match self.node(id) {
             Node::Num(b) => f64::from_bits(b),
-            n @ (Node::Endo(..) | Node::Exo(..) | Node::Param(_) | Node::SteadyState(..)) => leaf(n),
+            n @ (Node::Endo(..)
+            | Node::Exo(..)
+            | Node::Param(_)
+            | Node::SteadyState(..)
+            | Node::SteadyStateParamDeriv(..)
+            | Node::SteadyStateParam2ndDeriv(..)) => leaf(n),
             Node::Unary(op, a) => op.apply(self.eval(a, leaf)),
             Node::Binary(op, a, b) => op.apply(self.eval(a, leaf), self.eval(b, leaf)),
             Node::External(c) => {
@@ -920,6 +1075,22 @@ impl Dag {
                 s.push_str(&name(Node::Endo(j, 0)));
                 s.push(')');
             }
+            Node::SteadyStateParamDeriv(j, q) => {
+                s.push_str("ss_param_deriv(");
+                s.push_str(&name(Node::Endo(j, 0)));
+                s.push(',');
+                s.push_str(&name(Node::Param(q)));
+                s.push(')');
+            }
+            Node::SteadyStateParam2ndDeriv(j, q1, q2) => {
+                s.push_str("ss_param_2nd_deriv(");
+                s.push_str(&name(Node::Endo(j, 0)));
+                for q in [q1, q2] {
+                    s.push(',');
+                    s.push_str(&name(Node::Param(q)));
+                }
+                s.push(')');
+            }
             Node::Unary(UnaryOp::Neg, a) => {
                 let paren = parent_prec >= 3;
                 if paren {
@@ -944,6 +1115,13 @@ impl Dag {
                 s.push(','); // as the preprocessor (`max(a,b)`)
                 self.write(b, name, 0, s);
                 s.push(')');
+            }
+            Node::Binary(BinaryOp::PowerDeriv(k), a, b) => {
+                s.push_str("getPowerDeriv(");
+                self.write(a, name, 0, s);
+                s.push(',');
+                self.write(b, name, 0, s);
+                s.push_str(&format!(",{k})"));
             }
             Node::Binary(op, a, b) => {
                 let p = op.precedence();

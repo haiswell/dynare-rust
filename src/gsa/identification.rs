@@ -37,12 +37,18 @@ struct PointMoments {
     yt: Vec<f64>,
 }
 
-fn point_moments(dsge: &DsgeModel, x: &[f64], ar: usize, useautocorr: bool) -> Option<PointMoments> {
+fn point_moments(
+    dsge: &DsgeModel,
+    x: &[f64],
+    ar: usize,
+    useautocorr: bool,
+    base: &crate::analysis::moments::MomentOptions,
+) -> Option<PointMoments> {
     let r = dsge.resolve(x).ok()?;
     let dr = &r.dr;
     let ivar = &dsge.varobs;
     let nobs = ivar.len();
-    let mo = crate::analysis::moments::MomentOptions { ar, ..Default::default() };
+    let mo = crate::analysis::moments::MomentOptions { ar, ..base.clone() };
     let th = crate::analysis::moments::th_autocovariances(dr, &r.q, ivar, &mo).ok()?;
     let nexo = dsge.model.n_exo();
     let vdec = if nexo > 1 {
@@ -219,7 +225,7 @@ pub fn map_identification(
     let points: Vec<Vec<f64>> = stab.istable.iter().map(|&k| stab.point(k)).collect();
     println!("monte_carlo_moments: Computing theoretical moments ...");
     let pm: Vec<Option<PointMoments>> =
-        points.par_iter().map(|x| point_moments(dsge, x, o.ident_ar, o.ident_useautocorr)).collect();
+        points.par_iter().map(|x| point_moments(dsge, x, o.ident_ar, o.ident_useautocorr, &ctx.moment_base)).collect();
     println!();
     println!("... done !");
     if pm.iter().any(|p| p.is_none()) {

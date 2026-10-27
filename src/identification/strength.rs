@@ -2,24 +2,23 @@
 //! Identification strength (Ratto and Iskrev 2011): the asymptotic information matrix from the
 //! analytic score of the Kalman filter on simulated data (the `try` branch of
 //! `+identification/analysis.m`: `stoch_simul` + `dsge_likelihood` with
-//! `analytic_Hessian = 'asymptotic'`, i.e. `kalman_filter.m` / `kalman_filter_ss.m` with
-//! `computeDLIK.m`), or the moments information matrix from simulated moment uncertainty
-//! (the `catch` branch, `simulated_moment_uncertainty.m`).
+//! `analytic_Hessian = 'asymptotic'`, computed by [`super::Context::asymptotic_hessian_on`]
+//! through `crate::estimation::analytic`), or the moments information matrix from simulated
+//! moment uncertainty (the `catch` branch, `simulated_moment_uncertainty.m`).
 
-use anyhow::{Result, bail};
 use rand::Rng;
 use rand_distr::StandardNormal;
 
-use crate::kalman::lyapunov_symm;
 use crate::linalg::{Mat, chol_upper, mul};
 use crate::solver::DecisionRule;
 
 use super::checks::{CheckResult, checks, vnorm};
 use super::la::{inv, rank, solve};
 
-/// `simult_` at order 1 from the steady state: `periods` draws of `e ~ N(0, Sigma_e)`
+/// `simult.m` at order 1 from `y0` (levels, declaration order: `oo_.dr.ys` or
+/// `M_.endo_histval`), the initial value removed: `periods` draws of `e ~ N(0, Sigma_e)`
 /// (`randn * chol(Sigma_e)`); returns n_endo x periods (declaration order, levels).
-pub fn simulate<R: Rng + ?Sized>(dr: &DecisionRule, sigma_e: &Mat, periods: usize, rng: &mut R) -> Mat {
+pub fn simulate<R: Rng + ?Sized>(dr: &DecisionRule, sigma_e: &Mat, y0: &[f64], periods: usize, rng: &mut R) -> Mat {
     let n = dr.ghx.nrows();
     let ne = sigma_e.nrows();
     let chol = chol_upper(sigma_e).unwrap_or_else(|| {
@@ -28,7 +27,8 @@ pub fn simulate<R: Rng + ?Sized>(dr: &DecisionRule, sigma_e: &Mat, periods: usiz
     });
     let states: Vec<usize> = (dr.nstatic..dr.nstatic + dr.nspred).collect();
     let mut y = Mat::zeros(n, periods);
-    let mut prev = vec![0.0; n]; // deviations, DR order
+    // deviations, DR order
+    let mut prev: Vec<f64> = (0..n).map(|i| y0[dr.order_var[i]] - dr.ys[dr.order_var[i]]).collect();
     let mut e = vec![0.0; ne];
     let mut z = vec![0.0; ne];
     for t in 0..periods {
@@ -55,159 +55,6 @@ pub fn simulate<R: Rng + ?Sized>(dr: &DecisionRule, sigma_e: &Mat, periods: usiz
         prev = cur;
     }
     y
-}
-
-/// Inputs of the analytic-derivative Kalman filter (restricted state space, DR rows
-/// `restrict_var_list`).
-pub struct KalmanDerivInput<'a> {
-    pub t: &'a Mat,
-    pub r: &'a Mat,
-    pub q: &'a Mat,
-    /// Observed positions in the state vector (`bayestopt_.mf`).
-    pub mf: &'a [usize],
-    /// Demeaned data, pp x nobs.
-    pub y: &'a Mat,
-    /// Per parameter: dT, dOm (mm x mm), dYss (mm).
-    pub dt: &'a [Mat],
-    pub dom: &'a [Mat],
-    pub dyss: &'a [Vec<f64>],
-    /// Number of stderr + corr parameters (dP from dOm alone).
-    pub n_shock: usize,
-    pub kalman_tol: f64,
-    pub riccati_tol: f64,
-    pub presample: usize,
-    pub qz_criterium: f64,
-}
-
-fn rows_cols(m: &Mat, r: &[usize], c: &[usize]) -> Mat {
-    Mat::from_fn(r.len(), c.len(), |i, j| m[(r[i], c[j])])
-}
-
-/// `dsge_likelihood(..., analytic_derivation, analytic_Hessian = 'asymptotic')` with
-/// `lik_init = 1`: returns `AHess` (the positive asymptotic information matrix, the negative
-/// of dsge_likelihood's `Hess` output).
-pub fn asymptotic_hessian(inp: &KalmanDerivInput) -> Result<Mat> {
-    let t = inp.t;
-    let mm = t.nrows();
-    let k = inp.dt.len();
-    let z = inp.mf;
-    let pp = z.len();
-    let rq = mul(&mul(inp.r, false, inp.q, false), false, inp.r, true);
-    let mut p = lyapunov_symm(t, &rq, inp.qz_criterium, 1e-15)?;
-    let mut dp: Vec<Mat> = Vec::with_capacity(k);
-    for j in 0..k {
-        let rhs = if j < inp.n_shock {
-            inp.dom[j].clone()
-        } else {
-            let a = mul(&mul(&inp.dt[j], false, &p, false), false, t, true);
-            &a + a.transpose() + &inp.dom[j]
-        };
-        dp.push(lyapunov_symm(t, &rhs, inp.qz_criterium, 1e-15)?);
-    }
-    let nobs = inp.y.ncols();
-    let all: Vec<usize> = (0..mm).collect();
-    let mut a = vec![0.0; mm];
-    let mut da = Mat::zeros(mm, k);
-    let mut hess = Mat::zeros(k, k);
-    let mut old_k: Option<Mat> = None;
-    let mut notsteady = true;
-    let mut tt = 0;
-    let mut kg = Mat::zeros(mm, pp);
-    let mut i_f = Mat::zeros(pp, pp);
-    let mut dk: Vec<Mat> = Vec::new();
-    let mut df: Vec<Mat> = Vec::new();
-    // Hessian increment: 2 Dv' iF Dv + tr(iF dF_i iF dF_j)
-    let increment = |dv: &Mat, i_f: &Mat, df: &[Mat]| -> Mat {
-        let mut h = mul(&mul(dv, true, i_f, false), false, dv, false) * 2.0;
-        let w: Vec<Mat> = df.iter().map(|d| mul(i_f, false, d, false)).collect();
-        for i in 0..k {
-            for j in 0..k {
-                let mut s = 0.0;
-                for a in 0..pp {
-                    for b in 0..pp {
-                        s += w[i][(a, b)] * w[j][(b, a)];
-                    }
-                }
-                h[(i, j)] += s;
-            }
-        }
-        h
-    };
-    while notsteady && tt < nobs {
-        let v: Vec<f64> = (0..pp).map(|i| inp.y[(i, tt)] - a[z[i]]).collect();
-        let f = rows_cols(&p, z, z);
-        let (lu, _, info) = crate::linalg::lu(&f);
-        let rc = if info > 0 { 0.0 } else { crate::linalg::rcond_from_lu(&lu, crate::linalg::norm1(&f)) };
-        if rc < inp.kalman_tol {
-            let sig: Vec<f64> = (0..pp).map(|i| f[(i, i)].sqrt()).collect();
-            let fs = Mat::from_fn(pp, pp, |i, j| f[(i, j)] / (sig[i] * sig[j]));
-            let (lu2, _, info2) = crate::linalg::lu(&fs);
-            let rc2 = if info2 > 0 { 0.0 } else { crate::linalg::rcond_from_lu(&lu2, crate::linalg::norm1(&fs)) };
-            if (0..pp).any(|i| f[(i, i)] < inp.kalman_tol) || rc2 < inp.kalman_tol {
-                bail!(
-                    "singular forecast-error variance (the univariate filter is not supported for the analytic Hessian)"
-                );
-            }
-        }
-        i_f = inv(&f);
-        let pz = rows_cols(&p, &all, z); // P(:,Z)
-        kg = mul(&pz, false, &i_f, false);
-        let pzr = pz.transpose(); // P(Z,:)
-        let tmp_p = &p - mul(&kg, false, &pzr, false);
-        let ptmp = mul(&mul(t, false, &tmp_p, false), false, t, true) + &rq;
-        let vv = Mat::from_column_slice(pp, 1, &v);
-        let tmp = Mat::from_column_slice(mm, 1, &a) + mul(&kg, false, &vv, false);
-        // computeDKalman
-        dk.clear();
-        df.clear();
-        for ii in 0..k {
-            let dfi = rows_cols(&dp[ii], z, z);
-            let dif = -mul(&mul(&i_f, false, &dfi, false), false, &i_f, false);
-            let dki = mul(&rows_cols(&dp[ii], &all, z), false, &i_f, false) + mul(&pz, false, &dif, false);
-            let dtmp = &dp[ii] - mul(&dki, false, &pzr, false) - mul(&kg, false, &rows_cols(&dp[ii], z, &all), false);
-            let x1 = mul(&mul(&inp.dt[ii], false, &tmp_p, false), false, t, true);
-            dp[ii] = &x1 + mul(&mul(t, false, &dtmp, false), false, t, true) + x1.transpose() + &inp.dom[ii];
-            dk.push(dki);
-            df.push(dfi);
-        }
-        let dv = Mat::from_fn(pp, k, |i, j| -da[(z[i], j)] - inp.dyss[j][z[i]]);
-        let mut nda = Mat::zeros(mm, k);
-        for ii in 0..k {
-            let dtmp = da.column(ii) + &dk[ii] * vv.column(0) + &kg * dv.column(ii);
-            let col = &inp.dt[ii] * tmp.column(0) + t * dtmp;
-            nda.set_column(ii, &col);
-        }
-        if tt >= inp.presample {
-            hess += increment(&dv, &i_f, &df);
-        }
-        da = nda;
-        let an = t * tmp.column(0);
-        a = an.iter().copied().collect();
-        p = ptmp;
-        if let Some(ok) = &old_k {
-            notsteady = (&kg - ok).amax() > inp.riccati_tol;
-        }
-        old_k = Some(kg.clone());
-        tt += 1;
-    }
-    // kalman_filter_ss: K, iF, DK, DF frozen
-    while tt < nobs {
-        let v: Vec<f64> = (0..pp).map(|i| inp.y[(i, tt)] - a[z[i]]).collect();
-        let vv = nalgebra::DVector::from_vec(v);
-        let tmp = nalgebra::DVector::from_vec(a.clone()) + &kg * &vv;
-        let dv = Mat::from_fn(pp, k, |i, j| -da[(z[i], j)] - inp.dyss[j][z[i]]);
-        let mut nda = Mat::zeros(mm, k);
-        for ii in 0..k {
-            let dtmp = da.column(ii) + &dk[ii] * &vv + &kg * dv.column(ii);
-            let col = &inp.dt[ii] * &tmp + t * dtmp;
-            nda.set_column(ii, &col);
-        }
-        hess += increment(&dv, &i_f, &df);
-        da = nda;
-        a = (t * tmp).iter().copied().collect();
-        tt += 1;
-    }
-    Ok(hess / 2.0)
 }
 
 /// The identification-strength part of `identification.analysis` (`ide_hess` and the
@@ -346,11 +193,13 @@ pub fn strength_measures(
 
 /// `simulated_moment_uncertainty(ind_dMOMENTS, periods, replic)`: covariance of the selected
 /// simulated moments `[mean; vech(var); vec(autocorr_i .* sd sd')]` over `replic` simulations
-/// of `periods` periods (the first `drop` dropped, `disp_moments.m`).
+/// of `periods` periods from `y0` (the first `drop` dropped, `disp_moments.m`), with the
+/// autocovariances up to lag `ar` (`options_.ar`).
 #[allow(clippy::too_many_arguments)]
 pub fn simulated_moment_uncertainty<R: Rng + ?Sized>(
     dr: &DecisionRule,
     sigma_e: &Mat,
+    y0: &[f64],
     varobs: &[usize],
     ind: &[usize],
     periods: usize,
@@ -362,7 +211,8 @@ pub fn simulated_moment_uncertainty<R: Rng + ?Sized>(
     let nv = varobs.len();
     let mut mm = Mat::zeros(ind.len(), replic);
     for rep in 0..replic {
-        let ys = simulate(dr, sigma_e, periods, rng);
+        let ys = simulate(dr, sigma_e, y0, periods, rng);
+
         let nt = periods - drop;
         let y = Mat::from_fn(nt, nv, |t, j| ys[(varobs[j], drop + t)]);
         let mean: Vec<f64> = (0..nv).map(|j| y.column(j).sum() / nt as f64).collect();

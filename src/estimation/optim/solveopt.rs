@@ -44,8 +44,9 @@ pub struct SolveoptOptions {
     pub lb_gradient_step: f64,
     /// Evaluate the gradient's coordinates in parallel (same result).
     pub parallel: bool,
-    /// ---- estimation completion ---- `analytic_derivation`: solvopt's `grad = 1` (exact
-    /// gradients from the objective's [`Objective::eval_grad`], `app = 0`).
+    /// ---- estimation completion ---- `analytic_derivation` or the method of moments'
+    /// `analytic_jacobian`: solvopt's `grad = 1` (exact gradients from
+    /// [`crate::estimation::analytic::eval_with_gradient`], `app = 0`).
     pub analytic: bool,
 }
 
@@ -295,10 +296,13 @@ pub fn solveopt(obj: &dyn Objective, x0: &[f64], opts: &SolveoptOptions) -> Resu
             let (g, c) = apprgrdn(obj, x, f, deltax, par);
             (g, c, 0)
         } else {
-            let g = obj
-                .eval_grad(x, crate::estimation::analytic::AnalyticHessian::None)
-                .map(|e| e.grad)
-                .unwrap_or_else(|| vec![f64::NAN; x.len()]);
+            let g = crate::estimation::analytic::eval_with_gradient(
+                obj,
+                x,
+                crate::estimation::analytic::AnalyticHessian::None,
+            )
+            .map(|e| e.grad)
+            .unwrap_or_else(|| vec![f64::NAN; x.len()]);
             (g, 0, 1)
         }
     };

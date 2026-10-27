@@ -79,6 +79,8 @@ pub struct MomOptions {
     /// `options_mom_.optim_opt` (stream O's `optim::minimize` reads it).
     pub optim: Option<OptValue>,
     pub gstep: [f64; 2],
+    /// `mode_file`: starting values (and Hessian) from a mode file (`check_mode_file.m`).
+    pub mode_file: Option<String>,
     /// the raw options (MCMC after the mode: `crate::estimation::q3_mcmc`).
     pub raw: Options,
 }
@@ -154,6 +156,7 @@ const KNOWN: &[&str] = &[
     "mh_replic",
     "dirname",
     "optim",
+    "mode_file",
     // display options (accepted, no effect)
     "nograph",
     "nodisplay",
@@ -303,6 +306,10 @@ impl MomOptions {
             silent_optimizer: flag_or(o, "silent_optimizer", false),
             optim: opt(o, "optim").cloned(),
             gstep: [1e-2, 1.0],
+            mode_file: match opt(o, "mode_file") {
+                Some(OptValue::Str(s)) if !s.is_empty() => Some(s.clone()),
+                _ => None,
+            },
             raw: o.clone(),
         })
     }
@@ -408,22 +415,34 @@ fn results_table(
             _ => {}
         }
     }
+    for e in est {
+        match e.kind {
+            EstimatedKind::MeStdErr(k) => w = w.max(m.endo_names[k].len()),
+            EstimatedKind::MeCorr(a, b) => w = w.max(m.endo_names[a].len() + m.endo_names[b].len()),
+            _ => {}
+        }
+    }
     let tit1 = if posterior.is_some() {
         format!("{:<w$} {:>10} {:>8} {:>7} {:>6} {:>6}\n", " ", "prior mean", "mode", "s.d.", "prior", "pstdev")
     } else {
         format!("{:<w$} {:>10} {:>7} {:>6}\n", " ", "Estimate", "s.d.", "t-stat")
     };
     let mut out = format!("\nRESULTS FROM {} ESTIMATION\n", title.to_uppercase());
-    for (section, pick) in [("parameters", 2), ("standard deviation of shocks", 0), ("correlation of shocks", 1)] {
+    for (section, pick) in [
+        ("parameters", 2),
+        ("standard deviation of shocks", 0),
+        ("standard deviation of measurement errors", 3),
+        ("correlation of shocks", 1),
+        ("correlation of measurement errors", 4),
+    ] {
         let idx: Vec<usize> = (0..est.len())
             .filter(|&k| match est[k].kind {
                 EstimatedKind::Param(_) => pick == 2,
                 EstimatedKind::StdErr(_) => pick == 0,
                 EstimatedKind::Corr(..) => pick == 1,
-                EstimatedKind::MeStdErr(_)
-                | EstimatedKind::MeCorr(..)
-                | EstimatedKind::Skew(_)
-                | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
+                EstimatedKind::MeStdErr(_) => pick == 3,
+                EstimatedKind::MeCorr(..) => pick == 4,
+                EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
             })
             .collect();
         if idx.is_empty() {
@@ -435,10 +454,9 @@ fn results_table(
                 EstimatedKind::Param(_) => names[k].clone(),
                 EstimatedKind::StdErr(i) => m.exo_names[i].clone(),
                 EstimatedKind::Corr(a, b) => format!("{},{}", m.exo_names[a], m.exo_names[b]),
-                EstimatedKind::MeStdErr(_)
-                | EstimatedKind::MeCorr(..)
-                | EstimatedKind::Skew(_)
-                | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
+                EstimatedKind::MeStdErr(k) => m.endo_names[k].clone(),
+                EstimatedKind::MeCorr(a, b) => format!("{},{}", m.endo_names[a], m.endo_names[b]),
+                EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
             };
             match posterior {
                 Some(pr) => {
@@ -596,7 +614,12 @@ pub struct Setup {
     pub bayesian: bool,
     pub penalized: bool,
     pub priors: Option<Vec<Prior>>,
+    /// `bayestopt_` of the MCMC: the priors, Laplace-approximated (normal) for GMM/SMM
+    /// (`transform_prior_to_laplace_prior.m`).
+    pub mcmc_priors: Option<Vec<Prior>>,
     pub rows: Vec<super::MatchedMoment>,
+    /// `hessian_xparam0` from the `mode_file`.
+    pub hess0: Option<Mat>,
 }
 
 /// `method_of_moments` (`mom.run`).
@@ -622,7 +645,9 @@ pub fn method_of_moments(
         bayesian,
         penalized,
         priors,
+        mcmc_priors,
         rows,
+        hess0,
     } = setup(mf, blocks, opts, ctx, inputs)?;
     let out = Out { quiet: inputs.quiet || o.noprint };
     estimate(
@@ -643,7 +668,9 @@ pub fn method_of_moments(
         bayesian,
         penalized,
         priors,
+        mcmc_priors,
         rows,
+        hess0,
     )
 }
 
@@ -656,13 +683,15 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
 
     // ---- checks on the blocks ------------------------------------------------------------
     let est = mf.estimated_params_dynare_order();
-    // stream M: Dynare's method_of_moments has no measurement errors (mom.run errors out)
     if est.iter().any(|e| matches!(e.kind, EstimatedKind::Skew(_))) {
         bail!("method_of_moments: skew parameters in estimated_params are not supported by dynare-rust");
     }
-    if est.iter().any(|e| matches!(e.kind, EstimatedKind::MeStdErr(_) | EstimatedKind::MeCorr(..))) {
+    // SMM and IRF matching take estimated measurement errors (M_.H through set_all_parameters)
+    if o.method == Method::Gmm
+        && est.iter().any(|e| matches!(e.kind, EstimatedKind::MeStdErr(_) | EstimatedKind::MeCorr(..)))
+    {
         bail!(
-            "method_of_moments: measurement errors are not supported; remove the stderr/corr entries on observed variables from estimated_params"
+            "method_of_moments: GMM estimation does not support measurement error(s) yet. Please specify them as a structural shock!"
         );
     }
     if est.is_empty() {
@@ -790,7 +819,9 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
     let explicit: Vec<(f64, f64)> = est
         .iter()
         .map(|e| match e.kind {
-            EstimatedKind::Corr(..) => (e.lb.unwrap_or(-1.0).clamp(-1.0, 1.0), e.ub.unwrap_or(1.0).clamp(-1.0, 1.0)),
+            EstimatedKind::Corr(..) | EstimatedKind::MeCorr(..) => {
+                (e.lb.unwrap_or(-1.0).clamp(-1.0, 1.0), e.ub.unwrap_or(1.0).clamp(-1.0, 1.0))
+            }
             _ => (e.lb.unwrap_or(f64::NEG_INFINITY), e.ub.unwrap_or(f64::INFINITY)),
         })
         .collect();
@@ -803,8 +834,8 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
         bounds.ub[i] = bounds.ub[i].min(explicit[i].1);
     }
     // set_correct_bounds_for_stderr_corr.m (its strict `<` leaves the last corr out)
-    let nvx = est.iter().filter(|e| matches!(e.kind, EstimatedKind::StdErr(_))).count();
-    let ncx = est.iter().filter(|e| matches!(e.kind, EstimatedKind::Corr(..))).count();
+    let nvx = est.iter().filter(|e| matches!(e.kind, EstimatedKind::StdErr(_) | EstimatedKind::MeStdErr(_))).count();
+    let ncx = est.iter().filter(|e| matches!(e.kind, EstimatedKind::Corr(..) | EstimatedKind::MeCorr(..))).count();
     for i in 0..n {
         let p1 = i + 1;
         if p1 <= nvx && bounds.lb[i] < 0.0 {
@@ -817,34 +848,60 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
     }
 
     // ---- initial values ----------------------------------------------------------------------
-    let calib = |e: &EstimatedParam| match e.kind {
-        EstimatedKind::Param(i) => model.params[i],
-        EstimatedKind::StdErr(i) => mf.sigma_e[(i, i)].sqrt(),
-        EstimatedKind::Corr(i, j) => mf.sigma_e[(i, j)] / (mf.sigma_e[(i, i)] * mf.sigma_e[(j, j)]).sqrt(),
-        EstimatedKind::MeStdErr(_)
-        | EstimatedKind::MeCorr(..)
-        | EstimatedKind::Skew(_)
-        | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
+    let me_rows: Vec<Option<(usize, usize)>> = est
+        .iter()
+        .map(|e| match e.kind {
+            EstimatedKind::MeStdErr(k) => mf.varobs_position(k).map(|i| (i, i)),
+            EstimatedKind::MeCorr(a, b) => mf.varobs_position(a).zip(mf.varobs_position(b)),
+            _ => None,
+        })
+        .collect();
+    if let Some(k) = (0..n).find(|&k| {
+        matches!(est[k].kind, EstimatedKind::MeStdErr(_) | EstimatedKind::MeCorr(..)) && me_rows[k].is_none()
+    }) {
+        bail!("set_prior: {} has to be declared as observable since you assume a measurement error on it.", names[k]);
+    }
+    let h = &mf.h;
+    let calib = |k: usize| match (est[k].kind, me_rows[k]) {
+        (EstimatedKind::Param(i), _) => model.params[i],
+        (EstimatedKind::StdErr(i), _) => mf.sigma_e[(i, i)].sqrt(),
+        (EstimatedKind::Corr(i, j), _) => mf.sigma_e[(i, j)] / (mf.sigma_e[(i, i)] * mf.sigma_e[(j, j)]).sqrt(),
+        (EstimatedKind::MeStdErr(_), Some((i, _))) => h[(i, i)].sqrt(),
+        (EstimatedKind::MeCorr(..), Some((i, j))) => h[(i, j)] / (h[(i, i)] * h[(j, j)]).sqrt(),
+        _ => unreachable!("rejected by run()"),
     };
+    // set_prior.m: the init column, NaN replaced by the prior mean (bayestopt_.p1)
     let mut x0: Vec<f64> = est
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(k, e)| {
             let init = mf.estimated_params_init.iter().find(|i| i.kind == e.kind).map(|i| i.value).or(e.init);
-            match init {
-                Some(v) => v,
-                None if mf.estimated_params_init_use_calibration => calib(e),
-                None if bayesian => {
-                    let c = calib(e);
-                    if c.is_finite() { c } else { e.mean }
-                }
-                None => f64::NAN,
+            match (init, &priors) {
+                (Some(v), _) => v,
+                (None, Some(pr)) => pr[k].mean,
+                (None, None) => f64::NAN,
             }
         })
         .collect();
+    // check_mode_file.m (unless the mode comes from the MCMC: mh_posterior_mode_estimation)
+    let mut hess0 = None;
+    if let Some(f) = &o.mode_file {
+        let mh_mode = match opt(opts, "mh_posterior_mode_estimation") {
+            Some(OptValue::Flag) => true,
+            Some(OptValue::Num(v)) => *v != 0.0,
+            _ => false,
+        };
+        if !bayesian || !mh_mode {
+            let x_init = x0.clone();
+            let (xm, hh) = crate::driver::read_mode_file(&ctx.dir, f, &names, o.optimizer_vec[0], || Ok(x_init))?;
+            x0 = xm;
+            hess0 = hh;
+        }
+    }
     if mf.estimated_params_init_use_calibration {
         for (k, e) in est.iter().enumerate() {
             if !mf.estimated_params_init.iter().any(|i| i.kind == e.kind) {
-                x0[k] = calib(e);
+                x0[k] = calib(k);
             }
         }
     }
@@ -883,17 +940,50 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
         o.qz_criterium,
     );
     problem.ssm = crate::deterministic::SteadyStateModel::from_modfile(mf)?; // stream D
+    problem.exo_ss = mf.exo_steady_state();
+    // M_.H, M_.Correlation_matrix_ME and check_for_calibrated_covariances.m's
+    // calibrated_covariances_ME (the off-diagonal entries of M_.H that are not estimated)
+    problem.base_h = mf.h.clone();
+    problem.base_corr_h = mf.corr_h.clone();
+    problem.me_rows = me_rows.clone();
+    let est_corr_h: Vec<(usize, usize)> =
+        (0..n).filter(|&k| matches!(est[k].kind, EstimatedKind::MeCorr(..))).filter_map(|k| me_rows[k]).collect();
+    for j in 0..mf.h.ncols() {
+        for i in j + 1..mf.h.nrows() {
+            if mf.h[(i, j)] != 0.0 && !est_corr_h.iter().any(|&(a, b)| (a, b) == (i, j) || (b, a) == (i, j)) {
+                problem.cal_cov_h.push((i, j, mf.h[(i, j)]));
+            }
+        }
+    }
     {
         let (params, _) = problem.set_all_parameters(&x0);
-        let ys1 =
-            crate::dsge::solve_steady(model, problem.ssm.as_ref(), &params, &ys_calib, &steady_opts).map_err(|e| {
-                anyhow!(
-                    "method_of_moments: The steady state at the initial parameters cannot be computed (info {}).",
-                    e.info
-                )
-            })?;
-        problem.ys_guess =
-            crate::dsge::solve_steady(model, problem.ssm.as_ref(), &params, &ys1, &steady_opts).unwrap_or(ys1);
+        let ys1 = crate::dsge::solve_steady_at(
+            model,
+            problem.ssm.as_ref(),
+            &params,
+            &ys_calib,
+            &problem.exo_ss,
+            &steady_opts,
+            true,
+        )
+        .map(|(ys, _)| ys)
+        .map_err(|e| {
+            anyhow!(
+                "method_of_moments: The steady state at the initial parameters cannot be computed (info {}).",
+                e.info
+            )
+        })?;
+        problem.ys_guess = crate::dsge::solve_steady_at(
+            model,
+            problem.ssm.as_ref(),
+            &params,
+            &ys1,
+            &problem.exo_ss,
+            &steady_opts,
+            true,
+        )
+        .map(|(ys, _)| ys)
+        .unwrap_or(ys1);
     }
     problem.bounds = bounds.clone();
     problem.rows = rows.clone();
@@ -917,21 +1007,34 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
     let mut m_data = None;
     let mut nobs = 0;
     if o.method != Method::IrfMatching {
-        let df = o
-            .datafile
-            .as_ref()
-            .ok_or_else(|| anyhow!("method_of_moments: the datafile option is required for {}", o.method.name()))?;
-        let path = resolve(&ctx.dir, df, "csv");
-        if path.file_stem().and_then(|s| s.to_str()) == Some(ctx.fname.as_str()) {
-            bail!(
-                "method_of_moments: 'datafile' and mod file are not allowed to have the same name; change the name of the 'datafile'!"
-            );
-        }
-        let table = crate::data::Table::read_csv(&path).with_context(|| format!("reading {}", path.display()))?;
-        let sample = table.sample(&mf.varobs, o.first_obs, o.nobs)?;
+        // makedataset.m: the datafile option, or options_.dataset of a preceding `data` command
+        // (options_mom_.dataset = options_.dataset)
+        let sample = match (&o.datafile, crate::dataset::current_data_command()) {
+            (Some(_), Some(_)) => bail!(
+                "makedataset: You cannot simultaneously use the data command and the datafile option (in the estimation command)!"
+            ),
+            (Some(df), None) => {
+                let path = resolve(&ctx.dir, df, "csv");
+                if path.file_stem().and_then(|s| s.to_str()) == Some(ctx.fname.as_str()) {
+                    bail!(
+                        "method_of_moments: 'datafile' and mod file are not allowed to have the same name; change the name of the 'datafile'!"
+                    );
+                }
+                let table =
+                    crate::data::Table::read_csv(&path).with_context(|| format!("reading {}", path.display()))?;
+                table.sample(&mf.varobs, o.first_obs, o.nobs)?
+            }
+            (None, Some(_)) => crate::dataset::Dataset::load(mf, &ctx.dir, opts)?.sample(&mf.varobs)?,
+            (None, None) => bail!("makedataset: datafile option is missing!"),
+        };
         nobs = sample.nrows();
         if ar > nobs + 1 {
             bail!("method_of_moments: Dataset is too short to compute higher than first moments!");
+        }
+        if sample.iter().any(|v| v.is_nan())
+            && (o.hp_filter != 0.0 || o.one_sided_hp_filter != 0.0 || o.bandpass.is_some())
+        {
+            bail!("method_of_moments: missing data is incompatible with filtering data!");
         }
         out.p("Computing data moments. Note that NaN values in the moments (due to leads and lags or missing data) are replaced by the mean of the corresponding moment.\n");
         let (dm, md) = problem.series_moments(&sample, o.prefilter);
@@ -946,6 +1049,7 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
         let long = (o.simulation_multiple * nobs as f64).round() as usize;
         vcf = 1.0 + 1.0 / o.simulation_multiple;
         let ne = model.n_exo();
+        let mut rng = ChaCha8Rng::seed_from_u64(ctx.seed_override.unwrap_or(o.seed));
         let mut z = match &inputs.shock_series {
             Some(z) => {
                 if z.nrows() != long + o.burnin || z.ncols() != ne {
@@ -959,15 +1063,29 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
                 }
                 z.clone()
             }
-            None => {
-                let mut rng = ChaCha8Rng::seed_from_u64(ctx.seed_override.unwrap_or(o.seed));
-                Mat::from_fn(long + o.burnin, ne, |_, _| 0.0).map(|_| StandardNormal.sample(&mut rng))
+            None => Mat::from_fn(long + o.burnin, ne, |_, _| 0.0).map(|_| StandardNormal.sample(&mut rng)),
+        };
+        // temp_shocks_ME = randn(smmstream, long, length(M_.H)), after temp_shocks
+        let nh = mf.varobs.len();
+        let mut z_me = match &inputs.me_shock_series {
+            Some(z) => {
+                if z.nrows() != long || z.ncols() != nh {
+                    bail!(
+                        "method_of_moments: the injected measurement-error shock series is {}x{}, expected {long}x{nh}",
+                        z.nrows(),
+                        z.ncols()
+                    );
+                }
+                z.clone()
             }
+            None => Mat::from_fn(long, nh, |_, _| 0.0).map(|_| StandardNormal.sample(&mut rng)),
         };
         if o.bounded_shock_support {
             z.apply(|v| *v = v.clamp(-2.0, 2.0));
+            // run.m truncates the measurement-error draws at -2 only (sic)
+            z_me.apply(|v| *v = v.max(-2.0));
         }
-        problem.smm = Some(SmmSetup { shock_series: z, long });
+        problem.smm = Some(SmmSetup { shock_series: z, me_shock_series: z_me, long });
     }
     if let Some(t) = &irf_targets {
         let winv = solve(&t.w, &Mat::identity(t.w.nrows(), t.w.nrows())).ok_or_else(|| {
@@ -995,6 +1113,7 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
         });
     }
 
+    let mcmc_priors = if o.method == Method::IrfMatching { priors.clone() } else { bound_priors };
     Ok(Setup {
         o,
         problem,
@@ -1009,8 +1128,10 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
         mom_nbr,
         bayesian,
         penalized,
+        mcmc_priors,
         priors,
         rows,
+        hess0,
     })
 }
 
@@ -1033,7 +1154,9 @@ fn estimate(
     bayesian: bool,
     penalized: bool,
     priors: Option<Vec<Prior>>,
+    mcmc_priors: Option<Vec<Prior>>,
     rows: Vec<super::MatchedMoment>,
+    hess0: Option<Mat>,
 ) -> Result<MomResults> {
     let n = est.len();
     // ---- objective at the initial values ---------------------------------------------------------
@@ -1135,6 +1258,19 @@ fn estimate(
         hessian: None,
         laplace: None,
     };
+    // check_posterior_sampler_options.m: the slice sampler without slice_initialize_with_mode
+    // sets mode_compute = 0, cova_compute = 0 and mh_posterior_mode_estimation; for IRF matching
+    // mom.run then skips the mode and starts the MCMC at the prior mode (prior mean where
+    // undefined or outside the bounds), invhess = diag(prior variances)
+    let slice_no_mode = bayesian
+        && crate::modfile::opt(&o.raw, "mh_replic").is_some_and(|v| matches!(v, OptValue::Num(r) if *r > 0.0))
+        && crate::estimation::samplers::SamplerOptions::from_options(
+            opt(&o.raw, "posterior_sampling_method"),
+            opt(&o.raw, "posterior_sampler_options"),
+        )?
+        .mh_posterior_mode_estimation();
+    // GMM/SMM: hessian_xparam1 = inv(invhess) of standard_errors.m (the MCMC's jumping covariance)
+    let mut hessian_gmm_smm: Option<Mat> = None;
 
     if o.method != Method::IrfMatching {
         // ---- mode_compute_gmm_smm.m ----------------------------------------------------------------
@@ -1248,34 +1384,15 @@ fn estimate(
         if !pd {
             out.p("\nOPTIMIZATION PROBLEM!\n (minus) the Hessian matrix at the \"mode\" is not positive definite!\n=> variance of the estimated parameters are not positive.\nYou should try to change the initial values of the parameters using\nthe estimated_params_init block, or use another optimization routine.\n");
         }
-        // ---- final values, J-test (Jtest.m) ------------------------------------------------------------
-        res.q = mm_final.q;
-        res.fval = mm_final.fval;
-        res.model_moments = mm_final.model_moments.clone();
+        hessian_gmm_smm = cov.as_ref().and_then(|c| solve(c, &Mat::identity(n, n)));
         res.weighting = sw.clone();
         res.woptflag = woptflag;
-        if mom_nbr > n {
-            let j = jtest(&problem, &xparam1, &data_moments, md, &sw, woptflag, nobs, vcf, o.bartlett_kernel_lag)?;
-            out.p(format!("\nValue of J-test statistic: {:.6}\n", j.j_stat));
-            out.p(format!("p-value of J-test statistic: {:.6}\n", j.p_val));
-            res.j_test = Some(j);
-        }
     } else {
         // ---- mode_compute_irf_matching.m ------------------------------------------------------------
         let w = irf_targets.as_ref().unwrap().w.clone();
         let mut fval = fval0;
-        let mut hh: Option<Mat> = None;
-        // check_posterior_sampler_options.m: the slice sampler without slice_initialize_with_mode
-        // sets mode_compute = 0, cova_compute = 0 and mh_posterior_mode_estimation; mom.run then
-        // skips the mode and starts the MCMC at the prior mode (prior mean where undefined or
-        // outside the bounds), invhess = diag(prior variances)
-        let slice_no_mode = bayesian
-            && crate::modfile::opt(&o.raw, "mh_replic").is_some_and(|v| matches!(v, OptValue::Num(r) if *r > 0.0))
-            && crate::estimation::samplers::SamplerOptions::from_options(
-                opt(&o.raw, "posterior_sampling_method"),
-                opt(&o.raw, "posterior_sampler_options"),
-            )?
-            .mh_posterior_mode_estimation();
+        // hessian_xparam0 (mode_file)
+        let mut hh: Option<Mat> = hess0;
         if slice_no_mode {
             let pr = priors.as_deref().unwrap();
             xparam1 = crate::estimation::samplers::prior_mode_start(pr, &problem.bounds);
@@ -1292,7 +1409,7 @@ fn estimate(
             res.stdh = vec![f64::NAN; n];
             res.q = fin.q;
             res.fval = fin.fval;
-            res.model_moments = fin.model_moments.clone();
+            res.model_moments = fin.model_moments;
             res.weighting = w.clone();
         }
         for (it, &code) in o.optimizer_vec.iter().enumerate().filter(|_| !slice_no_mode) {
@@ -1347,29 +1464,15 @@ fn estimate(
             }
             res.q = fin.q;
             res.fval = fin.fval;
-            res.model_moments = fin.model_moments.clone();
+            res.model_moments = fin.model_moments;
             res.weighting = w;
         }
     }
 
-    // ---- display_comparison_moments_irfs.m ------------------------------------------------------------
-    let (title, headers) = if o.method == Method::IrfMatching {
-        ("COMPARISON OF MATCHED DATA IRFS AND MODEL IRFS".to_string(), ["IRF", "Data", "Model"])
-    } else {
-        (
-            format!("Comparison of matched data moments and model moments ({})", o.method.name()),
-            ["Moment", "Data", "Model"],
-        )
-    };
-    let vals = Mat::from_fn(mom_nbr, 2, |i, j| if j == 0 { data_moments[i] } else { res.model_moments[i] });
-    let lw = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 2;
-    let headers: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
-    out.p(dyntable(&title, &headers, &labels, &vals, lw, 10, 7));
-    out.p(format!("\n==== Method of Moments Estimation ({}) Completed ====\n\n", o.method.name()));
-
-    // ---- Bayesian MCMC estimation (mh_replic > 0) ----
-    if bayesian && !penalized {
-        if let (Some(pr), Some(h)) = (priors.as_deref(), res.hessian.as_ref()) {
+    // ---- Bayesian MCMC estimation (priors and mh_replic > 0 or load_mh_file, every method: for
+    // GMM/SMM the penalized objective is the posterior kernel, with the Laplace priors) ----
+    if bayesian {
+        if let (Some(pr), Some(h)) = (mcmc_priors.as_deref(), hessian_gmm_smm.as_ref().or(res.hessian.as_ref())) {
             let obj = MomObjective { p: &problem, data: &data_moments, w: &res.weighting, analytic: false };
             let dname = match opt(&o.raw, "dirname") {
                 Some(OptValue::Str(d)) => ctx.dir.join(d),
@@ -1400,10 +1503,56 @@ fn estimate(
                     "posterior_sd": stats.params.iter().map(|p| p.var.sqrt()).collect::<Vec<_>>(),
                 });
                 std::fs::write(mdir.join(format!("{}_mom_mcmc.json", ctx.fname)), serde_json::to_string_pretty(&j)?)?;
+                // xparam1 = get_posterior_parameters('mean', ...): the final results are at the
+                // posterior mean (with mh_posterior_mode_estimation Dynare stops after the MCMC)
+                if !slice_no_mode {
+                    xparam1 = stats.mean.clone();
+                }
             }
         }
     }
+
+    // ---- final estimation results: objective at xparam1, J-test (Jtest.m) -------------------------------
+    let fin = problem
+        .evaluate(&xparam1, &data_moments, &res.weighting)
+        .map_err(|f| fail_err(f, "objective at the final estimate"))?;
+    res.q = fin.q;
+    res.fval = fin.fval;
+    res.model_moments = fin.model_moments;
+    if o.method != Method::IrfMatching && mom_nbr > n {
+        let md = m_data.as_ref().unwrap();
+        let j = jtest(
+            &problem,
+            &xparam1,
+            &data_moments,
+            md,
+            &res.weighting,
+            res.woptflag,
+            nobs,
+            vcf,
+            o.bartlett_kernel_lag,
+        )?;
+        out.p(format!("\nValue of J-test statistic: {:.6}\n", j.j_stat));
+        out.p(format!("p-value of J-test statistic: {:.6}\n", j.p_val));
+        res.j_test = Some(j);
+    }
+
+    // ---- display_comparison_moments_irfs.m ------------------------------------------------------------
+    let (title, headers) = if o.method == Method::IrfMatching {
+        ("COMPARISON OF MATCHED DATA IRFS AND MODEL IRFS".to_string(), ["IRF", "Data", "Model"])
+    } else {
+        (
+            format!("Comparison of matched data moments and model moments ({})", o.method.name()),
+            ["Moment", "Data", "Model"],
+        )
+    };
+    let vals = Mat::from_fn(mom_nbr, 2, |i, j| if j == 0 { data_moments[i] } else { res.model_moments[i] });
+    let lw = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 2;
+    let headers: Vec<String> = headers.iter().map(|s| s.to_string()).collect();
+    out.p(dyntable(&title, &headers, &labels, &vals, lw, 10, 7));
+    out.p(format!("\n==== Method of Moments Estimation ({}) Completed ====\n\n", o.method.name()));
     res.stages = stages;
+
     res.xparam1 = xparam1;
     write_results(ctx, &field, &res, mf, &est)?;
     Ok(res)
@@ -1566,10 +1715,12 @@ fn write_results(ctx: &Context, field: &str, r: &MomResults, mf: &ModFile, est: 
             EstimatedKind::Corr(a, b) => {
                 ("shocks_corr", format!("{}_{}", mf.model.exo_names[a], mf.model.exo_names[b]))
             }
-            EstimatedKind::MeStdErr(_)
-            | EstimatedKind::MeCorr(..)
-            | EstimatedKind::Skew(_)
-            | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
+            // display_estimation_results_table.m: measurement_errors_std / measurement_errors_corr
+            EstimatedKind::MeStdErr(k) => ("measurement_errors_std", mf.model.endo_names[k].clone()),
+            EstimatedKind::MeCorr(a, b) => {
+                ("measurement_errors_corr", format!("{}_{}", mf.model.endo_names[a], mf.model.endo_names[b]))
+            }
+            EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => unreachable!("rejected by run()"),
         };
         mode.entry(group).or_insert_with(|| json!({}))[&name] = json!(r.xparam1[k]);
         std.entry(group).or_insert_with(|| json!({}))[&name] = json!(r.stdh[k]);

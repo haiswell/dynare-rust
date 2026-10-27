@@ -534,7 +534,21 @@ pub fn solve_model(
     order: usize,
     opts: SolverOptions,
 ) -> Result<KOrderDr> {
-    let x = vec![0.0; model.n_exo()];
+    solve_model_at(model, ys, &vec![0.0; model.n_exo()], params, sigma_e, order, opts)
+}
+
+/// [`solve_model`] with the derivatives taken at the exogenous steady state `x` (stochastic_solvers.m
+/// evaluates them at `oo_.exo_steady_state`).
+pub fn solve_model_at(
+    model: &Model,
+    ys: &[f64],
+    x: &[f64],
+    params: &[f64],
+    sigma_e: &Mat,
+    order: usize,
+    opts: SolverOptions,
+) -> Result<KOrderDr> {
+    let x = x.to_vec();
     let g1 = model.dynamic_jacobian(ys, &x, params);
     let fo = FirstOrderSolver::new(&model.lead_lag_incidence, model.n_exo(), opts);
     let dr1 = fo.solve(&g1, ys).map_err(|e| anyhow!("{e}"))?;

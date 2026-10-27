@@ -57,9 +57,18 @@ fn string(v: &OptValue) -> String {
 }
 
 impl HetOptions {
-    /// Reads the options of a `heterogeneity_*_steady_state` command.
+    /// Reads the options of a `heterogeneity_*_steady_state` command on top of the defaults.
     pub fn from_options(opts: &Options) -> Result<HetOptions> {
         let mut o = HetOptions::default();
+        o.apply(opts)?;
+        Ok(o)
+    }
+
+    /// The assignments to `options_.heterogeneity` made by the options of a
+    /// `heterogeneity_*_steady_state` command: the preprocessor writes only the options that are
+    /// given, so the others keep the value an earlier command left (see [`HetSession`]).
+    pub fn apply(&mut self, opts: &Options) -> Result<()> {
+        let o = self;
         for (k, v) in opts {
             match k.as_str() {
                 "filename" => o.steady_state_file_name = string(v),
@@ -83,6 +92,7 @@ impl HetOptions {
                 "calibration_max_iter" => o.calibration.max_iter = num(v, k)? as usize,
                 "calibration_verbosity" => o.calibration.verbosity = num(v, k)? as i32,
                 "calibration_target_equations" => {
+                    o.calibration.target_equations.clear();
                     let items: Vec<&OptValue> = match v {
                         OptValue::List(l) => l.iter().collect(),
                         other => vec![other],
@@ -103,7 +113,7 @@ impl HetOptions {
                 _ => {}
             }
         }
-        Ok(o)
+        Ok(())
     }
 }
 
@@ -410,6 +420,15 @@ pub struct HetSession {
     /// Seed of the stochastic simulation draws.
     pub seed: u64,
     pub workspace: HashMap<String, MatValue>,
+    /// `options_.heterogeneity` (steady-state, check, forward, time-iteration and calibration
+    /// options): persistent, the commands write only the options they are given.
+    pub het_options: HetOptions,
+    /// `options_.heterogeneity.solve.truncation_horizon` (`None`: the default, 300).
+    pub truncation_horizon: Option<usize>,
+    /// `(oo_.initial_steady_state or oo_.initial_exo_steady_state non-empty, oo_.initval_series
+    /// non-empty)` as the driver found them before the command (`endval` block, `initval_file`):
+    /// news-shock simulations refuse both.
+    pub pf_start: (bool, bool),
     /// The `options_` fields `heterogeneity_simulate` sets (`irf`, `periods`, `irf_shocks`, `relative_irf`,
     /// `impulse_responses.plot_threshold`, `add_tiny_number_to_cholesky`): the preprocessor writes them into
     /// `options_`, so they persist into the later `heterogeneity_simulate` calls of the run.
@@ -470,22 +489,23 @@ pub fn run_command(
 ) -> Result<()> {
     match name {
         "heterogeneity_load_steady_state" => {
-            let o = HetOptions::from_options(opts)?;
+            st.het_options.apply(opts)?;
+            let o = st.het_options.clone();
             let input = read_steady_state(name, &o, dir, &workspace(mf, st))?;
             st.steady_state = Some(run_load_steady_state(mf, &o, input)?);
         }
         "heterogeneity_compute_steady_state" => {
-            let o = HetOptions::from_options(opts)?;
+            st.het_options.apply(opts)?;
+            let o = st.het_options.clone();
             let input = read_steady_state(name, &o, dir, &workspace(mf, st))?;
             let c = run_compute_steady_state(mf, &o, input)?;
             mf.model.params = c.params;
             st.steady_state = Some(c.steady_state);
         }
         "heterogeneity_solve" => {
-            let mut t = 300usize;
             for (k, v) in opts {
                 match k.as_str() {
-                    "truncation_horizon" => t = num(v, k)? as usize,
+                    "truncation_horizon" => st.truncation_horizon = Some(num(v, k)? as usize),
                     // global display options (`dynare file nograph` puts them on every command)
                     "nograph" | "nodisplay" | "graph_format" | "noprint" => {}
                     _ => bail!("heterogeneity_solve: unknown option {k}"),
@@ -496,6 +516,7 @@ pub fn run_command(
                     "heterogeneity_solve: no steady state; run heterogeneity_load_steady_state or heterogeneity_compute_steady_state first"
                 );
             };
+            let t = st.truncation_horizon.unwrap_or(300);
             st.dr = Some(super::solve::solve_hetero(&mf.model, &mf.het, ss, t)?);
         }
         "heterogeneity_simulate" => {
@@ -504,6 +525,20 @@ pub fn run_command(
             let (Some(dr), Some(ss)) = (st.dr.as_ref(), st.steady_state.as_ref()) else {
                 bail!("No solution found. Run heterogeneity_solve first.");
             };
+            // simulate_news_shocks.m: the simulation starts from the steady state
+            if !mf.det_shocks.is_empty() {
+                if mf.histval.iter().any(|h| h.0) {
+                    bail!("histval not supported for news shock simulation. Simulation starts from steady state.");
+                }
+                if st.pf_start.0 {
+                    bail!("endval not supported for news shock simulation. Simulation starts from steady state.");
+                }
+                if st.pf_start.1 {
+                    bail!(
+                        "initval_series not supported for news shock simulation. Simulation starts from steady state."
+                    );
+                }
+            }
             let res = super::simulate::simulate(
                 &mf.model,
                 dr,

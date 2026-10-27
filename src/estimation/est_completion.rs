@@ -90,6 +90,9 @@ pub fn kalman_options(o: &Options, k: &mut KalmanOptions) {
     if bool_opt(o, "estimate_initial_states_endogenous_prior").unwrap_or(false) {
         k.lik_init = 2; // dynare_estimation_init.m (with Harvey_scale_factor = 0)
     }
+    // dynare_estimation_init.m:546-550 resets options_.noconstant = 0 in both branches: every
+    // estimation / smoother call runs with the constant of the measurement equation
+    k.noconstant = false;
     k.smoother_singularity_error = !bool_opt(o, "use_univariate_smoother_if_singularity_is_detected").unwrap_or(false)
         && !bool_opt(o, "noprint").unwrap_or(false);
 }
@@ -137,10 +140,12 @@ pub fn huge_number(o: &Options) -> Option<f64> {
 pub fn with_solver_options(mut dsge: DsgeModel, ss: &crate::analysis::StochSimulOptions) -> Result<DsgeModel> {
     let s = ss.solver_options();
     let qz = matches!(s.method, crate::solver::FirstOrderMethod::Qz);
-    if qz && s.qz_zero_threshold == crate::solver::SolverOptions::default().qz_zero_threshold {
+    let default = crate::solver::SolverOptions::default();
+    if qz && s.qz_zero_threshold == default.qz_zero_threshold && s.qz_criterium == default.qz_criterium {
         return Ok(dsge);
     }
-    let opts = crate::solver::SolverOptions { qz_criterium: crate::solver::SolverOptions::default().qz_criterium, ..s };
+    // options_.qz_criterium as select_qz_criterium_value.m left it (1-1e-6 for lik_init = 1)
+    let opts = s;
     if !qz {
         let solver = crate::solver::FirstOrderSolver::new(&dsge.model.lead_lag_incidence, dsge.model.n_exo(), opts);
         if !solver.reduction_applicable() {

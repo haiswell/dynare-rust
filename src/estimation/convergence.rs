@@ -28,6 +28,9 @@ pub struct ConvergenceOptions {
     /// `raftery_lewis(x2, ...)` on the `x2` left by its loading loop, i.e. on the last mh file
     /// only (`record.MhDraws(end,3)`). `None`: all draws.
     pub last_file_lines: Option<usize>,
+    /// `posterior_sampling_method = 'slice'`: no 2000-draw cutoff, `Origin = StepSize = 1`
+    /// below 2000 draws (mcmc_diagnostics.m:110, 218-223).
+    pub slice: bool,
 }
 
 impl Default for ConvergenceOptions {
@@ -38,6 +41,7 @@ impl Default for ConvergenceOptions {
             raftery_lewis_qrs: [0.025, 0.005, 0.95],
             brooks_gelman_plotrows: 3,
             last_file_lines: None,
+            slice: false,
         }
     }
 }
@@ -56,6 +60,7 @@ impl ConvergenceOptions {
     /// `raftery_lewis_diagnostics`, `raftery_lewis_qrs`, `brooks_gelman_plotrows`).
     pub fn from_options(o: &Options) -> Self {
         let mut c = ConvergenceOptions::default();
+        c.slice = matches!(opt(o, "posterior_sampling_method"), Some(OptValue::Str(s)) if s.trim_matches(|ch| ch == '\'' || ch == '"') == "slice");
         if let Some(v) = opt(o, "taper_steps").and_then(numbers) {
             c.geweke.taper_steps = v.iter().map(|&x| x as usize).collect();
         }

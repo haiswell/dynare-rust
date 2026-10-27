@@ -86,6 +86,9 @@ pub struct SamplingSpec<'a> {
     pub priors: &'a [Prior],
     /// `neighborhood_width` sampling around `xparam1` (pprior = 0).
     pub neighborhood: Option<(f64, &'a [f64])>,
+    /// `xparam1` and `hh` of the mode file (`pprior = 0` without `neighborhood_width`): the sample
+    /// is drawn from `N(xparam1, inv(hh))`.
+    pub posterior: Option<(&'a [f64], &'a crate::linalg::Mat)>,
 }
 
 /// The sample of `stability_mapping.m` (`fload == 0` branch), consuming `rng` in Dynare's
@@ -194,8 +197,40 @@ pub fn draw_sample(spec: &SamplingSpec, rng: &mut MatlabRng) -> Result<(Sample, 
                 row[j] = row[j] * (ub - lb) + lb;
             }
         }
+    } else if let Some((x, hh)) = spec.posterior {
+        // d = chol(inv(hh)); lp = randn(Nsam*2, nshock+np)*d + kron(ones(Nsam*2, 1), xparam1')
+        // (MATLAB's randn ziggurat is not ported: the normal draws are the inverse normal CDF of the
+        // MATLAB uniform stream, filled column by column like randn)
+        let n = nshock + np;
+        let Some(inv) = hh.clone().try_inverse() else {
+            bail!("sensitivity: the Hessian hh of the mode file is singular")
+        };
+        let sym = (&inv + inv.transpose()) * 0.5;
+        let Some(ch) = nalgebra::Cholesky::new(sym) else {
+            bail!("sensitivity: chol(inv(hh)): the Hessian of the mode file is not positive definite")
+        };
+        let l = ch.l();
+        let m2 = 2 * nsam;
+        let mut z = vec![vec![0.0; n]; m2];
+        for j in 0..n {
+            for row in z.iter_mut() {
+                row[j] = norminv(rng.rand(), 0.0, 1.0);
+            }
+        }
+        let mut lp: Sample = Vec::new();
+        for zr in &z {
+            // row vector z*d = (L z')' with d = L'
+            let row: Vec<f64> = (0..n).map(|c| x[c] + (0..n).map(|k| l[(c, k)] * zr[k]).sum::<f64>()).collect();
+            // lnprior(j) = any(lp(j,:)' <= bounds.lb | lp(j,:)' >= bounds.ub)
+            if !(0..n).any(|c| row[c] <= b.lb[c] || row[c] >= b.ub[c]) {
+                lp.push(row);
+            }
+        }
+        nsam = nsam.min(lp.len());
+        lpmat0 = lp[..nsam].iter().map(|r| r[..nshock].to_vec()).collect();
+        lpmat = lp[..nsam].iter().map(|r| r[nshock..].to_vec()).collect();
     } else {
-        bail!("sensitivity: sampling from the posterior (pprior=0 without neighborhood_width) is not supported");
+        bail!("sensitivity: sampling around the posterior mode (pprior=0) needs a mode_file or neighborhood_width");
     }
     Ok((lpmat0, lpmat))
 }

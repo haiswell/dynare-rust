@@ -152,6 +152,56 @@ pub fn kv_str(key: &str, v: &OptValue) -> Result<String> {
     }
 }
 
+/// csminwel's `NumgradAlgorithm`: dynare_minimize_objective.m takes any value, and
+/// csminwel1.m's `get_num_grad` errors on one other than 2, 3, 5, 13 or 15 when it computes a
+/// numerical gradient (never with an analytic gradient). `None`: keep the default.
+pub(crate) fn numgrad_algorithm(key: &str, v: &OptValue, analytic: bool) -> Result<Option<GradientMethod>> {
+    match GradientMethod::from_code(kv_num(key, v)? as i32) {
+        Some(m) => Ok(Some(m)),
+        None if analytic => Ok(None),
+        None => bail!("csminwel1: Unknown method for gradient evaluation!"),
+    }
+}
+
+/// csminwel's `InitialInverseHessian` (`H0 = eval(...)`): a number stays a scalar
+/// ([`CsminwelOptions::h0_scalar`]); `A*eye(n)`, `eye(n)*A` and `eye(n)` (with `n` the number
+/// of parameters or `n_params`) give the matrix. Other MATLAB expressions are not evaluated.
+pub(crate) fn initial_inverse_hessian(o: &mut CsminwelOptions, v: &OptValue, n: usize) -> Result<()> {
+    if let Ok(s) = kv_num("InitialInverseHessian", v) {
+        o.h0_scalar = Some(s);
+        o.h0 = None;
+        return Ok(());
+    }
+    let unsupported = || {
+        anyhow!(
+            "csminwel: InitialInverseHessian: only a number or a matrix A*eye(n) is supported (dynare-rust does not \
+             evaluate other MATLAB expressions)"
+        )
+    };
+    let OptValue::Str(s) = v else { return Err(unsupported()) };
+    let s: String = unquote(s).chars().filter(|c| !c.is_whitespace()).collect();
+    let mut scale = 1.0;
+    let mut eye = None;
+    for factor in s.split('*') {
+        if let Some(arg) = factor.strip_prefix("eye(").and_then(|r| r.strip_suffix(')')) {
+            if eye.is_some() {
+                return Err(unsupported());
+            }
+            let m = if arg == "n_params" { n } else { arg.parse::<usize>().map_err(|_| unsupported())? };
+            eye = Some(m);
+        } else {
+            scale *= factor.parse::<f64>().map_err(|_| unsupported())?;
+        }
+    }
+    let m = eye.ok_or_else(unsupported)?;
+    if m != n {
+        bail!("csminwel: InitialInverseHessian is {m}x{m} but there are {n} parameters");
+    }
+    o.h0 = Some(crate::linalg::Mat::identity(n, n) * scale);
+    o.h0_scalar = None;
+    Ok(())
+}
+
 /// `set_bounds_to_finite_values(bounds, options_.huge_number)`.
 pub fn finite_bounds(bounds: &Bounds, huge_number: f64) -> (Vec<f64>, Vec<f64>) {
     let lb = bounds.lb.iter().map(|&v| if v.is_infinite() { -huge_number } else { v }).collect();
@@ -166,6 +216,9 @@ pub fn finite_bounds(bounds: &Bounds, huge_number: f64) -> (Vec<f64>, Vec<f64>) 
 /// MATLAB counterpart does (penalty function for csminwel/newrat/particle swarm).
 pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeContext) -> Result<OptimResult> {
     let kv = |who: &str| key_values(ctx.optim, who);
+    // `options_.analytic_derivation || options_.mom.analytic_jacobian == 1` (fmincon, fminunc,
+    // csminwel and solvopt; newrat only follows analytic_derivation)
+    let analytic = analytic_derivation() || obj.has_gradient();
     let note = |what: &str| {
         println!(
             "NOTE: mode_compute={optimizer}: Dynare calls MATLAB's {what} here; dynare-rust runs its own substitute \
@@ -177,7 +230,7 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
             note("fmincon (Optimization Toolbox)");
             let mut o = QuasiNewtonOptions::fmincon();
             o.verbose = ctx.verbose;
-            if analytic_derivation() {
+            if analytic {
                 // ---- estimation completion ---- optimoptions(..., 'GradObj','on','TolX',1e-7)
                 o.analytic = true;
                 o.tol_x = 1e-7;
@@ -198,38 +251,24 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
             note("fminunc (Optimization Toolbox)");
             let mut o = QuasiNewtonOptions::fminunc();
             o.verbose = ctx.verbose;
-            o.analytic = analytic_derivation(); // ---- estimation completion ---- 'GradObj','on'
+            o.analytic = analytic; // ---- estimation completion ---- 'GradObj','on'
             o.apply_optim(&kv("fminunc")?, "fminunc")?;
             quasi_newton(obj, x0, None, &o)
         }
         4 => {
-            let mut o = CsminwelOptions {
-                verbose: ctx.verbose,
-                parallel: true,
-                analytic: analytic_derivation(),
-                ..Default::default()
-            };
+            let mut o = CsminwelOptions { verbose: ctx.verbose, parallel: true, analytic, ..Default::default() };
             for (k, v) in kv("csminwel")? {
                 match k.as_str() {
                     "MaxIter" => o.nit = kv_num(&k, &v)? as usize,
                     "TolFun" => o.crit = kv_num(&k, &v)?,
                     "NumgradAlgorithm" => {
-                        o.gradient_method = match kv_num(&k, &v)? as i32 {
-                            2 => GradientMethod::Forward,
-                            3 => GradientMethod::Central,
-                            5 => GradientMethod::FivePoint,
-                            m => bail!("csminwel: NumgradAlgorithm {m} is not available (2, 3 or 5)"),
+                        if let Some(m) = numgrad_algorithm(&k, &v, o.analytic)? {
+                            o.gradient_method = m;
                         }
                     }
                     "NumgradEpsilon" => o.gradient_epsilon = kv_num(&k, &v)?,
                     "verbosity" => o.verbose = ctx.verbose && kv_num(&k, &v)? != 0.0,
-                    "InitialInverseHessian" => {
-                        // MATLAB evals the string; numbers mean `value*eye(n)`.
-                        let s = kv_num(&k, &v).map_err(|_| {
-                            anyhow!("csminwel: InitialInverseHessian: only a scalar (times eye(n)) is supported")
-                        })?;
-                        o.h0 = Some(crate::linalg::Mat::identity(x0.len(), x0.len()) * s);
-                    }
+                    "InitialInverseHessian" => initial_inverse_hessian(&mut o, &v, x0.len())?,
                     "SaveFiles" => {}
                     other => println!("WARNING: csminwel: Unknown option ({other})!"),
                 }
@@ -314,7 +353,7 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
         }
         13 => bail!("Option mode_compute=13 is available only for method_of_moments estimation."),
         101 => {
-            let mut o = SolveoptOptions { analytic: analytic_derivation(), ..Default::default() }; // ---- estimation completion
+            let mut o = SolveoptOptions { analytic, ..Default::default() }; // ---- estimation completion
             o.apply_optim(&kv("solveopt")?)?;
             if !ctx.verbose {
                 o.verbosity = -1.0;

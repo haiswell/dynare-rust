@@ -18,7 +18,7 @@ use crate::model::Model;
 use crate::modfile::{Command, EstimatedKind, EstimatedParam, ModFile, OptValue, opt};
 use crate::solver::{
     DecisionRule, FirstOrderSolver, SolverOptions, StateSpaceIndex, SteadyOptions, kalman_transition_matrix,
-    state_space_index, steady_state_r,
+    state_space_index, steady_state_r_aux,
 };
 
 /// A failed evaluation, as Dynare's `info` vector: `info(1)` code and the
@@ -93,6 +93,12 @@ pub struct DsgeModel {
     pub steady_opts: SteadyOptions,
     /// `oo_.steady_state` after the `steady` command (calibration), aux variables set.
     pub ys_calib: Vec<f64>,
+    /// `oo_.exo_steady_state` (the exogenous values of `initval`/`endval`): the steady state
+    /// and the Jacobians are evaluated there (resol.m, stochastic_solvers.m).
+    pub exo_ss: Vec<f64>,
+    /// `~options_.steadystate.nocheck`: check the residuals of a `steady_state_model`
+    /// solution at every evaluation (resol.m, info 19).
+    pub steady_check: bool,
     /// The initial guess every likelihood evaluation starts `evaluate_steady_state` from:
     /// `oo_.steady_state` as `dynare_estimation_init` leaves it (steady state at the
     /// initial parameter vector, solved from `ys_calib`).
@@ -172,11 +178,23 @@ impl DsgeModel {
         for &(i, v) in &mf.initval {
             ys0[i] = v;
         }
-        let x_ss = vec![0.0; model.n_exo()];
+        let x_ss = mf.exo_steady_state();
         model.set_auxiliary_variables(&mut ys0, &x_ss, &model.params);
         let ssm = crate::deterministic::SteadyStateModel::from_modfile(mf)?;
-        let ys_calib = solve_steady(&model, ssm.as_ref(), &model.params, &ys0, &steady_opts)
-            .map_err(|e| anyhow!("steady state at the calibration failed (info {})", e.info))?;
+        let nocheck = steady_flag(mf, "nocheck");
+        // dynare_estimation_init.m: no residual check at the initial parameters with
+        // diffuse_filter or nocheck
+        let diffuse = mf.options.active && opt(&mf.options.estimation_options(), "diffuse_filter").is_some();
+        let init_check = !(nocheck || diffuse);
+        let calib = solve_steady_at(&model, ssm.as_ref(), &model.params, &ys0, &x_ss, &steady_opts, !nocheck);
+        let ys_calib = match calib {
+            Ok((ys, _)) => ys,
+            // dynare_estimation_init.m evaluates the steady state at the initial parameters
+            // only, from oo_.steady_state: the calibration need not have one (e.g. estimated
+            // parameters left uncalibrated)
+            Err(_) if mf.options.active && !mf.options.steady_ran => ys0.clone(),
+            Err(e) => bail!("steady state at the calibration failed (info {})", e.info),
+        };
 
         let me_rows: Vec<Option<(usize, usize)>> = estimated.iter().map(|e| me_rows_of(mf, e)).collect();
         // get_matrix_entries_for_psd_check.m
@@ -187,10 +205,6 @@ impl DsgeModel {
             v.dedup();
             v
         };
-        let h_check = estimated.iter().any(|e| matches!(e.kind, EstimatedKind::MeCorr(..))).then(|| {
-            let stds = estimated.iter().zip(&me_rows).filter(|(e, _)| matches!(e.kind, EstimatedKind::MeStdErr(_)));
-            nonzero_rows(&mf.h, stds.filter_map(|(_, r)| r.map(|r| r.0)).collect())
-        });
         let q_check = estimated.iter().any(|e| matches!(e.kind, EstimatedKind::Corr(..))).then(|| {
             let stds =
                 estimated.iter().filter_map(|e| if let EstimatedKind::StdErr(i) = e.kind { Some(i) } else { None });
@@ -220,6 +234,13 @@ impl DsgeModel {
             .filter_map(|(e, r)| if matches!(e.kind, EstimatedKind::MeCorr(..)) { *r } else { None })
             .collect();
         let cal_cov_h = calibrated(&mf.h, &est_corr_h);
+        // check_bounds_and_definiteness_estimation.m: H is checked when ncn > 0 or
+        // estim_params_.calibrated_covariances_ME exists (calibrated ME covariances, even with
+        // only ME standard errors estimated)
+        let h_check = (!est_corr_h.is_empty() || !cal_cov_h.is_empty()).then(|| {
+            let stds = estimated.iter().zip(&me_rows).filter(|(e, _)| matches!(e.kind, EstimatedKind::MeStdErr(_)));
+            nonzero_rows(&mf.h, stds.filter_map(|(_, r)| r.map(|r| r.0)).collect())
+        });
         let mut this = DsgeModel {
             cal_cov,
             cal_cov_h,
@@ -237,7 +258,7 @@ impl DsgeModel {
             estimated_names,
             priors,
             ml,
-            loglinear: estimation_flag(mf, "loglinear"),
+            loglinear: if mf.options.active { mf.options.loglinear } else { estimation_flag(mf, "loglinear") },
             not_exo_aux: {
                 let mut v = vec![true; mf.model.n_endo()];
                 for a in &mf.model.aux_vars {
@@ -252,6 +273,8 @@ impl DsgeModel {
             steady_opts,
             ys_guess: ys_calib.clone(),
             ys_calib,
+            exo_ss: x_ss.clone(),
+            steady_check: !nocheck,
             solver,
             steady_state_model: ssm,
             ss_index: StateSpaceIndex::default(),
@@ -281,12 +304,14 @@ impl DsgeModel {
         // initial_estimation_checks -> check_steady_state_changes_parameters then solves once
         // more from that result; with a singular static Jacobian (unit roots) the second pass
         // moves the solution by ~1e-8, so both are needed to land on Dynare's oo_.steady_state.
-        let ys_init =
-            solve_steady(&this.model, this.steady_state_model.as_ref(), &params, &this.ys_calib, &this.steady_opts)
-                .map_err(|e| anyhow!("steady state at the initial parameters failed (info {})", e.info))?;
-        this.ys_guess =
-            solve_steady(&this.model, this.steady_state_model.as_ref(), &params, &ys_init, &this.steady_opts)
-                .map_err(|e| anyhow!("steady state at the initial parameters failed (info {})", e.info))?;
+        let solve = |guess: &[f64], check: bool| {
+            let ssm = this.steady_state_model.as_ref();
+            solve_steady_at(&this.model, ssm, &params, guess, &x_ss, &this.steady_opts, check)
+                .map(|(ys, _)| ys)
+                .map_err(|e| anyhow!("steady state at the initial parameters failed (info {})", e.info))
+        };
+        let ys_init = solve(&this.ys_calib, init_check)?;
+        this.ys_guess = solve(&ys_init, this.steady_check)?;
         // The restriction indices, from a first solution.
         let g1 = this.model.dynamic_jacobian(&this.ys_guess, &x_ss, &params);
         let dr = this
@@ -357,6 +382,12 @@ impl DsgeModel {
 
     /// Port of `set_all_parameters.m`: model parameters, `M_.Sigma_e` and `M_.H`.
     pub fn set_all_parameters_h(&self, x: &[f64]) -> (Vec<f64>, Mat, Mat) {
+        let (p, q, h, _, _) = self.set_all_parameters_full(x);
+        (p, q, h)
+    }
+
+    /// [`Self::set_all_parameters_h`] with the updated `M_.Correlation_matrix` / `M_.Correlation_matrix_ME`.
+    pub fn set_all_parameters_full(&self, x: &[f64]) -> (Vec<f64>, Mat, Mat, Mat, Mat) {
         let mut params = self.base_params.clone();
         let mut q = self.base_sigma_e.clone();
         let mut h = self.base_h.clone();
@@ -406,7 +437,31 @@ impl DsgeModel {
                 }
             }
         }
-        (params, q, h)
+        (params, q, h, cq, ch)
+    }
+
+    /// `dynare_estimation_1.m:584-587`: `M_ = set_all_parameters(xparam1, estim_params_, M_)`.
+    /// The point becomes the model's `M_.params`, `M_.Sigma_e`, `M_.H` and correlation matrices
+    /// (the calibration later commands and later estimations start from).
+    pub fn adopt_point(&mut self, x: &[f64]) {
+        let (p, q, h, cq, ch) = self.set_all_parameters_full(x);
+        self.base_params = p;
+        self.base_sigma_e = q;
+        self.base_h = h;
+        self.base_corr = cq;
+        self.base_corr_h = ch;
+    }
+
+    /// `M_.params`, `M_.Sigma_e`, `M_.H` and the correlation matrices of this model (after
+    /// [`Self::adopt_point`]), to be written into the mod file's global state.
+    pub fn global_state(&self) -> GlobalState {
+        GlobalState {
+            params: self.base_params.clone(),
+            sigma_e: self.base_sigma_e.clone(),
+            h: self.base_h.clone(),
+            corr_e: self.base_corr.clone(),
+            corr_h: self.base_corr_h.clone(),
+        }
     }
 
     /// Calibrated value of the `k`-th estimated parameter (`get_all_parameters.m` on the
@@ -418,8 +473,27 @@ impl DsgeModel {
     /// `evaluate_steady_state` at the model parameters `params` (from `ys_guess`),
     /// as [`Self::resolve`] runs it.
     pub fn steady_state(&self, params: &[f64]) -> Result<Vec<f64>, EvalFailure> {
-        solve_steady(&self.model, self.steady_state_model.as_ref(), params, &self.ys_guess, &self.steady_opts)
-            .map_err(|e| EvalFailure { info: e.info, penalty: penalty(e.info2) })
+        self.steady_state_params(params).map(|(ys, _)| ys)
+    }
+
+    /// [`Self::steady_state`] with `M_.params` as `evaluate_steady_state` returns them
+    /// (parameters assigned by the `steady_state_model` block updated).
+    pub fn steady_state_params(&self, params: &[f64]) -> Result<(Vec<f64>, Vec<f64>), EvalFailure> {
+        solve_steady_at(
+            &self.model,
+            self.steady_state_model.as_ref(),
+            params,
+            &self.ys_guess,
+            &self.exo_ss,
+            &self.steady_opts,
+            self.steady_check,
+        )
+        .map_err(|e| EvalFailure { info: e.info, penalty: penalty(e.info, e.info2) })
+    }
+
+    /// The first-order solver options (`options_.qz_criterium`, ...).
+    pub fn solver_options(&self) -> SolverOptions {
+        self.solver.opts
     }
 
     /// Replaces the first-order solver options (`options_.qz_criterium`; used by `src/gsa`,
@@ -434,25 +508,37 @@ impl DsgeModel {
     pub fn resolve(&self, x: &[f64]) -> Result<Resolved, EvalFailure> {
         let (params, q, h) = self.set_all_parameters_h(x);
         // check_bounds_and_definiteness_estimation.m: Sigma_e (ncx > 0) and H (ncn > 0)
-        for (m, rows, info) in [(&q, &self.q_check, 43), (&h, &self.h_check, 44)] {
+        // and the consistency of the calibrated covariances (info 71 / 72)
+        for (m, rows, cal, info) in [(&q, &self.q_check, &self.cal_cov, 43), (&h, &self.h_check, &self.cal_cov_h, 44)] {
             if let Some(rows) = rows {
                 if let Some(penalty) = not_positive_definite(m, rows) {
                     return Err(EvalFailure { info, penalty });
                 }
+                // check_consistency_covariances.m (only with calibrated covariances)
+                if !cal.is_empty() {
+                    let n = m.nrows();
+                    let bad = (0..n).any(|i| (0..i).any(|j| m[(i, j)].abs() > m[(i, i)].sqrt() * m[(j, j)].sqrt()));
+                    if bad {
+                        let penalty = cal.iter().map(|&(i, j, _)| 2.0 * m[(i, j)] * m[(i, j)]).sum();
+                        return Err(EvalFailure { info: info + 28, penalty });
+                    }
+                }
             }
         }
-        let ys = self.steady_state(&params)?;
-        let x_ss = vec![0.0; self.model.n_exo()];
-        let g1 = self.model.dynamic_jacobian(&ys, &x_ss, &params);
-        let mut dr =
-            self.solver.solve(&g1, &ys).map_err(|e| EvalFailure { info: e.info, penalty: penalty(e.info2) })?;
+        // resol.m: [dr.ys, M_.params, info] = evaluate_steady_state(...)
+        let (ys, params) = self.steady_state_params(&params)?;
         if self.loglinear {
-            // resol.m: the steady state must be positive (info 26)
-            let bad: Vec<f64> =
-                ys.iter().zip(&self.not_exo_aux).filter(|&(&v, &k)| k && v < 1e-16).map(|(v, _)| *v).collect();
-            if !bad.is_empty() {
-                return Err(EvalFailure { info: 26, penalty: bad.iter().map(|v| v * v).sum() });
+            // resol.m: the steady state must be positive (info 26), before the solver; the
+            // penalty sums over all the variables
+            if ys.iter().zip(&self.not_exo_aux).any(|(&v, &k)| k && v < 1e-16) {
+                let penalty = ys.iter().filter(|&&v| v < 1e-16).map(|v| v * v).sum();
+                return Err(EvalFailure { info: 26, penalty });
             }
+        }
+        let g1 = self.model.dynamic_jacobian(&ys, &self.exo_ss, &params);
+        let mut dr =
+            self.solver.solve(&g1, &ys).map_err(|e| EvalFailure { info: e.info, penalty: penalty(e.info, e.info2) })?;
+        if self.loglinear {
             loglinear_decision_rule(&mut dr, &ys, &self.not_exo_aux);
         }
         let (t, r) = kalman_transition_matrix(&dr, &self.ss_index);
@@ -494,6 +580,20 @@ fn estimation_flag(mf: &ModFile, name: &str) -> bool {
             _ => None,
         })
         .unwrap_or(false)
+}
+
+/// Is `name` set in `options_.steady*` by the `steady` commands run so far (without the
+/// driver: by any `steady` command of the file)?
+fn steady_flag(mf: &ModFile, name: &str) -> bool {
+    let set = |o: &crate::modfile::Options| match opt(o, name) {
+        Some(OptValue::Flag) => true,
+        Some(OptValue::Num(v)) => *v != 0.0,
+        _ => false,
+    };
+    if mf.options.active {
+        return set(&mf.options.steady);
+    }
+    mf.commands.iter().any(|c| matches!(c, Command::Steady(o) if set(o)))
 }
 
 /// Rows of `M_.H` (positions in varobs) of a measurement-error entry.
@@ -573,9 +673,12 @@ fn prior_mean(e: &EstimatedParam) -> f64 {
         .map_or(f64::NAN, |p| p.mean)
 }
 
-/// dsge_likelihood: `info(4) = info(2)` when finite, else 0.1.
-fn penalty(info2: f64) -> f64 {
-    if info2.is_finite() { info2 } else { 0.1 }
+/// dsge_likelihood.m: `info(4) = info(2)` for the codes whose `info(2)` measures the
+/// violation (3, 4, 5, 6, 19, 20, 21, 23, 26, 81, 84, 85, 86, 401-403, 411-413), 0.1 for
+/// the others (and when `info(2)` is not finite).
+fn penalty(info: i32, info2: f64) -> f64 {
+    let measured = matches!(info, 3..=6 | 19..=21 | 23 | 26 | 81 | 84..=86 | 401..=403 | 411..=413);
+    if measured && info2.is_finite() { info2 } else { 0.1 }
 }
 
 /// `evaluate_steady_state` from `guess` at `params` (aux variables set first); also used by
@@ -588,31 +691,50 @@ pub fn solve_steady(
     opts: &SteadyOptions,
 ) -> Result<Vec<f64>, crate::solver::SolveError> {
     let x_ss = vec![0.0; model.n_exo()];
+    solve_steady_at(model, ssm, params, guess, &x_ss, opts, true).map(|(ys, _)| ys)
+}
+
+/// `evaluate_steady_state(guess, x_ss, M_, options_, check)`: the steady state at the
+/// exogenous steady state `x_ss`, with `M_.params` as returned (parameters assigned by the
+/// `steady_state_model` block updated, evaluate_steady_state_file.m); `check` is the residual
+/// check of a `steady_state_model` solution (info 19).
+pub fn solve_steady_at(
+    model: &Model,
+    ssm: Option<&crate::deterministic::SteadyStateModel>,
+    params: &[f64],
+    guess: &[f64],
+    x_ss: &[f64],
+    opts: &SteadyOptions,
+    check: bool,
+) -> Result<(Vec<f64>, Vec<f64>), crate::solver::SolveError> {
     if let Some(ssm) = ssm {
-        // steadystate_flag = 2: closed form + residual check (parameter assignments inside
-        // steady_state_model are not propagated to the estimation)
-        return crate::deterministic::evaluate_steady_state(model, Some(ssm), guess, &x_ss, params, opts, true)
-            .map(|(ys, _)| ys);
+        // steadystate_flag = 2: closed form (+ residual check)
+        return crate::deterministic::evaluate_steady_state(model, Some(ssm), guess, x_ss, params, opts, check);
     }
     let n = model.n_endo();
     let f = |y: &[f64]| {
         let mut r = vec![0.0; n];
-        model.static_residuals(y, &x_ss, params, &mut r);
-        (r, model.static_jacobian(y, &x_ss, params))
+        model.static_residuals(y, x_ss, params, &mut r);
+        (r, model.static_jacobian(y, x_ss, params))
     };
     // residuals alone for the line searches and checks (no Jacobian thrown away)
     let r = |y: &[f64]| {
         let mut r = vec![0.0; n];
-        model.static_residuals(y, &x_ss, params, &mut r);
+        model.static_residuals(y, x_ss, params, &mut r);
         r
     };
     let mut g = guess.to_vec();
-    model.set_auxiliary_variables(&mut g, &x_ss, params);
-    steady_state_r(&f, &r, &g, opts)
+    model.set_auxiliary_variables(&mut g, x_ss, params);
+    let set_aux = |y: &mut [f64]| model.set_auxiliary_variables(y, x_ss, params);
+    steady_state_r_aux(&f, &r, &g, opts, Some(&set_aux)).map(|ys| (ys, params.to_vec()))
 }
 
-/// `options_.prior_trunc` from the estimation command (Dynare default 0).
+/// `options_.prior_trunc` as the estimation sees it (Dynare default 0); without the driver,
+/// from the file's last estimation command.
 fn prior_trunc(mf: &ModFile) -> f64 {
+    if mf.options.active {
+        return mf.options.prior_trunc.unwrap_or(0.0);
+    }
     mf.commands
         .iter()
         .rev()
@@ -626,10 +748,27 @@ fn prior_trunc(mf: &ModFile) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Options of the last `steady(...)` command before the estimation (Dynare keeps
-/// `options_.solve_algo` / `steady.maxit` set by it for the estimation).
+/// `options_.solve_algo`, `options_.steady.maxit`, `options_.solve_tolf` and
+/// `options_.solve_tolx` as the commands run so far left them (`solve_algo` is also written
+/// by `stoch_simul` and `estimation`); without the driver, from the file's `steady` commands.
 pub fn steady_options(mf: &ModFile) -> SteadyOptions {
     let mut o = SteadyOptions { linear: mf.model.linear, ..Default::default() };
+    if mf.options.active {
+        let g = &mf.options;
+        if let Some(v) = g.solve_algo {
+            o.solve_algo = v as u8;
+        }
+        if let Some(OptValue::Num(v)) = opt(&g.steady, "maxit") {
+            o.maxit = *v as usize;
+        }
+        if let Some(OptValue::Num(v)) = opt(&g.steady, "tolf") {
+            o.tolf = *v;
+        }
+        if let Some(OptValue::Num(v)) = opt(&g.steady, "tolx") {
+            o.tolx = *v;
+        }
+        return o;
+    }
     for c in &mf.commands {
         if let Command::Steady(opts) = c {
             if let Some(OptValue::Num(v)) = opt(opts, "solve_algo") {
@@ -927,5 +1066,28 @@ impl Objective for DsgePosterior<'_> {
             }
             Err(f) => Evaluation { fval: f64::INFINITY, info: f.info, info4: f.penalty, contributions: None },
         }
+    }
+}
+
+/// The parts of Dynare's global `M_` that `set_all_parameters` writes.
+#[derive(Debug, Clone)]
+pub struct GlobalState {
+    pub params: Vec<f64>,
+    pub sigma_e: Mat,
+    pub h: Mat,
+    pub corr_e: Mat,
+    pub corr_h: Mat,
+}
+
+impl GlobalState {
+    /// Makes this the mod file's `M_.params`, `M_.Sigma_e`, `M_.H` and correlation matrices.
+    pub fn write(self, mf: &mut ModFile) {
+        if mf.model.params.len() == self.params.len() {
+            mf.model.params = self.params;
+        }
+        mf.sigma_e = self.sigma_e;
+        mf.h = self.h;
+        mf.corr_e = self.corr_e;
+        mf.corr_h = self.corr_h;
     }
 }

@@ -90,7 +90,9 @@ pub(super) fn csolve(f: StaticFn, x: &mut Vec<f64>, crit: f64, itmax: usize) -> 
         loop {
             let xt: Vec<f64> = x.iter().zip(&dx0).map(|(a, d)| a + lambda * d).collect();
             let (ft, _) = f(&xt);
-            let af = if ft.iter().all(|v| v.is_finite()) { sum_abs(&ft) } else { f64::INFINITY };
+            // csolve.m: af=sum(abs(f)); a NaN residual makes af NaN, every test below false
+            // ('good value found', rc=0, xmin unchanged)
+            let af = sum_abs(&ft);
             if af < afmin {
                 afmin = af;
                 fmin = ft;

@@ -8,7 +8,9 @@
 //!   Schur method). Dynare warm-starts from the solution of the previous call (a `persistent`
 //!   variable, at most 300 iterations then); here every call starts from B, so that an
 //!   evaluation stays a pure function of the parameters (MCMC pre-fetching), which changes the
-//!   result by at most about the tolerance.
+//!   result by at most about the tolerance. For the same reason the switch to the Schur method
+//!   after a failed iteration applies to that call only, where Dynare's `persistent method1`
+//!   keeps the Schur method for every later call of the session.
 //! * doubling (`disclyap_fast.m`), falling back to the Schur method when it does not converge.
 //! * square root solver (`dlyapchol` of the Control System Toolbox): the Cholesky factor of the
 //!   solution; computed here as the Schur-method solution (the same matrix up to rounding).

@@ -564,7 +564,19 @@ pub fn steady_state(f: StaticFn, guess: &[f64], opts: &SteadyOptions) -> Result<
 
 /// [`steady_state`] with a residual-only function (see [`dynare_solve_r`]).
 pub fn steady_state_r(f: StaticFn, r: ResidFn, guess: &[f64], opts: &SteadyOptions) -> Result<Vec<f64>, SolveError> {
-    let (ys, check) = if opts.linear {
+    steady_state_r_aux(f, r, guess, opts, None)
+}
+
+/// [`steady_state_r`] with `set_aux`, `<fname>.set_auxiliary_variables` applied to the solver's
+/// last iterate on failure before `info(2) = resid'*resid` (evaluate_steady_state.m:438-446).
+pub fn steady_state_r_aux(
+    f: StaticFn,
+    r: ResidFn,
+    guess: &[f64],
+    opts: &SteadyOptions,
+    set_aux: Option<&dyn Fn(&mut [f64])>,
+) -> Result<Vec<f64>, SolveError> {
+    let (mut ys, check) = if opts.linear {
         let (fvec, jacob) = f(guess);
         if fvec.iter().any(|v| !v.is_finite()) {
             (fvec, true)
@@ -584,6 +596,9 @@ pub fn steady_state_r(f: StaticFn, r: ResidFn, guess: &[f64], opts: &SteadyOptio
         (out.x, out.errorflag)
     };
     if check {
+        if let Some(set_aux) = set_aux {
+            set_aux(&mut ys);
+        }
         let resid = r(&ys);
         let ss: f64 = resid.iter().map(|r| r * r).sum();
         return Err(SolveError::new(if ss.is_nan() { 22 } else { 20 }, ss));

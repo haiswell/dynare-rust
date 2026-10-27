@@ -3,9 +3,10 @@
 //! `discretionary_policy/discretionary_policy_1.m` and `discretionary_policy_engine.m`
 //! (Dennis 2007, "Optimal policy in rational expectations models: new solution algorithms").
 
+use crate::deterministic::SteadyStateModel;
 use crate::linalg::{Mat, eig_general, mul, solve};
 use crate::model::Model;
-use crate::solver::{DecisionRule, DrStructure};
+use crate::solver::{DecisionRule, DrStructure, SteadyOptions};
 
 /// `options_.dp.maxit`, `options_.discretionary_tol`.
 #[derive(Clone, Copy, Debug)]
@@ -86,8 +87,8 @@ fn sylvester_dense(d: &Mat, g: &Mat, h: &Mat) -> Mat {
 }
 
 /// Port of `discretionary_policy_engine.m`: `y_t = H y_{t-1} + G e_t` for all endogenous
-/// variables. `Err` carries Dynare's retcode (2 Sylvester failure, 61 maxit, 62 unstable,
-/// 63 NaN) and `retcode(2)`.
+/// variables, iterating from `H00` (the previous solution) or from zero. `Err` carries
+/// Dynare's retcode (2 Sylvester failure, 61 maxit, 62 unstable, 63 NaN) and `retcode(2)`.
 #[allow(clippy::too_many_arguments)]
 pub fn discretionary_policy_engine(
     aalag: &Mat,
@@ -98,6 +99,7 @@ pub fn discretionary_policy_engine(
     instr_id: &[usize],
     beta: f64,
     opts: &DiscretionOptions,
+    h00: Option<&Mat>,
 ) -> Result<(Mat, Mat), (i32, f64)> {
     // GetDennisMatrices
     let (eq_nbr, endo_nbr) = aalag.shape();
@@ -146,10 +148,13 @@ pub fn discretionary_policy_engine(
     ww.view_mut((0, 0), (ny, ny)).copy_from(&w);
     let endo_augm_id: Vec<usize> = (0..endo_nbr + naux).filter(|j| !instr_id.contains(j)).collect();
 
-    // iterations from H0 = 0
-    let ma = endo_augm_id.len();
-    let mut h10 = Mat::zeros(ma, ma);
-    let mut f10 = Mat::zeros(instr_nbr, ma);
+    // H0 = zeros(endo_nbr + AuxiliaryVariables_nbr); H0(1:endo_nbr, 1:endo_nbr) = H00
+    let mut h0 = Mat::zeros(endo_nbr + naux, endo_nbr + naux);
+    if let Some(h) = h00 {
+        h0.view_mut((0, 0), (endo_nbr, endo_nbr)).copy_from(h);
+    }
+    let mut h10 = sel(&h0, &endo_augm_id, &endo_augm_id);
+    let mut f10 = sel(&h0, instr_id, &endo_augm_id);
     let mut h1 = h10.clone();
     let mut f1 = f10.clone();
     let mut iter = 0usize;
@@ -234,41 +239,67 @@ pub fn discretionary_policy_engine(
     Ok((h, g))
 }
 
-/// Port of `discretionary_policy_1.m` (no steady-state file: the model is in deviations,
-/// `ys = 0`). Errors: Dynare info codes (64 NaN objective derivatives, 65 non-zero residuals
-/// at zero, 66 non-zero objective gradient, engine codes).
+/// The steady-state file of `discretionary_policy_1.m` (`options_.steadystate_flag`): the
+/// `steady_state_model`, `oo_.steady_state` (its initial values) and the solver options
+/// (`options_.solve_tolf`).
+pub struct DiscretionSteadyState<'a> {
+    pub ssm: &'a SteadyStateModel,
+    pub ys_init: &'a [f64],
+    pub opts: &'a SteadyOptions,
+    /// `oo_.exo_steady_state`, where the steady-state file is evaluated (the Jacobian is taken
+    /// at zero exogenous values, `discretionary_policy_1.m:82`).
+    pub exo_ss: &'a [f64],
+}
+
+/// Port of `discretionary_policy_1.m`: the decision rule, the parameters (a steady-state model
+/// may update them) and `H`, the solution the persistent `Hold` keeps for the next call
+/// (`hold`: the previous one). Without steady-state model the model is in deviations
+/// (`ys = 0`). Errors: Dynare info codes (19/22 from the steady-state model, 64 NaN objective
+/// derivatives, 65 non-zero residuals at the steady state, 66 non-zero objective gradient,
+/// engine codes).
 pub fn discretionary_policy_1(
     model: &Model,
     p: &[f64],
     opts: &DiscretionOptions,
+    steady: Option<&DiscretionSteadyState>,
     tolf: f64,
-) -> Result<DecisionRule, (i32, f64)> {
+    hold: Option<&Mat>,
+) -> Result<(DecisionRule, Vec<f64>, Mat), (i32, f64)> {
     let pl = model.planner().ok_or((66, 0.0))?;
     let beta = model.planner_discount(p).unwrap_or(1.0);
     let n = model.n_endo();
     let nx = model.n_exo();
-    let ys = vec![0.0; n];
     let x = vec![0.0; nx];
-    let obj = model.planner_objective(&ys, &x, p).ok_or((64, 0.0))?;
+    // call steady_state_file if present to update parameters
+    let (ys, p) = match steady {
+        Some(s) => {
+            crate::deterministic::evaluate_steady_state(model, Some(s.ssm), s.ys_init, s.exo_ss, p, s.opts, true)
+                .map_err(|e| (e.info, e.info2))?
+        }
+        None => (vec![0.0; n], p.to_vec()),
+    };
+    // the objective's derivatives at y = 0
+    let obj = model.planner_objective(&vec![0.0; n], &x, &p).ok_or((64, 0.0))?;
     if obj.uy.iter().any(|v| v.is_nan()) || obj.uyy.iter().any(|v| v.is_nan()) {
         return Err((64, 0.0));
     }
     if obj.uy.iter().any(|&v| v != 0.0) {
         return Err((66, 0.0));
     }
-    let y3 = vec![0.0; 3 * n];
+    // the Jacobian at the steady state
+    let y3: Vec<f64> = ys.iter().chain(&ys).chain(&ys).copied().collect();
     let mut resid = vec![0.0; model.n_equations()];
-    model.dynamic_residuals(&y3, &x, p, &mut resid);
+    model.dynamic_residuals(&y3, &x, &p, &mut resid);
     if resid.iter().any(|r| r.is_nan() || r.abs() > tolf) {
         return Err((65, 0.0));
     }
-    let g1 = model.dynamic_jacobian(&ys, &x, p);
+    let g1 = model.dynamic_jacobian(&ys, &x, &p);
     let neq = model.n_equations();
     let lag = g1.view((0, 0), (neq, n)).into_owned();
     let cur = g1.view((0, n), (neq, n)).into_owned();
     let lead = g1.view((0, 2 * n), (neq, n)).into_owned();
     let b = g1.view((0, 3 * n), (neq, nx)).into_owned();
-    let (h, g) = discretionary_policy_engine(&lag, &cur, &lead, &b, &obj.uyy, &pl.instruments, beta, opts)?;
+    let (h, g) = discretionary_policy_engine(&lag, &cur, &lead, &b, &obj.uyy, &pl.instruments, beta, opts, hold)?;
     let s = DrStructure::new(&model.lead_lag_incidence, nx);
     let ov = &s.order_var;
     let t = Mat::from_fn(n, n, |i, j| h[(ov[i], ov[j])]);
@@ -276,7 +307,7 @@ pub fn discretionary_policy_1(
     // Selection = lead_lag_incidence(1, order_var) > 0
     let cols: Vec<usize> = (0..n).filter(|&k| model.lead_lag_incidence[ov[k]][0] != 0).collect();
     let ghx = Mat::from_fn(n, cols.len(), |i, j| t[(i, cols[j])]);
-    Ok(DecisionRule {
+    let dr = DecisionRule {
         ys,
         ghx,
         ghu,
@@ -292,5 +323,6 @@ pub fn discretionary_policy_1(
         eigval: Vec::new(),
         eigval_abs: Vec::new(),
         sdim: 0,
-    })
+    };
+    Ok((dr, p, h))
 }

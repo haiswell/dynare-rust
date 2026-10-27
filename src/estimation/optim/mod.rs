@@ -74,14 +74,32 @@ pub enum GradientMethod {
     Central,
     /// `numgrad5.m` (five-point, `gradient_method = 5`).
     FivePoint,
+    /// `numgrad3_.m` (`NumgradAlgorithm = 13`): central difference, zero when `f0` is below
+    /// both neighbours.
+    CentralZeroAtMin,
+    /// `numgrad5_.m` (`NumgradAlgorithm = 15`): five-point, zero when `f0` is below the
+    /// neighbours on both sides.
+    FivePointZeroAtMin,
 }
 
 impl GradientMethod {
+    /// `get_num_grad`'s cases of csminwel1.m (2, 3, 5, 13, 15).
+    pub fn from_code(code: i32) -> Option<Self> {
+        match code {
+            2 => Some(GradientMethod::Forward),
+            3 => Some(GradientMethod::Central),
+            5 => Some(GradientMethod::FivePoint),
+            13 => Some(GradientMethod::CentralZeroAtMin),
+            15 => Some(GradientMethod::FivePointZeroAtMin),
+            _ => None,
+        }
+    }
+
     fn evals_per_coordinate(self) -> usize {
         match self {
             GradientMethod::Forward => 1,
-            GradientMethod::Central => 2,
-            GradientMethod::FivePoint => 4,
+            GradientMethod::Central | GradientMethod::CentralZeroAtMin => 2,
+            GradientMethod::FivePoint | GradientMethod::FivePointZeroAtMin => 4,
         }
     }
 }
@@ -90,7 +108,14 @@ pub(crate) fn pen(obj: &dyn Objective, x: &[f64], penalty: f64) -> f64 {
     penalty_objective(obj, x, penalty, false).0
 }
 
-/// Ports of `numgrad2.m`, `numgrad3.m`, `numgrad5.m`. Returns `(g, badg, fcount)`.
+/// Ports of `numgrad2.m`, `numgrad3.m`, `numgrad5.m`, `numgrad3_.m` and `numgrad5_.m`.
+/// Returns `(g, badg, fcount)`.
+///
+/// `numgrad3_`/`numgrad5_` take the step `step_length_correction(x(i), ones(n,1), i)*epsilon
+/// = epsilon` and print their messages unconditionally. `numgrad5_` never restores `x(i)`, so
+/// parameter `i` is perturbed around `x` with every earlier parameter `j` left at
+/// `x(j) - 2*epsilon`. (`numgrad3_`'s "penalty on the right/left" messages test the third
+/// output of `penalty_objective_function`, the objective's empty `DLIK`, and never print.)
 pub(crate) fn numgrad(
     obj: &dyn Objective,
     method: GradientMethod,
@@ -101,38 +126,78 @@ pub(crate) fn numgrad(
     parallel: bool,
 ) -> (Vec<f64>, bool, usize) {
     let h = epsilon;
-    let coord = |i: usize| -> f64 {
+    // (g0, message printed before the |g0| test)
+    let coord = |i: usize| -> (f64, Option<String>) {
         let mut z = x.to_vec();
+        if method == GradientMethod::FivePointZeroAtMin {
+            for zj in z.iter_mut().take(i) {
+                *zj -= 2.0 * h;
+            }
+        }
         let xi = x[i];
         let mut at = |v: f64| {
             z[i] = v;
             pen(obj, &z, penalty)
         };
         match method {
-            GradientMethod::Forward => (at(xi + h) - f0) / h,
+            GradientMethod::Forward => ((at(xi + h) - f0) / h, None),
             GradientMethod::Central => {
                 let f1 = at(xi + h);
                 let f2 = at(xi - h);
-                (f1 - f2) / (2.0 * h)
+                ((f1 - f2) / (2.0 * h), None)
             }
             GradientMethod::FivePoint => {
                 let f1 = at(xi + h);
                 let f2 = at(xi - h);
                 let f3 = at(xi + 2.0 * h);
                 let f4 = at(xi - 2.0 * h);
-                (8.0 * (f1 - f2) + f4 - f3) / (12.0 * h)
+                ((8.0 * (f1 - f2) + f4 - f3) / (12.0 * h), None)
+            }
+            GradientMethod::CentralZeroAtMin => {
+                let f1 = at(xi + h);
+                let f2 = at(xi - h);
+                if f0 < f1 && f0 < f2 {
+                    let msg = format!(
+                        "Gradient w.r.t. parameter number {:3} (x={xi:16.8},h={h:16.8},f0={f0:16.8},f1={f1:16.8},f2={f2:16.8},g0={:16.8})",
+                        i + 1,
+                        (f1 - f2) / (2.0 * h)
+                    );
+                    (0.0, Some(msg))
+                } else {
+                    ((f1 - f2) / (2.0 * h), None)
+                }
+            }
+            GradientMethod::FivePointZeroAtMin => {
+                let f1 = at(xi + h);
+                let f2 = at(xi - h);
+                let f3 = at(xi + 2.0 * h);
+                let f4 = at(xi - 2.0 * h);
+                if f0 < f1 && f1 < f3 && f0 < f2 && f2 < f4 {
+                    (0.0, None)
+                } else {
+                    ((8.0 * (f1 - f2) + f4 - f3) / (12.0 * h), None)
+                }
             }
         }
     };
-    let raw: Vec<f64> =
+    let raw: Vec<(f64, Option<String>)> =
         if parallel { (0..x.len()).into_par_iter().map(coord).collect() } else { (0..x.len()).map(coord).collect() };
+    let zero_at_min = matches!(method, GradientMethod::CentralZeroAtMin | GradientMethod::FivePointZeroAtMin);
     let mut badg = false;
     let g = raw
         .into_iter()
-        .map(|g0| {
+        .enumerate()
+        .map(|(i, (g0, msg))| {
+            if let Some(m) = msg {
+                println!("{m}");
+            }
             if g0.abs() < 1e15 {
                 g0
             } else {
+                if zero_at_min {
+                    println!("Bad gradient -----------------------------------");
+                    println!("Gradient w.r.t. parameter number {:3} (x={:16.8},h={h:16.8},g0={g0:16.8})", i + 1, x[i]);
+                }
                 badg = true;
                 0.0
             }

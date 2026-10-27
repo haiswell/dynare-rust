@@ -42,12 +42,28 @@ use rand::Rng;
 use crate::dsge::DsgeModel;
 use crate::linalg::{Mat, mul};
 use crate::model::Model;
-use crate::solver::{DecisionRule, FirstOrderSolver, kalman_transition_matrix};
+use crate::solver::{DecisionRule, FirstOrderSolver};
 
 use checks::{CheckResult, bruteforce, checks};
 use derivs::{ModelParamDerivs, ParamSet, PerturbationDerivs, legacy_columns, perturbation_derivs, to_legacy};
 use moments::{PrunedStateSpace, pruned_state_space, spectrum_gram, vech};
-use strength::{KalmanDerivInput, Strength, asymptotic_hessian, strength_measures};
+use strength::{Strength, strength_measures};
+
+/// `evaluate_steady_state` at `params` as `compute_decision_rules.m` (`resol.m`) calls it: the
+/// steady state and `M_.params`, which a `steady_state_model` block may update by assigning
+/// parameters (`evaluate_steady_state_file.m`: `params = params1`), as the dynamic Jacobian
+/// and the decision rules then use them.
+pub(crate) fn steady_state_with_params(
+    model: &Model,
+    ssm: Option<&crate::deterministic::SteadyStateModel>,
+    params: &[f64],
+    guess: &[f64],
+    x_ss: &[f64],
+    opts: &crate::solver::SteadyOptions,
+) -> std::result::Result<(Vec<f64>, Vec<f64>), crate::solver::SolveError> {
+    // evaluate_steady_state at `oo_.exo_steady_state`
+    crate::dsge::solve_steady_at(model, ssm, params, guess, x_ss, opts, true)
+}
 
 /// The model at one parameter vector.
 pub struct Point {
@@ -74,6 +90,11 @@ pub struct Context<'a> {
     pub varobs: Vec<usize>,
     pub qz_criterium: f64,
     pub opts: IdentOptions,
+    /// `M_.endo_histval` (levels) of a `histval` block: the starting point of the simulations
+    /// of the identification-strength analysis (`stoch_simul`, `simulated_moment_uncertainty.m`).
+    pub endo_histval: Option<Vec<f64>>,
+    /// The analytic derivatives of `dsge_likelihood` (built on first use).
+    pub analytic: std::sync::OnceLock<crate::estimation::analytic::AnalyticContext>,
 }
 
 impl Context<'_> {
@@ -94,9 +115,19 @@ impl Context<'_> {
     }
 
     fn solve_at(&self, theta: &[f64], params: Vec<f64>, sigma_e: Mat) -> std::result::Result<Point, i32> {
-        let ys = self.dsge.steady_state(&params).map_err(|f| f.info)?;
-        let x = vec![0.0; self.model.n_exo()];
-        let g1 = self.model.dynamic_jacobian(&ys, &x, &params);
+        // analysis.m: [oo_.dr, info, M_.params] = compute_decision_rules(...)
+        let d = &self.dsge;
+        let (ys, params) = steady_state_with_params(
+            self.model,
+            d.steady_state_model.as_ref(),
+            &params,
+            &d.ys_guess,
+            &d.exo_ss,
+            &d.steady_opts,
+        )
+        .map_err(|e| e.info)?;
+
+        let g1 = self.model.dynamic_jacobian(&ys, &d.exo_ss, &params);
         let dr = self.solver.solve(&g1, &ys).map_err(|e| e.info)?;
         Ok(Point { theta: theta.to_vec(), params, sigma_e, ys, g1, dr })
     }
@@ -437,9 +468,9 @@ impl Context<'_> {
             }
             pers.ind_ddynamic = nonzero_rows(&d_dynamic, o.tol_deriv);
             pers.nlags = nlags;
-        } else if !o.no_moments && pers.ind_dmoments.len() < tot {
-            an.error_moments = true;
         }
+        // Monte Carlo draws (init = 0): error_indicator is reset on every call and the order
+        // conditions are not checked, the moments use the persistent ind_dMOMENTS
         an.nlags = nlags;
         let mut ind_ddynamic = pers.ind_ddynamic.clone();
         let mut si_ddynamic = rows(&d_dynamic, &ind_ddynamic);
@@ -453,7 +484,7 @@ impl Context<'_> {
 
         // identification strength
         if do_moments && !o.no_strength && !an.error_strength && init {
-            let st = self.strength(&pt, &jac.derivs, &si_dm, &si_drf, &si_ddynamic, &ind_dm, rng)?;
+            let st = self.strength(&pt, &si_dm, &si_drf, &si_ddynamic, &ind_dm, nlags, rng)?;
             ind_drf = st.keep_reducedform.iter().map(|&i| ind_drf[i]).collect();
             si_drf = rows(&si_drf, &st.keep_reducedform);
             ind_ddynamic = st.keep_dynamic.iter().map(|&i| ind_ddynamic[i]).collect();
@@ -542,32 +573,34 @@ impl Context<'_> {
         Ok(Ok(an))
     }
 
-    /// The identification-strength block of analysis.m (asymptotic Hessian on data simulated
-    /// with `periods + 100` periods, the first 100 dropped; simulated moment uncertainty as
-    /// fallback).
+    /// The identification-strength block of analysis.m: the asymptotic Hessian of
+    /// `dsge_likelihood` on `stoch_simul` data (`periods + 100` periods from `M_.endo_histval`
+    /// or the steady state, the first 100 dropped), simulated moment uncertainty (moments up to
+    /// lag `nlags`, the `options_.ar` raised by the order condition) as fallback.
     #[allow(clippy::too_many_arguments)]
     fn strength<R: Rng + ?Sized>(
         &self,
         pt: &Point,
-        derivs: &PerturbationDerivs,
         si_dm: &Mat,
         si_drf: &Mat,
         si_ddyn: &Mat,
         ind_dm: &[usize],
+        nlags: usize,
         rng: &mut R,
     ) -> Result<Strength> {
         let o = &self.opts;
         let ns = self.set.n_shock();
+        let y0 = self.endo_histval.clone().unwrap_or_else(|| pt.dr.ys.clone());
         // Without an estimated_params block dsge_likelihood cannot be called (Dynare's `try`
         // fails), without priors (ML) prior_bounds errors on pshape 0 inside the same `try`, and
-        // with the diffuse filter there are no analytic derivatives: all go to the
-        // simulated-moments branch.
-        // order > 1 has no analytic Hessian (analysis.m errors inside the `try`)
-        let ahess = if o.lik_init == 1 && self.prior_exist && !self.dsge.ml && o.order == 1 {
-            let data = strength::simulate(&pt.dr, &pt.sigma_e, o.periods + 100, rng);
-            self.asymptotic_hessian_on(pt, derivs, &data.columns(100, o.periods).into_owned())
+        // the diffuse filter (lik_init = 3) has no analytic derivatives: all go to the
+        // simulated-moments branch. order > 1 has no analytic Hessian (analysis.m errors inside
+        // the `try`).
+        let ahess = if o.lik_init != 3 && self.prior_exist && !self.dsge.ml && o.order == 1 {
+            let data = strength::simulate(&pt.dr, &pt.sigma_e, &y0, o.periods + 100, rng);
+            self.asymptotic_hessian_on(pt, &data.columns(100, o.periods).into_owned())
         } else {
-            Err(anyhow!("no analytic Hessian (diffuse filter or no estimated_params block)"))
+            Err(anyhow!("no analytic Hessian (diffuse filter, order > 1 or no priors)"))
         };
         let ahess = ahess.and_then(|h| {
             let (w, _) = crate::linalg::sym_eig(&h);
@@ -599,15 +632,32 @@ impl Context<'_> {
                 let replic = o.replic.max(3 * ind_dm.len());
                 println!("Evaluating simulated moment uncertainty ... please wait");
                 println!("Doing {replic} replicas of length {} periods.", o.periods);
+                // options_.periods is periods + 100 here (set before the `try` failed, or in the
+                // `catch` at order > 1); disp_moments drops the global options_.drop
+                let total = o.periods + 100;
+                let drop = o.drop;
+                if total <= drop {
+                    bail!(
+                        "simulated_moment_uncertainty: The horizon of simulation is shorter than the number of observations to be dropped. Either increase options_.periods or decrease options_.drop."
+                    );
+                }
+                if total - drop <= nlags {
+                    // too few kept periods for the lagged moments: Dynare's autocorrelations are NaN
+                    bail!(
+                        "simulated_moment_uncertainty: periods + 100 = {total} leaves {} simulated periods after dropping options_.drop = {drop}, too few for {nlags} lags (Dynare's simulated moments are NaN).",
+                        total - drop
+                    );
+                }
                 let cmm = strength::simulated_moment_uncertainty(
                     &pt.dr,
                     &pt.sigma_e,
+                    &y0,
                     &self.varobs,
                     ind_dm,
-                    o.periods,
-                    100.min(o.periods.saturating_sub(1)),
+                    total,
+                    drop,
                     replic,
-                    self.opts.ar,
+                    nlags,
                     rng,
                 );
                 println!("Simulated moment uncertainty ... done!");
@@ -630,50 +680,42 @@ impl Context<'_> {
         }
     }
 
-    /// AHess of `dsge_likelihood` (lik_init = 1, analytic derivatives, asymptotic Hessian) on
-    /// `data` (n_endo x nobs, levels, declaration order rows).
-    pub fn asymptotic_hessian_on(&self, pt: &Point, derivs: &PerturbationDerivs, data: &Mat) -> Result<Mat> {
-        let idx = &self.dsge.ss_index;
-        let (t, r) = kalman_transition_matrix(&pt.dr, idx);
-        let iv = &idx.restrict_var_list;
-        let nobs = data.ncols();
-        let y = Mat::from_fn(self.varobs.len(), nobs, |i, c| data[(self.varobs[i], c)] - pt.ys[self.varobs[i]]);
-        let n = self.model.n_endo();
-        let ns = self.set.n_shock();
-        let tot = self.set.len();
-        let mut dt = Vec::with_capacity(tot);
-        let mut dom = Vec::with_capacity(tot);
-        let mut dyss = Vec::with_capacity(tot);
-        for j in 0..tot {
-            let mut full = Mat::zeros(n, n);
-            for k in 0..pt.dr.nspred {
-                for i in 0..n {
-                    full[(i, pt.dr.nstatic + k)] = derivs.dghx[j][(i, k)];
-                }
-            }
-            dt.push(Mat::from_fn(iv.len(), iv.len(), |a, b| full[(iv[a], iv[b])]));
-            dom.push(Mat::from_fn(iv.len(), iv.len(), |a, b| derivs.dom[j][(iv[a], iv[b])]));
-            dyss.push(if j < ns {
-                vec![0.0; iv.len()]
-            } else {
-                iv.iter().map(|&i| derivs.d_yss[(i, j - ns)]).collect()
-            });
-        }
-        let inp = KalmanDerivInput {
-            t: &t,
-            r: &r,
-            q: &pt.sigma_e,
-            mf: &idx.mf,
-            y: &y,
-            dt: &dt,
-            dom: &dom,
-            dyss: &dyss,
-            n_shock: ns,
-            kalman_tol: self.opts.kalman_tol,
-            riccati_tol: self.opts.riccati_tol,
-            presample: 0,
+    /// `AHess` of the `try` branch of analysis.m: `-Hess` of `dsge_likelihood(params, dataset_,
+    /// ...)` with `analytic_derivation` and `analytic_Hessian = 'asymptotic'` on `data`
+    /// (n_endo x nobs, levels, declaration-order rows), through the estimation's port
+    /// ([`crate::estimation::analytic`]): the `lik_init` initializations (with `DP = 0` unless
+    /// `lik_init = 1`), the calibrated `M_.H` in `F = P(Z,Z) + H`, and the switch to the
+    /// univariate filter when the forecast-error variance is singular
+    /// (`use_univariate_filters_if_singularity_is_detected`). `Err` where the `try` fails.
+    pub fn asymptotic_hessian_on(&self, pt: &Point, data: &Mat) -> Result<Mat> {
+        use crate::estimation::analytic::{AnalyticContext, AnalyticHessian, AnalyticOptions, AnalyticPosterior};
+        let o = &self.opts;
+        let sample = Mat::from_fn(data.ncols(), self.varobs.len(), |t, j| data[(self.varobs[j], t)]);
+        let kalman = crate::kalman::KalmanOptions {
+            kalman_tol: o.kalman_tol,
+            diffuse_kalman_tol: o.diffuse_kalman_tol,
+            riccati_tol: o.riccati_tol,
             qz_criterium: self.qz_criterium,
+            lik_init: o.lik_init,
+            // analysis.m: `if options_.kalman_algo > 2, options_.kalman_algo = 1; end`
+            kalman_algo: if o.kalman_algo > 2 { 1 } else { o.kalman_algo },
+            use_univariate_filters_if_singularity_is_detected: o.use_univariate_filters_if_singularity_is_detected,
+            ..Default::default()
         };
-        asymptotic_hessian(&inp)
+        let data = crate::dsge::LikelihoodData::new(&sample, kalman);
+        // bounds = prior_bounds(bayestopt_, options_.prior_trunc)
+        let bounds = self.prior_bounds();
+        let post = crate::dsge::DsgePosterior { dsge: &self.dsge, data: &data, bounds: &bounds };
+        let ctx = match self.analytic.get() {
+            Some(c) => c,
+            None => {
+                let c = AnalyticContext::new(&post, AnalyticOptions { mode: o.analytic_derivation_mode })?;
+                self.analytic.get_or_init(|| c)
+            }
+        };
+        let g = AnalyticPosterior { post: &post, ctx }
+            .evaluate(&pt.theta, AnalyticHessian::Asymptotic)
+            .map_err(|(info, _)| anyhow!("dsge_likelihood failed (info = {info})"))?;
+        Ok(-g.hess.ok_or_else(|| anyhow!("dsge_likelihood: no asymptotic Hessian"))?)
     }
 }

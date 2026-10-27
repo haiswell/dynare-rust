@@ -31,6 +31,8 @@ pub struct IdentOptions {
     pub prior_mc: usize,
     pub prior_range: bool,
     pub periods: usize,
+    /// The global `options_.drop` (set by an earlier `stoch_simul(drop=...)`, default 100).
+    pub drop: usize,
     pub replic: usize,
     pub advanced: bool,
     pub normalize_jacobians: bool,
@@ -51,6 +53,15 @@ pub struct IdentOptions {
     pub diffuse_filter: bool,
     pub kalman_tol: f64,
     pub riccati_tol: f64,
+    /// `kalman_algo`, `use_univariate_filters_if_singularity_is_detected`, `diffuse_kalman_tol`
+    /// (run.m copies them to `options_` for dsge_likelihood in the strength analysis).
+    pub kalman_algo: u8,
+    pub use_univariate_filters_if_singularity_is_detected: bool,
+    pub diffuse_kalman_tol: f64,
+    /// `TeX`: the collinearity-pattern tables of the brute-force search (bruteforce.m), with
+    /// the TeX names of the parameters (`options_ident.name_tex`, set by [`run`]).
+    pub tex: bool,
+    pub name_tex: Vec<String>,
     pub prior_trunc: Option<f64>,
     pub nograph: bool,
     pub graph_formats: Vec<GraphFormat>,
@@ -87,6 +98,7 @@ impl Default for IdentOptions {
             prior_mc: 1,
             prior_range: false,
             periods: 300,
+            drop: 100,
             replic: 100,
             advanced: false,
             normalize_jacobians: true,
@@ -106,6 +118,11 @@ impl Default for IdentOptions {
             diffuse_filter: false,
             kalman_tol: 1e-10,
             riccati_tol: 1e-6,
+            kalman_algo: 0,
+            use_univariate_filters_if_singularity_is_detected: true,
+            diffuse_kalman_tol: 1e-6,
+            tex: false,
+            name_tex: Vec::new(),
             prior_trunc: None,
             nograph: false,
             graph_formats: vec![GraphFormat::Pdf],
@@ -251,6 +268,16 @@ impl IdentOptions {
         if let Some(v) = num("kalman_tol") {
             s.kalman_tol = v;
         }
+        if let Some(v) = num("kalman_algo") {
+            s.kalman_algo = v as u8;
+        }
+        if let Some(v) = flag_or("use_univariate_filters_if_singularity_is_detected") {
+            s.use_univariate_filters_if_singularity_is_detected = v;
+        }
+        if let Some(v) = num("diffuse_kalman_tol") {
+            s.diffuse_kalman_tol = v;
+        }
+        s.tex = flag_or("tex").unwrap_or(false);
         s.prior_trunc = num("prior_trunc");
         s.nograph = opt(o, "nograph").is_some();
         match opt(o, "graph_format") {
@@ -442,21 +469,92 @@ pub fn build_context<'a>(mf: &'a ModFile, opts: IdentOptions) -> Result<Context<
         bail!("identification: no varobs block (the observed variables are required)");
     }
     let (set, prior_exist) = param_set(mf)?;
-    let dsge = DsgeModel::new(mf, None).context("identification: dynare_estimation_init")?;
+    let mut dsge = DsgeModel::new(mf, None).context("identification: dynare_estimation_init")?;
     let prior_sd = if prior_exist { dsge.prior_sd() } else { vec![f64::NAN; set.len()] }; // NaN under ML (stream M)
     let varobs = dsge.varobs.clone();
-    // select_qz_criterium_value.m: 1-1e-6 for the stationary initialization (unit roots then
-    // violate Blanchard-Kahn), 1+1e-6 with the diffuse filter
-    let qz_criterium = if opts.lik_init == 3 { 1.0 + 1e-6 } else { 1.0 - 1e-6 };
+    // select_qz_criterium_value.m: 1-1e-6 for lik_init = 1 (unit roots then violate
+    // Blanchard-Kahn), 1+1e-6 for every other initialization
+    let qz_criterium = if opts.lik_init == 1 { 1.0 - 1e-6 } else { 1.0 + 1e-6 };
     let sopts = SolverOptions { qz_criterium, ..SolverOptions::default() };
+    dsge.set_solver_options(sopts);
     let solver = FirstOrderSolver::new(&mf.model.lead_lag_incidence, mf.model.n_exo(), sopts);
-    if mf.model.uses_steady_state() {
-        // stream PP: the analytic derivatives would need d STEADY_STATE(y) / d params
-        // (the preprocessor's steadyStateParamDeriv nodes), not ported
-        anyhow::bail!("identification: STEADY_STATE() in model equations is not supported");
+    let pderivs = ModelParamDerivs::new(&mf.model).at_exo_steady_state(&dsge.exo_ss);
+    let endo_histval = crate::analysis::stochastic_histval_of(&mf.model, &mf.histval);
+    Ok(Context {
+        model: &mf.model,
+        dsge,
+        solver,
+        pderivs,
+        set,
+        prior_exist,
+        prior_sd,
+        varobs,
+        qz_criterium,
+        opts,
+        endo_histval,
+        analytic: std::sync::OnceLock::new(),
+    })
+}
+
+/// `options_ident.name_tex` (run.m): `get_the_name(k, TeX, ...)` of the `estimated_params`
+/// entries, or `$ SE_{e} $` and `$ p $` for all shocks and parameters without the block.
+fn name_tex(mf: &ModFile, set: &ParamSet, prior_exist: bool) -> Vec<String> {
+    if prior_exist {
+        return mf.estimated_params_dynare_order().iter().map(|e| crate::latex::get_the_tex_name(mf, e)).collect();
     }
-    let pderivs = ModelParamDerivs::new(&mf.model);
-    Ok(Context { model: &mf.model, dsge, solver, pderivs, set, prior_exist, prior_sd, varobs, qz_criterium, opts })
+    let se = set.stderr.iter().map(|&k| format!("$ SE_{{{}}} $", crate::latex::exo_tex(mf, k)));
+    se.chain(set.model.iter().map(|&i| format!("$ {} $", crate::latex::param_tex(mf, i)))).collect()
+}
+
+/// The TeX tables of bruteforce.m (`options_.TeX`): `<fname>_collin_patterns_<tittxt>_<ll>.tex`
+/// in the identification folder, one per group size.
+fn write_collin_patterns_tex(
+    ident_dir: &Path,
+    fname: &str,
+    pars: &[Vec<Vec<Option<usize>>>],
+    cosn: &Mat,
+    name_tex: &[String],
+    tittxt: &str,
+) -> Result<()> {
+    let tittxt1 = tittxt.replace(' ', "_").replace('.', "");
+    for ll in 0..cosn.ncols() {
+        let l = ll + 1;
+        let mut s = String::new();
+        s += "% TeX-table generated by ident_bruteforce (Dynare).\n";
+        s += &format!("% Collinearity patterns with {l} parameter(s): {tittxt}\n");
+        s += &format!("% {} \n \n", crate::latex::datestr_now());
+        s += "{\\tiny \n";
+        s += "\\begin{longtable}{llc} \n";
+        s += &format!("\\caption{{Collinearity patterns with {l} parameter(s): {tittxt}}}\n ");
+        s += &format!("\\label{{Table:CollinearityPatterns:{tittxt1}:{l}}}\\\\\n");
+        s += "\\toprule \n";
+        s += "  Parameter & Explanatory & cosn \\\\ \n";
+        s += "            & parameter(s)   &  \\\\ \n";
+        s += "\\midrule \\endfirsthead \n";
+        s += "\\caption{(continued)}\\\\\n ";
+        s += "\\bottomrule \n";
+        s += "  Parameter & Explanatory & cosn \\\\ \n";
+        s += "            & parameter(s)   &  \\\\ \n";
+        s += "\\midrule \\endhead \n";
+        s += "\\bottomrule \\multicolumn{3}{r}{(Continued on next page)}\\endfoot \n";
+        s += "\\bottomrule\\endlastfoot \n";
+        for (i, row) in pars.iter().enumerate() {
+            let mut plist = String::new();
+            for p in &row[ll] {
+                match p {
+                    Some(k) => plist += &format!(" {}\\;\\;  ", name_tex[*k]),
+                    None => plist += " ---- ",
+                }
+            }
+            s += &format!("{} & [{plist}] & {} \\\\ \n", name_tex[i], crate::latex::fmt_f(cosn[(i, ll)], 7, 3));
+        }
+        s += "\\bottomrule \n";
+        s += "\\end{longtable}\n";
+        s += "} \n";
+        s += "% End of TeX file.\n";
+        std::fs::write(ident_dir.join(format!("{fname}_collin_patterns_{tittxt1}_{l}.tex")), s)?;
+    }
+    Ok(())
 }
 
 impl Context<'_> {
@@ -529,7 +627,8 @@ impl Context<'_> {
         Ok((v, self.opts.parameter_set.clone(), tex.into()))
     }
 
-    fn prior_bounds(&self) -> Bounds {
+    /// `prior_bounds(bayestopt_, options_.prior_trunc)`.
+    pub(super) fn prior_bounds(&self) -> Bounds {
         prior_bounds(&self.dsge.priors, self.opts.prior_trunc.unwrap_or(1e-10))
     }
 
@@ -559,7 +658,7 @@ struct McStore {
 
 /// Port of `identification.run` (called by the driver for `identification(...)`).
 pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, seed: u64) -> Result<()> {
-    run_q2(mf, dir, fname, o, seed, None)
+    run_q2(mf, dir, fname, o, seed, None, 100)
 }
 
 /// [`run`] with the posterior points of an earlier estimation (`parameter_set =
@@ -571,8 +670,9 @@ pub fn run_q2(
     o: &Options,
     seed: u64,
     posterior: Option<PosteriorPoints>,
+    options_drop: usize,
 ) -> Result<()> {
-    run_impl(mf, dir, fname, o, seed, posterior, None)
+    run_impl(mf, dir, fname, o, seed, posterior, None, options_drop)
 }
 
 /// `identification.run(M_, ..., options_ident, pdraws0)` on an external sample
@@ -585,9 +685,10 @@ pub fn run_external(
     seed: u64,
     sample: Vec<Vec<f64>>,
 ) -> Result<()> {
-    run_impl(mf, dir, fname, o, seed, None, Some(sample))
+    run_impl(mf, dir, fname, o, seed, None, Some(sample), 100)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_impl(
     mf: &ModFile,
     dir: &Path,
@@ -596,12 +697,15 @@ fn run_impl(
     seed: u64,
     posterior: Option<PosteriorPoints>,
     sample: Option<Vec<Vec<f64>>>,
+    options_drop: usize,
 ) -> Result<()> {
     let t0 = std::time::Instant::now();
     let mut opts = IdentOptions::from_options(o)?;
+    opts.drop = options_drop;
     opts.posterior = posterior;
     opts.external_sample = sample;
     let mut ctx = build_context(mf, opts)?;
+    ctx.opts.name_tex = name_tex(mf, &ctx.set, ctx.prior_exist);
     let names = ctx.set.names.clone();
     let tot = names.len();
     let ident_dir = dir.join(fname).join("identification");
@@ -698,20 +802,27 @@ fn run_impl(
         parameters_tex = "Random prior parameter draw".into();
     }
     let mut an = an.unwrap();
-    let _ = parameters_tex;
     // ---- identification.checks_via_subsets (point analysis only, as Dynare) ----
     if ctx.opts.checks_via_subsets {
         let md = ctx.opts.max_dim_subsets_groups.unwrap_or(4.min(tot.saturating_sub(1)));
         an.subsets = Some(super::subsets::checks_via_subsets(&an, tot, ctx.set.n_model(), ctx.opts.tol_rank, md));
     }
     display_point(&an, &names, &ctx.opts);
+    if let (true, Some((pars, cosn))) = (ctx.opts.tex, &an.bruteforce) {
+        // options_ident.tittxt of the last analysis call
+        write_collin_patterns_tex(&ident_dir, fname, pars, cosn, &ctx.opts.name_tex, &parameters)?;
+    }
     let mut point_json = analysis_json(&an, &names);
     point_json["parameter_set"] = json!(parameters); // load_ident_files
     std::fs::write(ident_dir.join(format!("{fname}_identif.json")), serde_json::to_string(&point_json)?)?;
     std::fs::write(ident_dir.join(format!("{fname}_{parameters}_identif.json")), serde_json::to_string(&point_json)?)?;
     if !ctx.opts.no_strength && !ctx.opts.nograph && !an.error_strength && !an.error_moments {
         let tittxt = parameters.clone();
-        plots::save_all(&plots::point_figures(&an, &names, &tittxt, ctx.opts.advanced), fname, &go)?;
+        let figs = plots::point_figures(&an, &names, &tittxt, ctx.opts.advanced);
+        plots::save_all(&figs, fname, &go)?;
+        if ctx.opts.tex {
+            plots::write_eps_loaders(&figs, fname, &go, &tittxt, &parameters_tex)?;
+        }
     }
 
     if sample_size > 1 {
@@ -866,11 +977,19 @@ fn advanced_mc<R: Rng + ?Sized>(
         let an = ctx
             .analysis(&st.pdraws[k], true, true, pers, rng)?
             .map_err(|info| anyhow!("identification: the model does not solve at MC draw {k} (info {info})"))?;
+        if let (true, Some((pars, cosn))) = (ctx.opts.tex, &an.bruteforce) {
+            write_collin_patterns_tex(&go.dir, fname, pars, cosn, &ctx.opts.name_tex, &tittxt)?;
+        }
         let mut o = ctx.opts.clone();
         o.advanced = true;
         display_point(&an, names, &o);
+
         if !ctx.opts.nograph && !an.error_strength && !an.error_moments {
-            plots::save_all(&plots::point_figures(&an, names, &tittxt, true), fname, go)?;
+            let figs = plots::point_figures(&an, names, &tittxt, true);
+            plots::save_all(&figs, fname, go)?;
+            if ctx.opts.tex {
+                plots::write_eps_loaders(&figs, fname, go, &tittxt, &tittxt)?;
+            }
         }
     }
     Ok(())

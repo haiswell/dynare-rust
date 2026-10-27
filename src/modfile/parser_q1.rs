@@ -439,12 +439,8 @@ impl<'a> Parser<'a> {
                     x.active = false;
                 }
             }
-            // the generated filter also applies to M_.perfect_foresight_controlled_paths
-            self.ep.controlled_paths.retain(|c| match (c.learnt_in_date, li.1) {
-                (Some(a), Some(d)) => a != d,
-                (None, None) => c.learnt_in != li.0,
-                _ => true,
-            });
+            // (the generated filter also applies to M_.perfect_foresight_controlled_paths: the
+            // driver applies it when it reaches the block)
         }
         let k = self.q1.shock_paths.len();
         self.q1.shock_paths.push(b);
@@ -550,7 +546,11 @@ impl<'a> Parser<'a> {
             _ => bail!("{loc}: Shock name {name} doesn't exist"),
         };
         if self.commands.is_empty() {
-            self.shocks.push(super::ShockStmt::Var(super::Tgt::Exo(i), v * v));
+            let stmt = super::ShockStmt::Var(super::Tgt::Exo(i), v * v);
+            self.shocks.push(stmt);
+            let block =
+                super::RawStateBlock::Shocks { overwrite: false, stmts: vec![stmt], reset_det: false, det: Vec::new() };
+            self.state_blocks.push((0, block));
         } else {
             self.commands.push(Command::Other(SET_SHOCK_STDERR.into(), vec![(name, OptValue::Num(v))]));
         }

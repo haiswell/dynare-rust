@@ -264,6 +264,11 @@ pub struct Ctx {
     pub bounds: Bounds,
     /// The calibration as an xparam1 vector (`get_all_parameters`).
     pub xparam_calib: Vec<f64>,
+    /// `xparam1` and `hh` of the `mode_file` when the sample is drawn from the posterior
+    /// (`pprior = 0`, no `neighborhood_width`, `stability_mapping.m`).
+    pub posterior_mode: Option<(Vec<f64>, crate::linalg::Mat)>,
+    /// The `options_` of earlier commands that `th_autocovariances` reads (`hp_filter`, ...).
+    pub moment_base: crate::analysis::moments::MomentOptions,
 }
 
 impl Ctx {
@@ -281,6 +286,8 @@ impl Ctx {
             param_names: self.param_names.clone(),
             bounds: self.bounds.clone(),
             xparam_calib: self.xparam_calib.clone(),
+            posterior_mode: self.posterior_mode.clone(),
+            moment_base: self.moment_base.clone(),
         }
     }
 
@@ -351,7 +358,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
         eo.push((k.clone(), v.clone()));
     }
     let mut dsge = DsgeModel::new(mf, None).context("sensitivity")?;
-    let qz = qz_criterium(&eo);
+    let qz = qz_criterium(&eo, runs_estimation_init(mf, cmd_index, &g));
     dsge.set_solver_options(crate::solver::SolverOptions { qz_criterium: qz, ..Default::default() });
     if mf.model.n_exo() == 0 {
         bail!(
@@ -378,11 +385,19 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
         })
         .collect();
     let bounds = estimation_bounds(&dsge.priors, &explicit, prior_trunc);
-    let xparam_calib = calibration_vector(&dsge);
+    let mut xparam_calib = calibration_vector(&dsge); // get_all_parameters(estim_params_, M_)
+    // stability_mapping.m: with neighborhood_width > 0 and a mode_file, the sample is centred
+    // on xparam1 loaded from the mode file
+    if g.neighborhood_width > 0.0
+        && let Some(f) = g.mode_file.as_deref().filter(|f| !f.is_empty())
+    {
+        let (x, _) = crate::driver::read_mode_file(dir, f, &dsge.estimated_names, 0, || Ok(xparam_calib.clone()))?;
+        xparam_calib = x;
+    }
     let sub = if g.morris == 1 { "gsa/screen" } else { "gsa" };
     let out_dir = dir.join(fname).join(sub);
     std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-    let ctx = Ctx {
+    let mut ctx = Ctx {
         fname: fname.to_string(),
         graphs: GraphOptions { enabled: !g.nograph, formats: g.graph_formats.clone(), dir: out_dir.clone() },
         out_dir,
@@ -390,7 +405,12 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
         param_names: gsa_param_names(mf, &dsge),
         bounds,
         xparam_calib,
+        posterior_mode: None,
+        moment_base: calibration::persistent_moment_options(mf, cmd_index),
     };
+    if !g.pprior && !g.ppost && !g.load_stab && g.stab && g.neighborhood_width <= 0.0 {
+        ctx.posterior_mode = Some(read_posterior_mode(dir, &eo, &g, ctx.param_names.len())?);
+    }
 
     // run.m: loading a saved prior sample needs its file
     if (g.load_stab || g.load_rmse || g.load_redform) && g.pprior {
@@ -448,12 +468,50 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
     Ok(Some(GsaOutput { options: g, ctx, dsge, stab, rmse, redform_si, ident_sa }))
 }
 
+/// Whether `+gsa/run.m` takes its first branch (`~isempty(options_gsa.datafile) ||
+/// isempty(bayestopt_) || options_gsa.rmse`: `dynare_estimation_init` fills `options_` from the
+/// estimation options) for the `sensitivity` command number `cmd_index`. `bayestopt_` is filled by
+/// the commands that run `dynare_estimation_init` or `set_prior` before it.
+pub fn runs_estimation_init(mf: &ModFile, cmd_index: usize, g: &GsaOptions) -> bool {
+    let bayestopt_set = mf.commands[..cmd_index].iter().any(|c| match c {
+        Command::Estimation(..) | Command::CalibSmoother(..) => true,
+        Command::Other(n, _) => matches!(n.as_str(), "identification"),
+        _ => false,
+    });
+    g.datafile.is_some() || !bayestopt_set || g.rmse
+}
+
+/// `load([options_.mode_file '.mat'], 'hh', 'xparam1')` of `stability_mapping.m`.
+fn read_posterior_mode(dir: &Path, eo: &Options, g: &GsaOptions, n: usize) -> Result<(Vec<f64>, crate::linalg::Mat)> {
+    let f = match (&g.mode_file, opt(eo, "mode_file")) {
+        (Some(f), _) => f.clone(),
+        (None, Some(OptValue::Str(f))) => f.clone(),
+        _ => bail!("sensitivity: sampling from the posterior (pprior=0) needs a mode_file (or neighborhood_width > 0)"),
+    };
+    let p = dir.join(if f.ends_with(".mat") { f.clone() } else { format!("{f}.mat") });
+    let vars = crate::matfile::read(&p).with_context(|| format!("loading {}", p.display()))?;
+    let x = vars.get("xparam1").and_then(|v| v.as_vec()).ok_or_else(|| anyhow!("{}: no xparam1", p.display()))?;
+    let hh = vars.get("hh").and_then(|v| v.as_matrix()).ok_or_else(|| anyhow!("{}: no hh", p.display()))?;
+    if x.len() != n || hh.nrows() != n || hh.ncols() != n {
+        bail!("{}: xparam1/hh do not match the {n} estimated parameters", p.display());
+    }
+    Ok((x, hh))
+}
+
 /// `options_.qz_criterium` as `+gsa/run.m` leaves it: the user's value, else
 /// `select_qz_criterium_value.m` (through `dynare_estimation_init`): `1-1e-6` with the
 /// stationary filter (`lik_init=1`, unit roots count as explosive), `1+1e-6` otherwise.
-pub fn qz_criterium(eo: &Options) -> f64 {
+///
+/// `estimation_init`: `run.m` goes through `dynare_estimation_init` (`select_qz_criterium_value`)
+/// when it has a datafile, no `bayestopt_` or the `rmse` analysis; otherwise (an estimation ran
+/// before, and `dynare_estimation_1.m:620` restored `options_.qz_criterium` to its old, empty
+/// value) it sets `1+1e-6` when `options_.qz_criterium` is empty.
+pub fn qz_criterium(eo: &Options, estimation_init: bool) -> f64 {
     if let Some(v) = num(eo, "qz_criterium") {
         return v;
+    }
+    if !estimation_init {
+        return 1.0 + 1e-6;
     }
     let lik_init = if opt(eo, "diffuse_filter").is_some() { 3.0 } else { num(eo, "lik_init").unwrap_or(1.0) };
     if lik_init == 1.0 { 1.0 - 1e-6 } else { 1.0 + 1e-6 }

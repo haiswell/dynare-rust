@@ -177,11 +177,14 @@ impl Tree {
                 }
             }
             BOp::Power => {
-                if db == z {
+                if db == z && matches!(self.node(b), N::Num(_)) {
                     let bm1 = self.add_minus(b, one);
                     let t12 = self.add_power(a, bm1);
                     let t13 = self.add_times(b, t12);
                     self.add_times(da, t13)
+                } else if db == z {
+                    let t = self.add_binary_op(a, BOp::PowerDeriv(1), b);
+                    self.add_times(da, t)
                 } else {
                     let t11 = self.add_fn(UnaryOp::Log, a);
                     let t12 = self.add_times(db, t11);

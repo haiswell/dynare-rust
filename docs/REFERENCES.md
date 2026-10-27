@@ -83,6 +83,17 @@ the README. Indices in the JSON files are MATLAB's (1-based).
   Dynare's behaviour (its tuned scale becomes `mh_jscale`, its `hh` is the inverse of its
   simulated covariance). As in Dynare, the MCMC drops explicit `estimated_params` bounds and
   keeps only the prior support.
+- **Remaining gaps found by the 7.2 parity audit.**
+  - The Lyapunov solver does not switch to the Schur method for the rest of the session after one
+    fixed-point failure (Dynare's persistent switch would make a posterior evaluation depend on the
+    previous ones and break the MCMC pre-fetching).
+  - OccBin estimation refuses `lik_init=3` and `loglinear`.
+  - Nonlinear estimation stops at `order=3`, because the k-order solver does.
+  - The numbering of the Ramsey `AUX_ENDO_LEAD` variables can differ from the preprocessor's;
+    the model is the same.
+  - The `var_expectation_model` parameter name of a diff-LHS VAR counts only the variables of
+    the `expression` option.
+  - `param_init` in `modfile.json` holds values, not the expressions.
 - **Not supported.** `<fname>_steadystate.m` files other than Dynare's template, MATLAB external
   functions beyond simple scalar code, multi-output assignments in `steady_state_model`,
   welfare at order 3, MEX-only and

@@ -85,6 +85,9 @@ pub struct Ctx<'a> {
     /// oo_.SmoothedVariables / oo_.SmoothedShocks of the last `calib_smoother` (when it ran
     /// after the last estimation): read by `smoother2histval`.
     pub calib_smoothed: Option<&'a SmoothedRecord>,
+    /// `oo_.steady_state` and `oo_.exo_steady_state` of the driver's deterministic state: an
+    /// `endval` block overwrites them (`resid`, `save_params_and_steady_state` read them).
+    pub det_steady: Option<(&'a [f64], &'a [f64])>,
 }
 
 /// Smoothed values stored by `calib_smoother` (oo_.SmoothedVariables, oo_.SmoothedShocks).
@@ -178,7 +181,7 @@ impl Session {
                 // options_.smpl is read by rplot (q4::rplot_dsample)
             }
             "model_info" => print!("{}", model_info_text(mf, o, ctx.fname)?),
-            "resid" => print!("{}", resid_text(mf, o, ctx.ci)?),
+            "resid" => print!("{}", resid_text_det(mf, o, ctx.ci, ctx.det_steady)?),
             "save_params_and_steady_state" => save_params_and_steady_state(mf, o, ctx)?,
             "prior" => prior_cmd::run(mf, &raw_args(o), ctx, *seed)?,
             "smoother2histval" => smoother2histval(mf, o, ctx)?,
@@ -317,6 +320,20 @@ pub fn model_info_text(mf: &ModFile, o: &Options, fname: &str) -> Result<String>
 /// `oo_.steady_state` / `oo_.exo_steady_state` as a command at position `ci` sees them: the
 /// steady state if a `steady` command ran before, else the `initval` values (aux variables set).
 pub fn current_steady_state(mf: &ModFile, ci: usize) -> Result<(Vec<f64>, Vec<f64>)> {
+    current_steady_state_det(mf, ci, None)
+}
+
+/// [`current_steady_state`] with the deterministic state's `oo_.steady_state` /
+/// `oo_.exo_steady_state` (`det`), which an earlier `endval` block has overwritten.
+pub fn current_steady_state_det(
+    mf: &ModFile,
+    ci: usize,
+    det: Option<(&[f64], &[f64])>,
+) -> Result<(Vec<f64>, Vec<f64>)> {
+    let after_endval = mf.commands[..ci.min(mf.commands.len())].iter().any(|c| matches!(c, Command::Endval(_)));
+    if let (Some((y, x)), true) = (det, after_endval) {
+        return Ok((y.to_vec(), x.to_vec()));
+    }
     let m = &mf.model;
     let mut x = vec![0.0; m.n_exo()];
     for &(i, v) in &mf.initval_exo {
@@ -340,8 +357,13 @@ pub fn current_steady_state(mf: &ModFile, ci: usize) -> Result<(Vec<f64>, Vec<f6
 /// `resid` (`display_static_residuals.m`): static residuals at the `initval` values (with a
 /// `steady_state_model`, at its values, as `options_.steadystate_flag` makes Dynare do).
 pub fn resid_text(mf: &ModFile, o: &Options, ci: usize) -> Result<String> {
+    resid_text_det(mf, o, ci, None)
+}
+
+/// [`resid_text`] with the deterministic state's steady state (`det`), see [`Ctx::det_steady`].
+pub fn resid_text_det(mf: &ModFile, o: &Options, ci: usize, det: Option<(&[f64], &[f64])>) -> Result<String> {
     let m = &mf.model;
-    let (mut y, x) = current_steady_state(mf, ci)?;
+    let (mut y, x) = current_steady_state_det(mf, ci, det)?;
     let mut p = m.params.clone();
     if let Some(ssm) = crate::deterministic::SteadyStateModel::from_modfile(mf)? {
         ssm.eval(m, &mut y, &x, &mut p);
@@ -448,7 +470,7 @@ fn save_params_and_steady_state(mf: &ModFile, o: &Options, ctx: &Ctx) -> Result<
     }
     let path = if Path::new(&file).is_relative() { ctx.dir.join(&file) } else { file.clone().into() };
     let m = &mf.model;
-    let (y, x) = current_steady_state(mf, ctx.ci)?;
+    let (y, x) = current_steady_state_det(mf, ctx.ci, ctx.det_steady)?;
     let mut s = String::new();
     let np = m.n_user_params(); // the varexo_det values come last
     for (n, v) in m.param_names[..np].iter().zip(&m.params) {
@@ -503,7 +525,13 @@ fn smoother2histval(mf: &mut ModFile, o: &Options, ctx: &Ctx) -> Result<()> {
         (Some(r), _) => (r.series.clone(), r.steady_state.clone(), r.loglinear),
         (None, Some(st)) => {
             let x = st.current().to_vec();
-            let sm = crate::driver::run_smoother(&st.dsge, &st.data, &x, false)?;
+            let mut sm = crate::driver::run_smoother(&st.dsge, &st.data, &x, false)?;
+            // after an MCMC smoother2histval.m takes oo_.SmoothedVariables.Mean (post_metropolis),
+            // the posterior mean of the smoothed draws, not the smoother at the posterior mean
+            if let Some((v, s)) = &st.smoothed_mean {
+                sm.smoothed = v.clone();
+                sm.shocks = s.clone();
+            }
             let ys = st
                 .dsge
                 .resolve(&x)
@@ -517,6 +545,7 @@ fn smoother2histval(mf: &mut ModFile, o: &Options, ctx: &Ctx) -> Result<()> {
     };
     let m = &mf.model;
     let n = sm.smoothed.nrows();
+    let exo_ss = mf.exo_steady_state();
     let max_lag = m.orig_maximum_lag.max(1);
     if n < max_lag {
         bail!("Not enough observations to create initial conditions");
@@ -606,9 +635,9 @@ fn smoother2histval(mf: &mut ModFile, o: &Options, ctx: &Ctx) -> Result<()> {
         let path = if path.is_relative() { ctx.dir.join(path) } else { path };
         let init = vec!["1Y".to_string()];
         let mut vars: Vec<(&str, crate::matfile::MatOut)> = vec![("INIT__", crate::matfile::MatOut::Strings(&init))];
-        let names = outvars.clone();
+        let names = invars.clone(); // o = dseries(data, '1Y', invars)
         vars.push(("NAMES__", crate::matfile::MatOut::Strings(&names)));
-        for (k, v) in outvars.iter().enumerate() {
+        for (k, v) in invars.iter().enumerate() {
             vars.push((v.as_str(), crate::matfile::MatOut::Vector(&cols[k])));
         }
         crate::matfile::write(&path, &vars)?;
@@ -626,7 +655,7 @@ fn smoother2histval(mf: &mut ModFile, o: &Options, ctx: &Ctx) -> Result<()> {
             hist.push((true, j, -(l as i32), v));
         }
         for k in 0..m.n_exo() {
-            hist.push((false, k, -(l as i32), 0.0)); // exo steady state of an estimated model
+            hist.push((false, k, -(l as i32), exo_ss[k])); // repmat(oo_.exo_steady_state)
         }
     }
     for (vin, vout) in invars.iter().zip(&outvars) {

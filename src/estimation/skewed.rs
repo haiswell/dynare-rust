@@ -359,6 +359,7 @@ pub fn smoother(
         filtered: Mat::from_element(mm, n, f64::NAN),
         alphahat0: s.alphahat0,
         state_uncertainty: None,
+        state_uncertainty0: None,
         d: 0,
         univariate: false,
         info: 0,

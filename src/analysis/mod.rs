@@ -503,10 +503,11 @@ pub fn calibrated_steady_state(mf: &ModFile, params: &[f64]) -> Result<Vec<f64>>
     for &(i, v) in &mf.initval {
         ys0[i] = v;
     }
-    let x = vec![0.0; model.n_exo()];
+    let x = mf.exo_steady_state(); // oo_.exo_steady_state (initval)
     model.set_auxiliary_variables(&mut ys0, &x, params);
     let ssm = crate::deterministic::SteadyStateModel::from_modfile(mf)?; // stream D
-    crate::dsge::solve_steady(model, ssm.as_ref(), params, &ys0, &crate::dsge::steady_options(mf))
+    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &crate::dsge::steady_options(mf), true)
+        .map(|(ys, _)| ys)
         .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))
 }
 
@@ -717,18 +718,29 @@ pub fn write_simul_replic(ctx: &OutputContext, sims: &[Mat]) -> Result<PathBuf> 
 /// [`calibrated_steady_state`] with `options_.solve_algo` set by stoch_simul / estimation
 /// (`None`: the `steady` command's).
 pub fn calibrated_steady_state_ss(mf: &ModFile, params: &[f64], solve_algo: Option<u8>) -> Result<Vec<f64>> {
-    let Some(sa) = solve_algo else { return calibrated_steady_state(mf, params) };
+    calibrated_steady_state_params(mf, params, solve_algo).map(|(ys, _)| ys)
+}
+
+/// [`calibrated_steady_state_ss`] also returning `M_.params` as `evaluate_steady_state` leaves
+/// them (parameters assigned in a `steady_state_model` block updated).
+pub fn calibrated_steady_state_params(
+    mf: &ModFile,
+    params: &[f64],
+    solve_algo: Option<u8>,
+) -> Result<(Vec<f64>, Vec<f64>)> {
     let model = &mf.model;
     let mut ys0 = vec![0.0; model.n_endo()];
     for &(i, v) in &mf.initval {
         ys0[i] = v;
     }
-    let x = vec![0.0; model.n_exo()];
+    let x = mf.exo_steady_state();
     model.set_auxiliary_variables(&mut ys0, &x, params);
     let ssm = crate::deterministic::SteadyStateModel::from_modfile(mf)?;
     let mut so = crate::dsge::steady_options(mf);
-    so.solve_algo = sa;
-    crate::dsge::solve_steady(model, ssm.as_ref(), params, &ys0, &so)
+    if let Some(sa) = solve_algo {
+        so.solve_algo = sa;
+    }
+    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &so, true)
         .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))
 }
 // ---- end stoch_simul ----
@@ -737,7 +749,7 @@ pub fn calibrated_steady_state_ss(mf: &ModFile, params: &[f64], solve_algo: Opti
 pub fn solve_calibration(mf: &ModFile, qz_criterium: f64) -> Result<Result<LinearSolution, SolveError>> {
     let params = mf.model.params.clone();
     let ys = calibrated_steady_state(mf, &params)?;
-    Ok(solve_at(&mf.model, &params, &ys, &mf.sigma_e, qz_criterium))
+    Ok(solve_at_x(&mf.model, &params, &ys, &mf.exo_steady_state(), &mf.sigma_e, qz_criterium))
 }
 
 /// First-order solution at `params`, steady state `ys`.
@@ -748,13 +760,24 @@ pub fn solve_at(
     sigma_e: &Mat,
     qz_criterium: f64,
 ) -> Result<LinearSolution, SolveError> {
+    solve_at_x(model, params, ys, &vec![0.0; model.n_exo()], sigma_e, qz_criterium)
+}
+
+/// [`solve_at`] at the exogenous steady state `x` (`oo_.exo_steady_state`).
+pub fn solve_at_x(
+    model: &Model,
+    params: &[f64],
+    ys: &[f64],
+    x: &[f64],
+    sigma_e: &Mat,
+    qz_criterium: f64,
+) -> Result<LinearSolution, SolveError> {
     let solver = FirstOrderSolver::new(
         &model.lead_lag_incidence,
         model.n_exo(),
         SolverOptions { qz_criterium, ..Default::default() },
     );
-    let x = vec![0.0; model.n_exo()];
-    let g1 = model.dynamic_jacobian(ys, &x, params);
+    let g1 = model.dynamic_jacobian(ys, x, params);
     let dr = solver.solve(&g1, ys)?;
     Ok(LinearSolution { dr, sigma_e: sigma_e.clone(), params: params.to_vec() })
 }
@@ -940,6 +963,12 @@ pub fn stoch_simul_q2(
             res.conditional_vardec_me = r.conditional_vardec_me;
         } else {
             let filter = q2::Filter::from_options(o)?;
+            // disp_moments.m: y0 = M_.endo_histval (logged under loglinear), else oo_.dr.ys
+            let y0_moments = match o.endo_histval.clone() {
+                Some(h) if o.loglinear => q2::log_variable(model, &h),
+                Some(h) => h,
+                None => dr.ys.clone(),
+            };
             let sm = simulate::simulated_moments_q2(
                 &sol.sigma_e,
                 res.endo_simul.as_ref().unwrap(),
@@ -949,7 +978,7 @@ pub fn stoch_simul_q2(
                 o.ar,
                 &filter,
                 o.nodecomposition,
-                &|ex| simulate::simult(dr, &dr.ys, ex),
+                &|ex| simulate::simult(dr, &y0_moments, ex), // disp_moments: one-shock runs start from endo_histval too
             )?;
             let me = simulated_vardec_me(o, res.endo_simul.as_ref().unwrap(), &ivar, &sm, model.n_exo(), ctx.seed)?; // stoch_simul
             print!("{}", simulated_moments_report_me(model, &sm, &labels, o, 1, tex, &ivar, me.as_ref())?);
@@ -1739,7 +1768,7 @@ pub fn run_check_det(
             .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))?;
             (ys, d.exo_steady_state.clone())
         }
-        None => (calibrated_steady_state(mf, &params)?, vec![0.0; mf.model.n_exo()]),
+        None => (calibrated_steady_state(mf, &params)?, mf.exo_steady_state()),
     };
     // options_.qz_zero_threshold (mjdgges' 0/0 test)
     let qz0 = match crate::modfile::opt(o, "qz_zero_threshold") {
@@ -1840,7 +1869,7 @@ pub fn solve_q2(
                 }
             }
             let solver = FirstOrderSolver::new(&model.lead_lag_incidence, model.n_exo(), sopts);
-            let g1 = model.dynamic_jacobian(&ys, &vec![0.0; model.n_exo()], &params);
+            let g1 = model.dynamic_jacobian(&ys, &mf.exo_steady_state(), &params);
             // ---- stoch_simul: aim_solver (AIM_first_order_solver.m instead of dyn_first_order_solver.m)
             let solved = if o.aim_solver {
                 aim::aim_first_order_solver(&solver, &g1, &ys, o.qz_criterium)?
@@ -1866,7 +1895,7 @@ pub fn solve_q2(
                     // ---- stoch_simul: aim_solver at the estimation's parameters
                     if o.aim_solver {
                         let solver = FirstOrderSolver::new(&model.lead_lag_incidence, model.n_exo(), sopts);
-                        let g1 = model.dynamic_jacobian(&ys, &vec![0.0; model.n_exo()], &r.params);
+                        let g1 = model.dynamic_jacobian(&ys, &dsge.exo_ss, &r.params);
                         match aim::aim_first_order_solver(&solver, &g1, &ys, o.qz_criterium)? {
                             Ok(dr) => (LinearSolution { dr, sigma_e: r.q, params: r.params }, ys, false),
                             Err(e) => return Ok(Err(e)),

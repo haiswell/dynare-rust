@@ -8,7 +8,8 @@
 //! - the reduced form `[Yss; vec(ghx); vech(Om); vec(ghxx); vec(ghxu); vec(ghuu); vec(ghs2)
 //!   (; vec(ghxxx); ...; vec(ghuss))]`,
 //! - the dynamic model `[Yss; vec(g1); vec(g2) (; vec(g2), sic: get_jacobians.m repeats dg2 at
-//!   order 3)]` in the legacy (lead_lag_incidence) column layout,
+//!   order 3, while the values `DYNAMIC` end with `vec(g3)`)]` in the legacy
+//!   (lead_lag_incidence) column layout,
 //! - the moments of the pruned state space `[E_y; vech(Var_y); vec(Var_yi or Corr_yi)]`,
 //! - its spectral density on `0 : pi/(grid_nbr/2) : pi` (`Gbar`, Gram matrix of the complex
 //!   Jacobian),
@@ -25,7 +26,7 @@ use super::moments::{pruned_state_space, vech};
 use super::{Context, Jacobians, Point};
 use crate::linalg::{Mat, mul};
 use crate::solver::SolverOptions;
-use crate::solver::korder::pruned::pruned_state_space_system;
+use crate::solver::korder::pruned::pruned_state_space_system_qz;
 use crate::solver::korder::{KOrderDr, solve_model};
 
 type C64 = Complex<f64>;
@@ -46,18 +47,37 @@ fn vec_of(m: &Mat) -> impl Iterator<Item = f64> + '_ {
 }
 
 impl Context<'_> {
-    /// The k-order decision rule at `params`, `sigma_e`.
-    fn solve_k(&self, params: &[f64], sigma_e: &Mat) -> std::result::Result<(Vec<f64>, KOrderDr), i32> {
-        let ys = self.dsge.steady_state(params).map_err(|f| f.info)?;
+    /// The k-order decision rule at `params`, `sigma_e`, with the steady state and the
+    /// parameters as updated by a `steady_state_model` block.
+    fn solve_k(&self, params: &[f64], sigma_e: &Mat) -> std::result::Result<(Vec<f64>, Vec<f64>, KOrderDr), i32> {
+        let d = &self.dsge;
+        let (ys, params) = super::steady_state_with_params(
+            self.model,
+            d.steady_state_model.as_ref(),
+            params,
+            &d.ys_guess,
+            &d.exo_ss,
+            &d.steady_opts,
+        )
+        .map_err(|e| e.info)?;
         let sopts = SolverOptions { qz_criterium: self.qz_criterium, ..SolverOptions::default() };
-        let dr = solve_model(self.model, &ys, params, sigma_e, self.opts.order, sopts)
+        let dr = solve_model(self.model, &ys, &params, sigma_e, self.opts.order, sopts)
             .map_err(|e| e.downcast_ref::<crate::solver::SolveError>().map(|s| s.info).unwrap_or(9))?;
-        Ok((ys, dr))
+        Ok((ys, params, dr))
     }
 
-    /// `[g1; g2]` (and `g3`) of the dynamic model at the steady state, legacy layout,
-    /// declaration-order rows, vectorised column-major.
-    fn dynamic_k(&self, ys: &[f64], params: &[f64], deriv: &crate::model::higher::DynamicDerivatives) -> Vec<f64> {
+    /// `[g1; g2]` (and `g2` again at order 3) of the dynamic model at the steady state, legacy
+    /// layout, declaration-order rows, vectorised column-major. With `g3_values` (order 3) the
+    /// last block holds `vec(g3)` instead (`DYNAMIC` of get_jacobians.m, `legacy_dynamic_g3.m`:
+    /// the unique derivatives only, not symmetrized), cut to the length of the `dDYNAMIC` rows
+    /// it is indexed with.
+    fn dynamic_k(
+        &self,
+        ys: &[f64],
+        params: &[f64],
+        deriv: &crate::model::higher::DynamicDerivatives,
+        g3_values: bool,
+    ) -> Vec<f64> {
         let n = self.model.n_endo();
         let cols = legacy_columns(self.model);
         let nv = cols.len();
@@ -65,15 +85,15 @@ impl Context<'_> {
         for (l, &c) in cols.iter().enumerate() {
             inv[c] = l;
         }
-        let x = vec![0.0; self.model.n_exo()];
-        let g1 = self.model.dynamic_jacobian(ys, &x, params);
+        let x = &self.dsge.exo_ss;
+        let g1 = self.model.dynamic_jacobian(ys, x, params);
         let mut out: Vec<f64> = Vec::with_capacity(n * nv * (1 + nv));
         for &c in &cols {
             for i in 0..n {
                 out.push(g1[(i, c)]);
             }
         }
-        let vals = deriv.eval(ys, &x, params);
+        let vals = deriv.eval(ys, x, params);
         let mut g2 = vec![0.0; n * nv * nv];
         for (k, &(eq, v1, v2)) in deriv.g2_index.iter().enumerate() {
             let (l1, l2) = (inv[v1], inv[v2]);
@@ -86,8 +106,26 @@ impl Context<'_> {
         }
         out.extend(g2.iter().copied());
         if self.opts.order == 3 {
-            // get_jacobians.m stacks dg2 twice at order 3 (sic); the values follow the same rows
-            out.extend(g2.iter().copied());
+            if g3_values {
+                let d3 = self.model.dynamic_derivatives(3);
+                let vals3 = d3.eval(ys, x, params);
+                let mut g3 = vec![0.0; n * nv * nv];
+                for (k, &(eq, v1, v2, v3)) in d3.g3_index.iter().enumerate() {
+                    let (l1, l2, l3) = (inv[v1], inv[v2], inv[v3]);
+                    if l1 == usize::MAX || l2 == usize::MAX || l3 == usize::MAX {
+                        continue;
+                    }
+                    // legacy_dynamic_g3.m: column (var1*nvar + var2)*nvar + var3
+                    let col = (l1 * nv + l2) * nv + l3;
+                    if col < nv * nv {
+                        g3[eq + n * col] = vals3.g3[k];
+                    }
+                }
+                out.extend(g3);
+            } else {
+                // get_jacobians.m stacks dg2 twice at order 3 (sic)
+                out.extend(g2.iter().copied());
+            }
         }
         out
     }
@@ -98,9 +136,10 @@ impl Context<'_> {
         nlags: usize,
         spectrum: bool,
         deriv: &crate::model::higher::DynamicDerivatives,
+        g3_values: bool,
     ) -> std::result::Result<Objects, i32> {
         let (params, sigma_e) = self.set.apply(theta, &self.dsge.base_params, &self.dsge.base_sigma_e);
-        let (ys, dr) = self.solve_k(&params, &sigma_e)?;
+        let (ys, params, dr) = self.solve_k(&params, &sigma_e)?;
         let f = &dr.first;
         let yss: Vec<f64> = f.order_var.iter().map(|&v| ys[v]).collect();
         let om = mul(&mul(&f.ghu, false, &sigma_e, false), false, &f.ghu, true);
@@ -116,9 +155,9 @@ impl Context<'_> {
             }
         }
         let mut dynamic: Vec<f64> = f.order_var.iter().map(|&v| ys[v]).collect();
-        dynamic.extend(self.dynamic_k(&ys, &params, deriv));
+        dynamic.extend(self.dynamic_k(&ys, &params, deriv, g3_values));
         let indy: Vec<usize> = self.varobs.iter().map(|&v| f.inv_order_var[v]).collect();
-        let p = pruned_state_space_system(&dr, &sigma_e, &indy, nlags).map_err(|_| 9)?;
+        let p = pruned_state_space_system_qz(&dr, &sigma_e, &indy, nlags, self.qz_criterium).map_err(|_| 9)?;
         let mut moments = vech(&p.var_y);
         let lags = if self.opts.useautocorr { &p.corr_yi } else { &p.var_yi };
         for l in lags.iter().take(nlags) {
@@ -158,7 +197,7 @@ impl Context<'_> {
             )
         };
         let x0 = &pt.theta;
-        let f0 = self.objects(x0, nlags, spectrum, &deriv).map_err(|i| fail(0, i))?;
+        let f0 = self.objects(x0, nlags, spectrum, &deriv, true).map_err(|i| fail(0, i))?;
         let tol = 1e-5; // options_.dynatol.x
         let nrf = f0.reducedform.len();
         let ndyn = f0.dynamic.len();
@@ -177,8 +216,9 @@ impl Context<'_> {
             xp[j] += h;
             xm[j] -= h;
             let hh = xp[j] - xm[j];
-            let f1 = self.objects(&xp, nlags, spectrum, &deriv).map_err(|i| fail(j, i))?;
-            let fm = self.objects(&xm, nlags, spectrum, &deriv).map_err(|i| fail(j, i))?;
+            let f1 = self.objects(&xp, nlags, spectrum, &deriv, false).map_err(|i| fail(j, i))?;
+            let fm = self.objects(&xm, nlags, spectrum, &deriv, false).map_err(|i| fail(j, i))?;
+
             for r in 0..nrf {
                 d_rf[(r, j)] = (f1.reducedform[r] - fm.reducedform[r]) / hh;
             }

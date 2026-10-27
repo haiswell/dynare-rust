@@ -72,6 +72,8 @@ pub(super) struct XParse {
     pub global_opts: Options,
     pub observation_trends: Vec<(String, String)>,
     pub homotopy_setup: Vec<(String, Option<f64>, f64)>,
+    /// `homotopy_setup(from_initval_to_endval)`: `options_.homotopy_from_initval_to_endval`.
+    pub homotopy_from_initval_to_endval: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -290,7 +292,10 @@ impl<'a> Parser<'a> {
     /// `homotopy_setup; NAME, END_VALUE; NAME, START_VALUE, END_VALUE; ... end;`
     fn x_homotopy_setup(&mut self) -> Result<()> {
         self.c.i += 1;
-        self.header_options()?;
+        let ho = self.header_options()?;
+        // options_.homotopy_from_initval_to_endval, written by the preprocessor at the block
+        self.x.homotopy_from_initval_to_endval =
+            ho.iter().any(|(k, v)| k == "from_initval_to_endval" && !matches!(v, OptValue::Num(x) if *x == 0.0));
         while !self.c.at_end() {
             if self.c.peek().is_none() {
                 bail!("{}: block 'homotopy_setup' not closed by 'end;'", self.c.loc());
@@ -344,6 +349,7 @@ impl<'a> Parser<'a> {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("load_params_and_steady_state: cannot read {}", path.display()))?;
+        let (mut endo, mut exo) = (Vec::new(), Vec::new());
         for (ln, line) in text.lines().enumerate() {
             let mut it = line.split_whitespace();
             let (Some(name), Some(v)) = (it.next(), it.next()) else { continue };
@@ -358,14 +364,18 @@ impl<'a> Parser<'a> {
                 Some((SymbolKind::Endo, k)) => {
                     self.initval.retain(|(i, _)| *i != k);
                     self.initval.push((k, v));
+                    endo.push((k, v));
                 }
                 Some((SymbolKind::Exo, k)) => {
                     self.initval_exo.retain(|(i, _)| *i != k);
                     self.initval_exo.push((k, v));
+                    exo.push((k, v));
                 }
                 _ => {} // unknown names are skipped, as by the preprocessor
             }
         }
+        // oo_.steady_state / oo_.exo_steady_state are set where the call stands
+        self.state_blocks.push((self.commands.len(), super::RawStateBlock::Initval { endo, exo, sources: Vec::new() }));
         Ok(())
     }
 }

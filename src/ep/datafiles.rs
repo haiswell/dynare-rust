@@ -197,6 +197,7 @@ pub fn histvalf_initvalf(caller: &str, mf: &ModFile, o: &Options, dir: &Path) ->
     }
     if !first_obs_present && let Some((fs, true)) = fsp_d {
         first_obs = fs - oml; // a date: no range check (histvalf_initvalf.m)
+        first_obs_present = true;
     } else if !first_obs_present && let Some(fs) = fsp {
         if fs < oml {
             bail!("{caller}_FILE: first_simulation_period = {fs} must be larger than the maximum lag ({oml})");
@@ -206,6 +207,7 @@ pub fn histvalf_initvalf(caller: &str, mf: &ModFile, o: &Options, dir: &Path) ->
             );
         }
         first_obs = fs - oml;
+        first_obs_present = true;
     }
     // Dynare 7.2: `assert(strcmp(caller, 'INITVAL'))` guards the NOBS branches, but the
     // preprocessor calls this function with 'INITVALF', so an initval_file with NOBS (other
@@ -305,7 +307,7 @@ pub fn histvalf_initvalf(caller: &str, mf: &ModFile, o: &Options, dir: &Path) ->
 pub fn initval_file(mf: &ModFile, det: &mut DetState, o: &Options, dir: &Path) -> Result<()> {
     let (s, p) = histvalf_initvalf("INITVALF", mf, o, dir)?; // the preprocessor's caller name
     det.initval_series = Some((s.endo, s.exo));
-    det.simul.periods = p.max(0) as usize;
+    det.simul.set_periods(p.max(0) as usize); // options_.periods
     Ok(())
 }
 

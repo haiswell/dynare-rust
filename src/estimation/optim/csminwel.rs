@@ -22,13 +22,18 @@ pub struct CsminwelOptions {
     pub gradient_epsilon: f64,
     /// Initial inverse Hessian; `None` = `1e-4*eye(n)`.
     pub h0: Option<Mat>,
+    /// A scalar initial inverse Hessian (`InitialInverseHessian` given as a number), which
+    /// overrides `h0`. MATLAB keeps `H` a scalar until the first BFGS update or the cliff
+    /// perturbation `H+diag(diag(H).*rand(nx,1))`, which add it to every element.
+    pub h0_scalar: Option<f64>,
     pub verbose: bool,
     /// Evaluate gradient coordinates in parallel.
     pub parallel: bool,
     /// Seed of the `rand` used to perturb the search direction on cliffs.
     pub seed: u64,
-    /// ---- estimation completion ---- `analytic_derivation` (`grad = 1`): the gradient is
-    /// the objective's analytic score (`penalty_objective_function`'s third output).
+    /// ---- estimation completion ---- `analytic_derivation` or the method of moments'
+    /// `analytic_jacobian` (`analytic_grad = 1`): the gradient is the objective's analytic one
+    /// (`penalty_objective_function`'s third output).
     pub analytic: bool,
 }
 
@@ -40,6 +45,7 @@ impl Default for CsminwelOptions {
             gradient_method: GradientMethod::Forward,
             gradient_epsilon: 1e-6,
             h0: None,
+            h0_scalar: None,
             verbose: true,
             parallel: true,
             seed: 0,
@@ -71,9 +77,6 @@ pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> Opti
     let mut rng = ChaCha8Rng::seed_from_u64(opts.seed);
     let crit = opts.crit;
     let grad = |f0: f64, x: &[f64], penalty: f64| {
-        if let Some(g) = obj.gradient(x) {
-            return (g, false, 0);
-        }
         numgrad(obj, opts.gradient_method, f0, x, penalty, opts.gradient_epsilon, opts.parallel)
     };
     let mut penalty = 1e8;
@@ -124,7 +127,12 @@ pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> Opti
     fcount += fcg;
     let mut x = x0.to_vec();
     let mut f = f0;
-    let mut h = opts.h0.clone().unwrap_or_else(|| Mat::identity(nx, nx) * 1e-4);
+    // H; while it is still MATLAB's scalar H0, `h` is `h_scalar*eye(nx)` (same `-H*g`)
+    let mut h_scalar = opts.h0_scalar;
+    let mut h = match h_scalar {
+        Some(s) => Mat::identity(nx, nx) * s,
+        None => opts.h0.clone().unwrap_or_else(|| Mat::identity(nx, nx) * 1e-4),
+    };
     let mut itct = 0usize;
     let mut gh: Option<Vec<f64>> = None;
     let mut retcodeh;
@@ -155,7 +163,11 @@ pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> Opti
                 b
             };
             if wall1 {
-                let mut hcliff = h.clone();
+                // Hcliff = H + diag(diag(H).*rand(nx,1)); a scalar H is added to every element
+                let mut hcliff = match h_scalar {
+                    Some(s) => Mat::from_element(nx, nx, s),
+                    None => h.clone(),
+                };
                 for i in 0..nx {
                     let r: f64 = rng.r#gen();
                     hcliff[(i, i)] += h[(i, i)] * r;
@@ -295,6 +307,20 @@ pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> Opti
             let dg: Vec<f64> = ghv.iter().zip(&g).map(|(a, b)| a - b).collect();
             let dx: Vec<f64> = xh.iter().zip(&x).map(|(a, b)| a - b).collect();
             h = bfgsi1(&h, &dg, &dx, verbose);
+            // bfgsi1.m with a scalar H0: `H0 + matrix` adds it to every element (no update,
+            // and H stays a scalar, when |dg'*dx| <= 1e-12)
+            if let Some(s) = h_scalar
+                && super::dot(&dg, &dx).abs() > 1e-12
+            {
+                for j in 0..nx {
+                    for i in 0..nx {
+                        if i != j {
+                            h[(i, j)] += s;
+                        }
+                    }
+                }
+                h_scalar = None;
+            }
         }
         if verbose {
             println!("----");

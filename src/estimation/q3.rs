@@ -432,6 +432,8 @@ pub struct Extras {
     pub dsge_var: Option<(VarMoments, PriorWeight)>,
     /// `conditional_likelihood` (dsge_conditional_likelihood_1.m).
     pub conditional: bool,
+    /// `options_.qz_criterium`, `options_.lyapunov_complex_threshold` (`dsge_var_likelihood.m`).
+    pub lyap: (f64, f64),
 }
 
 impl Extras {
@@ -469,7 +471,8 @@ impl Extras {
             }
             None
         };
-        Ok(Extras { skewed, dsge_var, conditional })
+        let lyap = (data.kalman.qz_criterium, data.kalman.lyapunov_complex_threshold);
+        Ok(Extras { skewed, dsge_var, conditional, lyap })
     }
 
     /// The objective with the given bounds (mode finding: `dsge.bounds`; MCMC: the prior support).
@@ -496,7 +499,14 @@ impl Extras {
             }));
         }
         self.dsge_var.as_ref().map(|(m, w)| {
-            Box::new(DsgeVarPosterior { dsge, moments: m, weight: *w, bounds }) as Box<dyn Objective + 'a>
+            Box::new(DsgeVarPosterior {
+                dsge,
+                moments: m,
+                weight: *w,
+                bounds,
+                qz_criterium: self.lyap.0,
+                lyapunov_complex_threshold: self.lyap.1,
+            }) as Box<dyn Objective + 'a>
         })
     }
 
@@ -513,14 +523,28 @@ impl Extras {
         seed: u64,
     ) -> Result<()> {
         let Some((m, w)) = &self.dsge_var else { return Ok(()) };
-        let post = DsgeVarPosterior { dsge, moments: m, weight: *w, bounds };
+        let post = DsgeVarPosterior {
+            dsge,
+            moments: m,
+            weight: *w,
+            bounds,
+            qz_criterium: self.lyap.0,
+            lyapunov_complex_threshold: self.lyap.1,
+        };
         crate::estimation::dsge_var_irf::run(&post, chains, o, out_dir, fname, seed)
     }
 
     /// `oo_.dsge_var.posterior_mode` (PHI_tilde, SIGMA_u_tilde, iXX, prior) as JSON.
     pub fn posterior_mode_json(&self, dsge: &DsgeModel, x: &[f64]) -> Option<serde_json::Value> {
         let (m, w) = self.dsge_var.as_ref()?;
-        let p = DsgeVarPosterior { dsge, moments: m, weight: *w, bounds: &dsge.bounds };
+        let p = DsgeVarPosterior {
+            dsge,
+            moments: m,
+            weight: *w,
+            bounds: &dsge.bounds,
+            qz_criterium: self.lyap.0,
+            lyapunov_complex_threshold: self.lyap.1,
+        };
         let e = p.evaluate(x).ok()?;
         let rows = |a: &Mat| (0..a.nrows()).map(|i| a.row(i).iter().copied().collect::<Vec<f64>>()).collect::<Vec<_>>();
         let k = (m.nvobs * m.nlags + 1) as f64;

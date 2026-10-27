@@ -24,6 +24,47 @@ pub struct PlannerObjectiveValue {
     pub conditional_steady_initial_multiplier: f64,
 }
 
+/// What `get_initial_state` (end of `evaluate_planner_objective.m`) starts the conditional
+/// welfare from: `M_.endo_histval` and the initial shock `u` (from `M_.det_shocks`,
+/// `oo_.exo_simul(1,:)` or `oo_.exo_steady_state`, as chosen by the caller).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InitialState {
+    /// `M_.endo_histval` (levels, every endogenous variable); `None` without `histval`.
+    pub endo_histval: Option<Vec<f64>>,
+    /// `u` (`exo_nbr`; missing entries are zero).
+    pub u: Vec<f64>,
+}
+
+impl InitialState {
+    /// `(yhat_L_SS, yhat_L_0)` of `get_initial_state` over the state variables
+    /// `order_var(nstatic + (1:nspred))`: the initial state minus the steady state, with the
+    /// Lagrange multipliers at their steady state (`yhat_L_SS`) or at zero (`yhat_L_0`); the
+    /// other variables start from `M_.endo_histval`, or from the steady state without histval.
+    fn yhat(&self, model: &Model, dr: &DecisionRule) -> (Vec<f64>, Vec<f64>) {
+        let ys = &dr.ys;
+        let mults: Vec<usize> =
+            model.planner().and_then(|pl| pl.ramsey.as_ref()).map(|r| r.mult_index.clone()).unwrap_or_default();
+        let mut l_ss = ys.clone();
+        let mut l_0 = vec![0.0; ys.len()];
+        for j in (0..ys.len()).filter(|j| !mults.contains(j)) {
+            match &self.endo_histval {
+                Some(h) => {
+                    l_ss[j] = h[j];
+                    l_0[j] = h[j];
+                }
+                None => l_0[j] = ys[j],
+            }
+        }
+        let states = (0..dr.nspred).map(|k| dr.order_var[dr.nstatic + k]);
+        states.map(|j| (l_ss[j] - ys[j], l_0[j] - ys[j])).unzip()
+    }
+
+    /// `u` as a vector of length `nx`.
+    fn shock(&self, nx: usize) -> Vec<f64> {
+        (0..nx).map(|i| self.u.get(i).copied().unwrap_or(0.0)).collect()
+    }
+}
+
 /// `lyapunov_symm(a, b, ..., method = 3)`: fixed-point iteration `X = a X a' + b` from
 /// `X = b`, falling back to the Schur method when it does not converge in 2000 steps.
 pub fn lyapunov_fixed_point(a: &Mat, b: &Mat, qz_criterium: f64) -> Mat {
@@ -89,7 +130,7 @@ fn dot(a: &Mat, b: &Mat) -> f64 {
 
 /// Port of `evaluate_planner_objective.m`, `order = 1` (`lq = false`) or the
 /// linear-quadratic branch (`lq = true`: `discretionary_policy`, or `order = 2` with a zero
-/// model Hessian), with a zero initial shock.
+/// model Hessian), from the steady state with a zero initial shock.
 pub fn evaluate_planner_objective(
     model: &Model,
     p: &[f64],
@@ -98,20 +139,18 @@ pub fn evaluate_planner_objective(
     lq: bool,
     qz_criterium: f64,
 ) -> Option<PlannerObjectiveValue> {
-    evaluate_planner_objective_u(model, p, dr, sigma_e, lq, qz_criterium, &[])
+    evaluate_planner_objective_from(model, p, dr, sigma_e, lq, qz_criterium, &InitialState::default())
 }
 
-/// [`evaluate_planner_objective`] with the initial shock `u_init` of `get_initial_state`
-/// (`oo_.exo_simul(1,:)`: the first simulated shock after a `stoch_simul` with `periods > 0`;
-/// empty = zero).
-pub fn evaluate_planner_objective_u(
+/// [`evaluate_planner_objective`] from the initial state `init` of `get_initial_state`.
+pub fn evaluate_planner_objective_from(
     model: &Model,
     p: &[f64],
     dr: &DecisionRule,
     sigma_e: &Mat,
     lq: bool,
     qz_criterium: f64,
-    u_init: &[f64],
+    init: &InitialState,
 ) -> Option<PlannerObjectiveValue> {
     let pl = model.planner()?;
     let beta = model.planner_discount(p).unwrap_or(1.0);
@@ -119,7 +158,7 @@ pub fn evaluate_planner_objective_u(
     let nx = model.n_exo();
     let ys = &dr.ys;
     let obj = model.planner_objective(ys, &vec![0.0; nx], p)?;
-    let (ns, nst) = (dr.nspred, dr.nstatic);
+    let ns = dr.nspred;
     let (gys, gus) = state_blocks(dr);
     let mut gy = Mat::zeros(n, ns);
     let mut gu = Mat::zeros(n, nx);
@@ -142,12 +181,11 @@ pub fn evaluate_planner_objective_u(
     };
     let wu = mul(&uy, false, &gu, false) + beta * mul(&wy, false, &gus, false);
 
-    // get_initial_state (no histval, no deterministic shocks)
-    let mults: Vec<usize> = pl.ramsey.as_ref().map(|r| r.mult_index.clone()).unwrap_or_default();
-    let states: Vec<usize> = (0..ns).map(|k| dr.order_var[nst + k]).collect();
-    let yhat_ss = Mat::zeros(ns, 1);
-    let yhat_0 = Mat::from_fn(ns, 1, |k, _| if mults.contains(&states[k]) { -ys[states[k]] } else { 0.0 });
-    let u = Mat::from_fn(nx, 1, |i, _| u_init.get(i).copied().unwrap_or(0.0));
+    // get_initial_state
+    let (yhat_ss, yhat_0) = init.yhat(model, dr);
+    let yhat_ss = Mat::from_column_slice(ns, 1, &yhat_ss);
+    let yhat_0 = Mat::from_column_slice(ns, 1, &yhat_0);
+    let u = Mat::from_column_slice(nx, 1, &init.shock(nx));
     let lin = |yh: &Mat| wbar + dot(&wy, yh) + dot(&wu, &u);
 
     let (unconditional, w_ss, w_0) = if !lq {
@@ -318,7 +356,7 @@ pub fn second_order_state_moments(kdr: &KOrderDr, sigma_e: &Mat, qz_criterium: f
 /// Port of the `options_.order == 2 && ~M_.hessian_eq_zero` branch of
 /// `evaluate_planner_objective.m`: second-order approximation of the unconditional and
 /// conditional welfare from the second-order decision rule `kdr` (`ghxx`, `ghxu`, `ghuu`,
-/// `ghs2`) and the planner objective's Hessian, with a zero initial shock.
+/// `ghs2`) and the planner objective's Hessian, from the steady state with a zero initial shock.
 pub fn evaluate_planner_objective_order2(
     model: &Model,
     p: &[f64],
@@ -326,18 +364,17 @@ pub fn evaluate_planner_objective_order2(
     sigma_e: &Mat,
     qz_criterium: f64,
 ) -> Option<PlannerObjectiveValue> {
-    evaluate_planner_objective_order2_u(model, p, kdr, sigma_e, qz_criterium, &[])
+    evaluate_planner_objective_order2_from(model, p, kdr, sigma_e, qz_criterium, &InitialState::default())
 }
 
-/// [`evaluate_planner_objective_order2`] with the initial shock `u_init` (`oo_.exo_simul(1,:)`;
-/// empty = zero).
-pub fn evaluate_planner_objective_order2_u(
+/// [`evaluate_planner_objective_order2`] from the initial state `init` of `get_initial_state`.
+pub fn evaluate_planner_objective_order2_from(
     model: &Model,
     p: &[f64],
     kdr: &KOrderDr,
     sigma_e: &Mat,
     qz_criterium: f64,
-    u_init: &[f64],
+    init: &InitialState,
 ) -> Option<PlannerObjectiveValue> {
     let pl = model.planner()?;
     let dr = &kdr.first;
@@ -417,12 +454,9 @@ pub fn evaluate_planner_objective_order2_u(
     // as Dynare: Uyygugy (shock-major) and Uy*gyu (state-major) are added element by element
     let wyu: Vec<f64> = (0..nx * ns).map(|k| uyygugy[k] + uy_gyu[k] + beta * (wyygugy[k] + wy_gyu[k])).collect();
 
-    // get_initial_state (no histval, no deterministic shocks)
-    let mults: Vec<usize> = pl.ramsey.as_ref().map(|r| r.mult_index.clone()).unwrap_or_default();
-    let states: Vec<usize> = (0..ns).map(|k| ov[dr.nstatic + k]).collect();
-    let yhat_ss = vec![0.0; ns];
-    let yhat_0: Vec<f64> = states.iter().map(|&s| if mults.contains(&s) { -ys[s] } else { 0.0 }).collect();
-    let u: Vec<f64> = (0..nx).map(|i| u_init.get(i).copied().unwrap_or(0.0)).collect();
+    // get_initial_state
+    let (yhat_ss, yhat_0) = init.yhat(model, dr);
+    let u = init.shock(nx);
     let w = |yh: &[f64]| {
         let wyu_yu = vdot(&wyu, &kron_vec(yh, &u));
         let wyy_yy = vdot(&wyy, &kron_vec(yh, yh));
@@ -643,7 +677,7 @@ pub fn k_order_welfare(
 /// as the mean of a `k_order_mean` simulation from the steady state with the shocks
 /// `exo_simul` (`n_exo x options_.ramsey.periods`, `chol(Sigma_e)*randn` in Dynare) after
 /// `drop` periods (`options_.ramsey.drop`), and the conditional welfare as the first period
-/// of a simulation with the initial shock `u_init` (`get_initial_state`).
+/// of a simulation from the initial state `init` (`get_initial_state`).
 pub fn evaluate_planner_objective_korder(
     model: &Model,
     p: &[f64],
@@ -651,7 +685,7 @@ pub fn evaluate_planner_objective_korder(
     sigma_e: &Mat,
     exo_simul: &Mat,
     drop: usize,
-    u_init: &[f64],
+    init: &InitialState,
 ) -> anyhow::Result<PlannerObjectiveValue> {
     use crate::solver::korder::{fold_taylor, simulate::k_order_mean};
     let none = || anyhow::anyhow!("evaluate_planner_objective: no planner_objective");
@@ -682,20 +716,18 @@ pub fn evaluate_planner_objective_korder(
     let n1 = ysteady.len();
     let (moment, _) = k_order_mean(&g, dr.nstatic, ns, &ysteady, &vec![0.0; n1], exo_simul, drop);
     let unconditional = moment[n1 - 1];
-    // get_initial_state (no histval, no deterministic shocks)
-    let mults: Vec<usize> = pl.ramsey.as_ref().map(|r| r.mult_index.clone()).unwrap_or_default();
-    let u = Mat::from_fn(nx, 1, |i, _| u_init.get(i).copied().unwrap_or(0.0));
-    let cond = |yhat: &dyn Fn(usize) -> f64| -> f64 {
+    // get_initial_state; yhat_start(nstatic + (1:npred + nboth)) = yhat
+    let (yhat_ss, yhat_0) = init.yhat(model, dr);
+    let u = Mat::from_column_slice(nx, 1, &init.shock(nx));
+    let cond = |yhat: &[f64]| -> f64 {
         let mut start = vec![0.0; n1];
-        for k in 0..ns {
-            start[dr.nstatic + k] = yhat(ov[dr.nstatic + k]);
-        }
+        start[dr.nstatic..dr.nstatic + ns].copy_from_slice(yhat);
         let (_, sim) = k_order_mean(&g, dr.nstatic, ns, &ysteady, &start, &u, 0);
         sim[(n1 - 1, 0)]
     };
-    let w_ss = cond(&|_| 0.0);
+    let w_ss = cond(&yhat_ss);
     Ok(if pl.ramsey.is_some() {
-        let w_0 = cond(&|s| if mults.contains(&s) { -ys[s] } else { 0.0 });
+        let w_0 = cond(&yhat_0);
         PlannerObjectiveValue {
             unconditional,
             conditional_zero_initial_multiplier: w_0,

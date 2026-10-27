@@ -170,8 +170,13 @@ pub struct ModFile {
     /// [stream X] `homotopy_setup` block: (parameter or exogenous name, start value
     /// (`None` = the current value), end value).
     pub homotopy_setup: Vec<(String, Option<f64>, f64)>,
+    /// `homotopy_setup(from_initval_to_endval)` (`options_.homotopy_from_initval_to_endval`).
+    pub homotopy_from_initval_to_endval: bool,
     /// Stream EP: `shocks(learnt_in=...)`, `endval(learnt_in=...)` (`M_.learnt_shocks`, `M_.learnt_endval`).
     pub ep: crate::ep::EpDecl,
+    /// Number of commands before each `ep.controlled_paths` entry (`perfect_foresight_controlled_paths`
+    /// blocks run at their position; the driver reveals them as it reaches them).
+    pub controlled_paths_pos: Vec<usize>,
     /// `epilogue`, `init2shocks`, `model_local_variable` labels.
     pub q4: crate::q4::Q4Decl,
     /// `shock_paths` blocks (`M_.shock_paths`).
@@ -189,6 +194,155 @@ pub struct ModFile {
     /// The MATLAB variables of the `verbatim` blocks (e.g. the `initial_guess` structure of
     /// `heterogeneity_compute_steady_state(variable = initial_guess)`).
     pub verbatim_workspace: std::collections::HashMap<String, crate::matfile::MatValue>,
+    /// The `shocks`, `mshocks`, `initval` and `histval` blocks with the number of commands
+    /// before each: the generated `driver.m` runs them at their position, so a command sees
+    /// only the blocks written before it. After parsing, `sigma_e`, `h`, `corr_e`, `corr_h`,
+    /// `det_shocks`, `initval`, `initval_exo` and `histval` hold the state at the end of the
+    /// file; the driver replays the blocks instead ([`ModFile::reset_state_blocks`],
+    /// [`ModFile::run_state_blocks`]).
+    pub state_blocks: Vec<(usize, StateBlock)>,
+    /// Dynare's global `options_` as left by the commands run so far (see [`GlobalOptions`]).
+    pub options: GlobalOptions,
+}
+
+/// A block that changes `M_` / `oo_` where it stands in the .mod file.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StateBlock {
+    /// `shocks` / `mshocks` (ShocksStatement::writeOutput): `overwrite` first resets
+    /// `M_.Sigma_e`, `M_.H` and the correlation matrices (`shocks(overwrite)` only), `reset_det`
+    /// empties `M_.det_shocks`; then the entries are written and the deterministic shocks
+    /// appended.
+    Shocks { overwrite: bool, entries: Vec<ShockEntry>, reset_det: bool, det: Vec<DetShock> },
+    /// `initval` (InitValStatement, also `load_params_and_steady_state`): the values
+    /// evaluated at parse time (endogenous, exogenous) and the source of each assignment
+    /// (`oo_.steady_state(i) = expr`, evaluated by the deterministic state on the current
+    /// `oo_.steady_state`; empty for `load_params_and_steady_state`).
+    Initval { endo: Vec<(usize, f64)>, exo: Vec<(usize, f64)>, sources: Vec<(String, String)> },
+    /// `histval` (HistValStatement): each block rebuilds `M_.endo_histval` / `M_.exo_histval`
+    /// from zeros (`M_.histval_dseries = dseries(zeros(...))`).
+    Histval(Vec<(bool, usize, i32, f64)>),
+}
+
+/// One assignment of a `shocks` block on `M_.Sigma_e` (`me = false`, exogenous indices) or
+/// `M_.H` (`me = true`, positions in `varobs`). Variances (and `stderr`, squared) are written
+/// first, then covariances and correlations, as the preprocessor orders them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShockEntry {
+    Var {
+        me: bool,
+        i: usize,
+        v: f64,
+    },
+    Cov {
+        me: bool,
+        i: usize,
+        j: usize,
+        v: f64,
+    },
+    /// `corr`: `M_.Sigma_e(i,j) = r*sqrt(M_.Sigma_e(i,i)*M_.Sigma_e(j,j))` with the current
+    /// variances, and `M_.Correlation_matrix(i,j) = r`.
+    Corr {
+        me: bool,
+        i: usize,
+        j: usize,
+        r: f64,
+    },
+}
+
+/// The fields of Dynare's global `options_` that a command reads after other commands wrote
+/// them: the preprocessor writes only the options given to each command (`options_.X = V;`
+/// before the call), so the others keep the value an earlier command left.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GlobalOptions {
+    /// Set by the driver when it starts running the commands. Without it (library use of a
+    /// parsed file) the functions that read `options_` fall back to the options of the file's
+    /// last `estimation` command and of its `steady` commands.
+    pub active: bool,
+    /// Options written by the `estimation` commands run so far (later ones override).
+    pub estimation: Options,
+    /// Options written by the `steady` commands run so far (`solve_algo`, `maxit`, `tolf`,
+    /// `tolx`, `nocheck`, `homotopy_mode`, `homotopy_steps`, `homotopy_force_continue`, ...).
+    pub steady: Options,
+    /// `options_.solve_algo` as last written by `steady`, `stoch_simul` or `estimation`.
+    pub solve_algo: Option<f64>,
+    /// `options_.loglinear` (written by `stoch_simul` and `estimation`; never reset).
+    pub loglinear: bool,
+    /// `options_.prior_trunc` / `options_.prior_interval` as last written.
+    pub prior_trunc: Option<f64>,
+    pub prior_interval: Option<f64>,
+    /// A `steady` command has run (`oo_.steady_state` holds its result).
+    pub steady_ran: bool,
+    /// `options_.forecasts.conf_sig` as last written by `forecast` or `estimation(conf_sig=)`.
+    pub forecast_conf_sig: Option<f64>,
+}
+
+impl GlobalOptions {
+    /// Writes the options of a command into `options_`, as the generated driver does before
+    /// the call (the command's options override the persisting ones).
+    pub fn write(&mut self, c: &Command) {
+        let merge = |into: &mut Options, o: &Options| {
+            for (k, v) in o {
+                into.retain(|(k2, _)| k2 != k);
+                into.push((k.clone(), v.clone()));
+            }
+        };
+        let o = match c {
+            Command::Estimation(o, _) => {
+                // the preprocessor writes options_.order = 1 for an estimation without `order`
+                self.estimation.retain(|(k, _)| k != "order");
+                merge(&mut self.estimation, o);
+                o
+            }
+            Command::Forecast(o, _) => {
+                if let Some(OptValue::Num(v)) = opt(o, "conf_sig") {
+                    self.forecast_conf_sig = Some(*v);
+                }
+                return;
+            }
+            Command::Steady(o) => {
+                merge(&mut self.steady, o);
+                o
+            }
+            Command::StochSimul(o, _) => o,
+            // the preprocessor writes options_.solve_algo for the perfect-foresight commands too
+            Command::Deterministic(_, o, _) => {
+                if let Some(OptValue::Num(v)) = opt(o, "solve_algo") {
+                    self.solve_algo = Some(*v);
+                }
+                return;
+            }
+            _ => return,
+        };
+        if let Some(OptValue::Num(v)) = opt(o, "solve_algo") {
+            self.solve_algo = Some(*v);
+        }
+        match opt(o, "loglinear") {
+            Some(OptValue::Flag) => self.loglinear = true,
+            Some(OptValue::Num(v)) => self.loglinear = *v != 0.0,
+            _ => {}
+        }
+        if let Command::Estimation(..) = c {
+            if let Some(OptValue::Num(v)) = opt(o, "conf_sig") {
+                self.forecast_conf_sig = Some(*v);
+            }
+            if let Some(OptValue::Num(v)) = opt(o, "prior_trunc") {
+                self.prior_trunc = Some(*v);
+            }
+            if let Some(OptValue::Num(v)) = opt(o, "prior_interval") {
+                self.prior_interval = Some(*v);
+            }
+        }
+    }
+
+    /// The options an `estimation` command sees: those written by the earlier `estimation`
+    /// commands, overridden by its own, plus `loglinear` left by an earlier `stoch_simul`.
+    pub fn estimation_options(&self) -> Options {
+        let mut o = self.estimation.clone();
+        if self.loglinear && opt(&o, "loglinear").is_none() {
+            o.push(("loglinear".into(), OptValue::Flag));
+        }
+        o
+    }
 }
 
 /// Type of a deterministic shock (`M_.det_shocks(i).type`).
@@ -314,6 +468,101 @@ impl ModFile {
             EstimatedKind::Skew(k) => format!("skew {}", m.exo_names[k]),
             EstimatedKind::InitState(k) => format!("init {}", m.endo_names[k]), // ---- estimation completion
         }
+    }
+
+    /// The state the [`StateBlock`]s set, as before the first statement of the generated
+    /// driver (`M_.Sigma_e = zeros`, `M_.H = zeros`, unit correlation matrices, no
+    /// `M_.det_shocks`, `oo_.steady_state` / `oo_.exo_steady_state` zeros, no histval).
+    pub fn reset_state_blocks(&mut self) {
+        let (nx, nv) = (self.model.n_exo(), self.varobs.len());
+        self.sigma_e = Mat::zeros(nx, nx);
+        self.h = Mat::zeros(nv, nv);
+        self.corr_e = Mat::identity(nx, nx);
+        self.corr_h = Mat::identity(nv, nv);
+        self.det_shocks.clear();
+        self.initval.clear();
+        self.initval_exo.clear();
+        self.histval.clear();
+    }
+
+    /// Runs the blocks written before command `ci` that have not run yet (`next` is the
+    /// first block not run); returns them, in file order, for the deterministic state
+    /// (`initval` expressions read the current `oo_.steady_state`).
+    pub fn run_state_blocks(&mut self, ci: usize, next: &mut usize) -> Vec<StateBlock> {
+        let mut ran = Vec::new();
+        while *next < self.state_blocks.len() && self.state_blocks[*next].0 <= ci {
+            let b = self.state_blocks[*next].1.clone();
+            *next += 1;
+            self.run_state_block(&b);
+            ran.push(b);
+        }
+        ran
+    }
+
+    fn run_state_block(&mut self, b: &StateBlock) {
+        match b {
+            StateBlock::Shocks { overwrite, entries, reset_det, det } => {
+                if *overwrite {
+                    let (nx, nv) = (self.model.n_exo(), self.varobs.len());
+                    self.sigma_e = Mat::zeros(nx, nx);
+                    self.h = Mat::zeros(nv, nv);
+                    self.corr_e = Mat::identity(nx, nx);
+                    self.corr_h = Mat::identity(nv, nv);
+                }
+                if *reset_det {
+                    self.det_shocks.clear();
+                }
+                for e in entries {
+                    match *e {
+                        ShockEntry::Var { me, i, v } => {
+                            let m = if me { &mut self.h } else { &mut self.sigma_e };
+                            m[(i, i)] = v;
+                        }
+                        ShockEntry::Cov { me, i, j, v } => {
+                            let m = if me { &mut self.h } else { &mut self.sigma_e };
+                            m[(i, j)] = v;
+                            m[(j, i)] = v;
+                        }
+                        ShockEntry::Corr { me, i, j, r } => {
+                            let (m, c) = if me {
+                                (&mut self.h, &mut self.corr_h)
+                            } else {
+                                (&mut self.sigma_e, &mut self.corr_e)
+                            };
+                            let v = r * (m[(i, i)] * m[(j, j)]).sqrt();
+                            m[(i, j)] = v;
+                            m[(j, i)] = v;
+                            c[(i, j)] = r;
+                            c[(j, i)] = r;
+                        }
+                    }
+                }
+                self.det_shocks.extend(det.iter().cloned());
+            }
+            StateBlock::Initval { endo, exo, .. } => {
+                for &(i, v) in endo {
+                    self.initval.retain(|(j, _)| *j != i);
+                    self.initval.push((i, v));
+                }
+                for &(k, v) in exo {
+                    self.initval_exo.retain(|(j, _)| *j != k);
+                    self.initval_exo.push((k, v));
+                }
+            }
+            StateBlock::Histval(entries) => self.histval = entries.clone(),
+        }
+    }
+
+    /// `oo_.exo_steady_state` as the stochastic commands see it: the exogenous values of the
+    /// `initval` blocks run so far (zeros otherwise).
+    pub fn exo_steady_state(&self) -> Vec<f64> {
+        let mut x = vec![0.0; self.model.n_exo()];
+        for &(k, v) in &self.initval_exo {
+            if k < x.len() {
+                x[k] = v;
+            }
+        }
+        x
     }
 
     /// Position in `varobs` of an observed endogenous variable (the index into `M_.H`).

@@ -10,10 +10,9 @@
 //! stream, so simulated moments and GIRFs agree with Dynare statistically only (with the same
 //! draws they agree to rounding, see `tests/korder.rs`).
 
-use super::pruned::{pruned_state_space_system, second_order_mean};
+use super::pruned::{pruned_state_space_system_qz, second_order_mean};
 use super::simulate::{draw_shocks, girf, simult};
-use super::{KOrderDr, solve_model};
-use crate::dsge::DsgeModel;
+use super::{KOrderDr, solve_model_at};
 use crate::graphics::{self, GraphFormat, GraphOptions};
 use crate::linalg::Mat;
 use crate::modfile::{ModFile, OptValue, Options, opt};
@@ -215,7 +214,7 @@ fn pruned_moments(
     let f = &dr.first;
     let sigma_e = &sol1.sigma_e;
     let obs: Vec<usize> = var_list.iter().map(|&j| f.inv_order_var[j]).collect();
-    let p = pruned_state_space_system(dr, sigma_e, &obs, a.ar)?;
+    let p = pruned_state_space_system_qz(dr, sigma_e, &obs, a.ar, a.qz_criterium)?;
     let nv = var_list.len();
     let tl: Vec<String> = tex.map(|t| var_list.iter().map(|&j| t.endo[j].clone()).collect()).unwrap_or_default();
     let latex = |title: &str,
@@ -368,6 +367,8 @@ pub struct StochSimulOutput {
     pub autocorr: Vec<Mat>,
     /// `oo_.endo_simul` when `periods > 0` (`n x periods`, declaration order).
     pub endo_simul: Option<Mat>,
+    /// `oo_.exo_simul` of that simulation (`periods x n_exo`).
+    pub exo_simul: Option<Mat>,
     /// `oo_.variance_decomposition` (percent), `oo_.conditional_variance_decomposition`
     /// (fractions per step), `oo_.contemporaneous_correlation`.
     pub variance_decomposition: Option<Mat>,
@@ -403,12 +404,15 @@ pub fn stoch_simul_at(
         // corrections, so the output is the first-order one.
         println!("WARNING: stoch_simul: the Hessian is equal to zero (order 1 solution; corrections are zero).");
     }
-    let dsge;
     let (m, ys, params) = match at {
         Some((ys, p)) => (&mf.model, ys.to_vec(), p.to_vec()),
         None => {
-            dsge = DsgeModel::new(mf, None).context("stoch_simul: steady state")?;
-            (&dsge.model, dsge.ys_calib.clone(), dsge.model.params.clone())
+            // stoch_simul.m: resol(0, M_, options_, ...) at the calibration with the
+            // stoch_simul solve_algo (no estimation-specific steps)
+            let (ys, params) =
+                crate::analysis::calibrated_steady_state_params(mf, &mf.model.params.clone(), so.analysis().solve_algo)
+                    .context("stoch_simul: steady state")?;
+            (&mf.model, ys, params)
         }
     };
     let sigma_e = &mf.sigma_e;
@@ -444,7 +448,7 @@ pub fn stoch_simul_at(
         SolverOptions { qz_criterium: so.qz_criterium, ..a.solver_options() }
     };
     // ---- end stoch_simul ----
-    let dr = solve_model(m, &ys, &params, sigma_e, so.order, sopts)?;
+    let dr = solve_model_at(m, &ys, &mf.exo_steady_state(), &params, sigma_e, so.order, sopts)?;
     if a.loglinear {
         // stochastic_solvers.m, after dyn_second_order_solver
         bail!("Loglinear options currently only works at order 1");
@@ -479,6 +483,7 @@ pub fn stoch_simul_at(
         var: Mat::zeros(0, 0),
         autocorr: Vec::new(),
         endo_simul: None,
+        exo_simul: None,
         variance_decomposition: None,
         conditional_variance_decomposition: None,
         contemporaneous_correlation: None,
@@ -535,6 +540,7 @@ pub fn stoch_simul_at(
                 crate::analysis::write_simul_replic(ctx, &sims)?;
             }
         }
+        out.exo_simul = Some(ex.clone());
         exo_simul = Some(ex);
     }
 
@@ -552,7 +558,14 @@ pub fn stoch_simul_at(
                 so.ar,
                 &filter,
                 a.nodecomposition,
-                &|e| simult(&dr, &ys, e, so.pruning),
+                &|e| {
+                    simult(
+                        &dr,
+                        &crate::analysis::stochastic_histval_of(m, &mf.histval).unwrap_or_else(|| ys.clone()),
+                        e,
+                        so.pruning,
+                    )
+                }, // disp_moments: y0 = endo_histval
             )?;
             let me = crate::analysis::simulated_vardec_me(&a, y, &var_list, &sm, m.n_exo(), seed)?; // stoch_simul
             print!(
@@ -648,12 +661,13 @@ pub fn run_q2(
     a: &crate::analysis::StochSimulOptions,
     var_names: &[String],
     ctx: &crate::analysis::OutputContext,
-) -> Result<()> {
+) -> Result<Option<Mat>> {
     let mut a = a.clone(); // stoch_simul: M_.H
     a.me = crate::analysis::MeasurementErrors::from_modfile(mf);
     let mut so = StochSimulOptions::from_analysis(&a);
     so.tex_ctx = Some(ctx.clone());
-    run_at(mf, &so, var_names, &ctx.dir, &ctx.fname, ctx.seed, None).map(|_| ())
+    // oo_.endo_simul, for datatomfile
+    run_at(mf, &so, var_names, &ctx.dir, &ctx.fname, ctx.seed, None).map(|r| r.endo_simul)
 }
 
 /// [`run`] with explicit options and, optionally, a steady state and parameters (see

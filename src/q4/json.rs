@@ -168,6 +168,9 @@ fn dag_str(d: &Dag, id: NodeId, names: &dyn Fn(Node) -> String, out: &mut String
     match d.node(id) {
         Node::Num(b) => out.push_str(&g16(f64::from_bits(b))),
         n @ (Node::Endo(..) | Node::Exo(..) | Node::Param(_) | Node::SteadyState(..)) => out.push_str(&names(n)),
+        Node::SteadyStateParamDeriv(..) | Node::SteadyStateParam2ndDeriv(..) => {
+            unreachable!("parameter derivatives of STEADY_STATE are not part of the model equations")
+        }
         Node::External(c) => {
             // value `f(a, b)`; derivatives as the preprocessor's MATLAB output
             let e = d.ext_call(c);
@@ -209,6 +212,13 @@ fn dag_str(d: &Dag, id: NodeId, names: &dyn Fn(Node) -> String, out: &mut String
             out.push(',');
             dag_str(d, b, names, out);
             out.push(')');
+        }
+        Node::Binary(BinaryOp::PowerDeriv(k), a, b) => {
+            out.push_str("get_power_deriv(");
+            dag_str(d, a, names, out);
+            out.push(',');
+            dag_str(d, b, names, out);
+            out.push_str(&format!(",{k})"));
         }
         Node::Binary(op, a, b) => {
             let p0 = prec(id);
@@ -353,27 +363,44 @@ fn aux_vars(mf: &ModFile, cap: &JsonCapture, transformed: bool) -> Value {
     if !transformed {
         return json!([]);
     }
-    Value::Array(
-        mf.model
-            .aux_vars
-            .iter()
-            .enumerate()
-            .map(|(k, a)| {
-                let mut m = Map::new();
-                m.insert("endo_index".into(), json!(a.endo_index + 1));
-                m.insert("type".into(), json!(a.ty));
-                if let Some(i) = a.orig_index {
-                    m.insert("orig_index".into(), json!(i + 1));
-                }
-                if let Some(l) = a.orig_lead_lag {
-                    m.insert("orig_lead_lag".into(), json!(l));
-                }
-                let e = cap.aux_orig_expr.get(k).cloned().unwrap_or_else(|| a.orig_expr.clone());
-                m.insert("orig_expr".into(), json!(e));
-                Value::Object(m)
-            })
-            .collect(),
-    )
+    let entry = |a: &crate::model::AuxVar, orig_expr: Option<String>| {
+        let mut m = Map::new();
+        m.insert("endo_index".into(), json!(a.endo_index + 1));
+        m.insert("type".into(), json!(a.ty));
+        if let Some(i) = a.orig_index {
+            m.insert("orig_index".into(), json!(i + 1));
+        }
+        if let Some(l) = a.orig_lead_lag {
+            m.insert("orig_lead_lag".into(), json!(l));
+        }
+        if let Some(e) = orig_expr {
+            m.insert("orig_expr".into(), json!(e));
+        }
+        Value::Object(m)
+    };
+    // The aux vars the preprocessor keeps in M_.aux_vars but Rust tracks elsewhere: the
+    // heterogeneity aggregation variables (type 14, listed first, `HetDecl::aggregate_aux`)
+    // and the Ramsey multipliers (type 6 with `eq_nbr`, planner `mult_index`; created before
+    // the lead/lag auxiliaries of the FOCs).
+    let mut out: Vec<Value> = mf.het.aggregate_aux.iter().map(|a| entry(a, Some(a.orig_expr.clone()))).collect();
+    let mut mults: Vec<(usize, usize)> = mf
+        .model
+        .planner()
+        .and_then(|p| p.ramsey.as_ref())
+        .map(|r| r.mult_index.iter().enumerate().map(|(i, &j)| (j, i + 1)).collect())
+        .unwrap_or_default();
+    for (k, a) in mf.model.aux_vars.iter().enumerate() {
+        while mults.first().is_some_and(|&(j, _)| j < a.endo_index) {
+            let (j, eq) = mults.remove(0);
+            out.push(json!({"endo_index": j + 1, "type": 6, "eq_nbr": eq}));
+        }
+        let e = cap.aux_orig_expr.get(k).cloned().unwrap_or_else(|| a.orig_expr.clone());
+        out.push(entry(a, Some(e)));
+    }
+    for (j, eq) in mults {
+        out.push(json!({"endo_index": j + 1, "type": 6, "eq_nbr": eq}));
+    }
+    Value::Array(out)
 }
 
 /// Variables of an `abstract_syntax_tree` entry: (name, type, lag).

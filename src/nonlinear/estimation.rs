@@ -93,31 +93,41 @@ const SUPPORTED: &[&str] = &[
     "nodiagnostic",
     "qz_criterium",
     "nonlinear_filter_initialization", // ---- estimation completion
+    "prefilter",                       // refused by initial_estimation_checks.m
+    "loglinear",                       // refused by non_linear_dsge_likelihood.m
 ];
 
 /// `posterior_sampler_options = ('H', 25, 'N', 200, ...)` for DSMH.
-fn dsmh_options(o: &Options, seed: u64, quiet: bool) -> Result<DsmhOptions> {
+pub fn dsmh_options(o: &Options, seed: u64, quiet: bool) -> Result<DsmhOptions> {
     let mut d = DsmhOptions { seed, verbose: !quiet, ..Default::default() };
     if let Some(OptValue::List(items)) = opt(o, "posterior_sampler_options") {
         let mut it = items.iter();
         while let Some(k) = it.next() {
             let OptValue::Str(k) = k else { bail!("posterior_sampler_options: expected 'name', value pairs") };
+            let k = k.trim_matches(|c| c == '\'' || c == '"');
             let v = match it.next() {
                 Some(OptValue::Num(v)) => *v,
                 _ => bail!("posterior_sampler_options: {k} needs a number"),
             };
-            match k.as_str() {
-                "H" | "h" => d.h = v as usize,
-                "M" | "m" => d.m = v as usize,
-                "N" | "n" => d.n = v as usize,
-                "G" | "g" => d.g = v as usize,
-                "K" | "k" => d.k = v as usize,
+            // check_posterior_sampler_options.m: case-sensitive keys
+            match k {
+                "H" => d.h = v as usize,
+                "M" => d.m = v as usize,
+                "N" => d.n = v as usize,
+                "G" => d.g = v as usize,
+                "K" => d.k = v as usize,
+                "tau" => d.tau = v as usize,
                 "alpha0" => d.alpha0 = v,
                 "alpha1" => d.alpha1 = v,
-                "tau" => d.tau = v as usize,
-                other => println!("WARNING: posterior_sampler_options: `{other}` is ignored for dsmh."),
+                other => println!("WARNING: dsmh: Unknown option ({other})!"),
             }
         }
+    }
+    let ng = d.n * d.g;
+    // MATLAB `mod(N*G, M)` (`mod(x, 0) = x`)
+    let rem = if d.m == 0 { ng } else { ng % d.m };
+    if rem != 0 {
+        bail!("check_posterior_sampler_options:: DSMH requires M to divide N*G = {ng} evenly.");
     }
     Ok(d)
 }
@@ -154,7 +164,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     let names: Vec<String> = mf.estimated_params_dynare_order().iter().map(|e| mf.estimated_param_name(e)).collect();
     let (x_file, hh_file) = match string(o, "mode_file") {
         Some(f) => {
-            let mc = num(o, "mode_compute").unwrap_or(4.0) as i32;
+            let mc = num(o, "mode_compute").unwrap_or(5.0) as i32; // default_option_values.m
             let (x, hh) = read_mode_file(dir, &f, &names, mc, || crate::dsge::initial_vector(mf))?; // check_mode_file.m (stream M)
             (Some(x), hh)
         }
@@ -165,20 +175,28 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
         None => crate::dsge::initial_vector(mf)?,
     };
     let dsge = DsgeModel::new(mf, Some(&x_init))?;
+    // dynare_estimation_init.m: prefiltered data need zero-mean measurement equations
+    let prefilter = num(o, "prefilter").is_some_and(|v| v != 0.0);
+    if prefilter && dsge.varobs.iter().any(|&v| dsge.level_constant(v, &dsge.ys_guess).abs() >= 1e-9) {
+        bail!("The option \"prefilter\" is inconsistent with the non-zero mean measurement equations in the model.");
+    }
     let mut nm = NonlinearModel::new(dsge, order, particle, sample.transpose(), presample, ro.seed)?;
-    if let Some(v) = num(o, "qz_criterium") {
-        nm.qz_criterium = v;
-        // ---- estimation completion: select_qz_criterium_value.m with nonlinear_filter_initialization = 3
-        if nm.particle.initialization == 3 && v <= 1.0 {
-            println!(
-                "\ndynare_estimation_1:: You set nonlinear_filter_initialization equal to 3, it is assumed that you try to estimate a non stationary model. Resetting it to 1+1e-6."
-            );
-            nm.qz_criterium = 1.0 + 1e-6;
-        }
+    // select_qz_criterium_value.m (non linear filter branch), for resol and lyapunov_symm
+    nm.set_qz_criterium(num(o, "qz_criterium"))?;
+    // initial_estimation_checks.m (missing observations: NonlinearModel::new)
+    if num(o, "prefilter") == Some(1.0) {
+        bail!("initial_estimation_checks:: particle filtering does not support the prefilter option");
+    }
+    if !mf.observation_trends.is_empty() {
+        bail!("initial_estimation_checks:: particle filtering does not support trends");
     }
     // ---- estimation completion: non_linear_dsge_likelihood.m's `otherwise` branch
     if !(1..=3).contains(&nm.particle.initialization) {
         bail!("Unknown initialization option!");
+    }
+    // non_linear_dsge_likelihood.m, at its first call (initial_estimation_checks.m)
+    if flag(o, "loglinear") {
+        bail!("non_linear_dsge_likelihood: It is not possible to use a non linear filter with the option loglinear!");
     }
     let nm = nm;
     let dsge = &nm.dsge;
@@ -212,7 +230,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     }
 
     // ---- mode finding ------------------------------------------------------------
-    let mode_compute = num(o, "mode_compute").unwrap_or(4.0) as i32;
+    let mode_compute = num(o, "mode_compute").unwrap_or(5.0) as i32; // default_option_values.m (newrat)
     if [1, 3, 4].contains(&mode_compute) && nm.particle.algorithm != FilterAlgorithm::Gf {
         println!("You are using a gradient-based mode-finder. Particle filtering introduces discontinuities in the");
         println!("objective function w.r.t the parameters. Thus, should use a non-gradient based optimizer.");
@@ -221,6 +239,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     // every posterior sampler, and Dynare's mh files (load_mh_file, mh_recover, ...)
     let sampler =
         SamplerOptions::from_options(opt(o, "posterior_sampling_method"), opt(o, "posterior_sampler_options"))?
+            .with_estimation_optim(opt(o, "optim"))
             .with_priors(&dsge.priors);
     let mfo = mh_session::MhFileOptions::from_options(o, &sampler, dir)?;
     let mode_estim = sampler.mh_posterior_mode_estimation() || mfo.mh_posterior_mode_estimation;

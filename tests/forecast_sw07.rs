@@ -186,6 +186,8 @@ fn posterior_objects_on_dynare_draws() {
         exo_names: m.exo_names.clone(),
         seed: 1,
         kernel_density: false,
+        state_uncertainty: false,
+        filter_covariance: false,
     };
     let t = std::time::Instant::now();
     let p = prior_posterior_statistics(&s.dsge, &s.data, &draws, &o).unwrap();

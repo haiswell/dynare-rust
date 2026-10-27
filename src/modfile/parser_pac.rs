@@ -765,9 +765,8 @@ impl<'a> Parser<'a> {
                 ar[k - 1] = Some(p);
             }
         }
-        if ar.is_empty() {
-            bail!("{loc}: PAC equation of {name}: no autoregressive term param*diff({lhs_var}(-1))");
-        }
+        // no autoregressive term is accepted, as by the preprocessor (a2alpha then fails at
+        // evaluation, a2alpha.m reads past the end of its argument)
         let ar_params: Vec<String> = ar
             .into_iter()
             .enumerate()

@@ -88,6 +88,8 @@ fn setup(tag: &str) -> Option<Setup> {
         posterior_mean: None,
         posterior_median: None,
         graphs,
+        mean_forecast: None,
+        smoothed_mean: None,
     };
     let iv = r["vars"].as_array().unwrap().iter().map(|v| mf.model.endo_index(v.as_str().unwrap()).unwrap()).collect();
     Some(Setup { dir, mf, st, r, iv })

@@ -84,10 +84,33 @@ pub fn mcmc_after_mode(
     prefetch: usize,
     title: &str,
 ) -> Result<Option<(PosteriorStats, Vec<crate::estimation::Chain>)>> {
+    mcmc_after_mode_js(obj, xmode, hh, priors, names, o, dir, dname, fname, seed, prefetch, title, &[])
+}
+
+/// As [`mcmc_after_mode`] with the per-parameter `bayestopt_.jscale` of `estimated_params`
+/// (`set_prior.m`; `None`/NaN entries become `options_.mh_jscale`, `dynare_estimation_init.m`
+/// lines 459-463; an empty slice means no per-parameter scale).
+#[allow(clippy::too_many_arguments)]
+pub fn mcmc_after_mode_js(
+    obj: &dyn Objective,
+    xmode: &[f64],
+    hh: &Mat,
+    priors: &[Prior],
+    names: &[String],
+    o: &Options,
+    dir: &Path,
+    dname: &Path,
+    fname: &str,
+    seed: u64,
+    prefetch: usize,
+    title: &str,
+    param_jscale: &[Option<f64>],
+) -> Result<Option<(PosteriorStats, Vec<crate::estimation::Chain>)>> {
     let n = xmode.len();
     let mh_replic = num(o, "mh_replic").unwrap_or(0.0) as usize;
     let sampler =
         SamplerOptions::from_options(opt(o, "posterior_sampling_method"), opt(o, "posterior_sampler_options"))?
+            .with_estimation_optim(opt(o, "optim"))
             .with_priors(priors);
     let mfo = MhFileOptions::from_options(o, &sampler, dir)?;
     if mh_replic == 0 && !mfo.load_mh_file {
@@ -109,6 +132,9 @@ pub fn mcmc_after_mode(
     let keep_all = !flag(o, "nodiagnostic");
     mh.store_from = if keep_all { 0 } else { (mh_drop * mh_replic as f64).floor() as usize };
     let mut jscale = num(o, "mh_jscale").unwrap_or(2.38 / (n as f64).sqrt());
+    let mut per_param = (0..n)
+        .map(|i| param_jscale.get(i).copied().flatten().filter(|v| !v.is_nan()).unwrap_or(jscale))
+        .collect::<Vec<_>>();
     if flag(o, "mh_tune_jscale") && mh_replic > 0 {
         let target = num(o, "mh_tune_jscale").unwrap_or(0.33);
         let guess = num(o, "mh_tune_guess").or(num(o, "mh_jscale")).unwrap_or(jscale);
@@ -120,9 +146,11 @@ pub fn mcmc_after_mode(
             &TuneOptions { target, guess: Some(guess), seed, prefetch, ..Default::default() },
         )?;
         println!("mh_tune_jscale: mh_jscale has been set equal to {jscale}.");
+        // dynare_estimation_1.m: bayestopt_.jscale(:) = options_.mh_jscale
+        per_param = vec![jscale; n];
     }
     mh.mh_jscale = jscale;
-    mh.jscale = vec![jscale; n];
+    mh.jscale = per_param;
     println!("{title}::mcmc ({}): {} chains x {} draws.", sampler.title(), mh.nblocks, mh.replic);
     let t = Instant::now();
     let res = mh_session::run(
