@@ -19,8 +19,12 @@ use anyhow::{Result, anyhow, bail};
 /// One component of a composite target (`M_.pac.<name>.components(i)`).
 #[derive(Clone, Debug)]
 pub struct PacComponent {
-    /// The endogenous variable of the auxiliary model.
+    /// The variable of the auxiliary model (`endo_var`): the one that stands for the
+    /// component expression `endo_key` once the model is built.
     pub endo: String,
+    pub endo_key: String,
+    /// The numbers of the equation of the target as written (value, text).
+    pub num_texts: Vec<(f64, String)>,
     /// `ll`, `dd` or `dl`.
     pub kind: String,
     /// Weight in the equation of the target (`coeff_str`).
@@ -31,6 +35,25 @@ pub struct PacComponent {
     pub auxname: String,
     pub h_params: Vec<String>,
     pub growth_param: Option<String>,
+}
+
+/// `M_.pac.<name>.<group>.bgp{i}`: logical (the variable has a nonzero mean on the balanced
+/// growth path) or numeric (its mean).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PacBgp {
+    Bool(bool),
+    Num(f64),
+}
+
+/// One term `scaling_factor*param*variable` of `M_.pac.<name>.<group>` (`additive`,
+/// `optim_additive` or `non_optimizing_behaviour`); `param` None is NaN in `params`.
+#[derive(Clone, Debug)]
+pub struct PacBgpTerm {
+    pub group: &'static str,
+    pub var: String,
+    pub param: Option<String>,
+    pub scaling: f64,
+    pub bgp: PacBgp,
 }
 
 /// `M_.pac.<name>`.
@@ -49,18 +72,35 @@ pub struct PacModel {
     pub kind: String,
     /// The variable of the left hand side `diff(lhs_var)`.
     pub lhs_var: String,
+    /// The left hand side `diff(f(x))` of a unary function (`log(x)`, at `t`): `lhs_var` is then
+    /// the auxiliary variable that stands for it.
+    pub lhs_expr: Option<Ast>,
     pub ec_param: String,
     /// Parameters of `diff(lhs_var(-k))`, k = 1..max_lag.
     pub ar_params: Vec<String>,
+    /// Share of optimizing agents (`share_of_optimizing_agents_index`) of an equation
+    /// `share*(...) + (1-share)*(...)`, and the expression of the rule of thumb agents
+    /// (`non_optimizing_behaviour`).
+    pub share: Option<String>,
+    pub non_optimizing: Option<Ast>,
     /// The target of the error correction term (the nonstationary target variable of a
     /// composite target).
     pub target: String,
+    /// The target when it is a function of a variable (`log(x)`, at `t`): `target` is then
+    /// the auxiliary variable that stands for it.
+    pub target_expr: Option<Ast>,
     /// Composite target: the variable of `pac_target_info`'s `target`.
     pub target_var: String,
     pub components: Vec<PacComponent>,
     /// Auxiliary variable of the expectation (no components).
     pub aux_var: String,
     pub h_params: Vec<String>,
+    /// What the `h` parameters (of the model or of each component) multiply: the constant
+    /// (None) or `(variable, transformations, lag)` (`list_of_variables_in_companion_var` by
+    /// lag, as `rewrite_aux_variable` writes it: `diff(log(x))` is `x` with `log`, `diff`).
+    pub h_layout: Vec<Option<(String, Vec<String>, usize)>>,
+    /// The keys of the companion variables of `h_layout`.
+    pub h_keys: Vec<Option<String>>,
     pub growth_param: Option<String>,
     pub mce_alpha: Vec<String>,
     pub mce_z: String,
@@ -71,6 +111,8 @@ pub struct PacModel {
     pub eq_rhs: Ast,
     /// Definitions of the auxiliary variables: `(name, expression)`.
     pub defs: Vec<(String, Ast)>,
+    /// The exogenous terms of the equation and their `bgp` field (`pac.bgp.set`).
+    pub bgp: Vec<PacBgpTerm>,
     /// `pac.initialize` was run (`M_.pac.<name>.model_consistent_expectations` is set).
     pub initialized: bool,
 }
@@ -177,13 +219,19 @@ pub fn h_vectors(params: &[f64], h_comp: &Mat, kind: &str, id: usize) -> Result<
     let lrcp = if kind == "ll" {
         f64::NAN
     } else {
-        let s1 = solve(&img, &em).ok_or_else(|| anyhow!("PAC: singular matrix in hVectors"))?;
-        let s2 = solve(&img, &s1).ok_or_else(|| anyhow!("PAC: singular matrix in hVectors"))?;
-        let d = a1 * ab * (em.transpose() * s2)[(0, 0)];
+        let d = a1 * ab * inv_img2_mm(&img)?;
         let sum: f64 = params[1..params.len() - 1].iter().sum();
         1.0 - sum - d
     };
     Ok((h.iter().copied().collect(), lrcp))
+}
+
+/// `iota(m,m)'*inv((eye(m)-G)*(eye(m)-G))*iota(m,m)` with `img = eye(m)-G`: the last diagonal
+/// element of the inverse (computed as MATLAB does, through the inverse).
+fn inv_img2_mm(img: &Mat) -> Result<f64> {
+    let m = img.nrows();
+    let inv = (img * img).try_inverse().ok_or_else(|| anyhow!("PAC: singular matrix in hVectors"))?;
+    Ok(inv[(m - 1, m - 1)])
 }
 
 fn pidx(names: &[String], n: &str) -> Result<usize> {
@@ -199,11 +247,53 @@ impl PacModel {
         Ok(v)
     }
 
+    fn gamma(&self, names: &[String], params: &[f64]) -> Result<f64> {
+        Ok(match &self.share {
+            Some(n) => params[pidx(names, n)?],
+            None => 1.0,
+        })
+    }
+
     fn beta(&self, names: &[String], params: &[f64]) -> Result<f64> {
         Ok(match &self.discount {
             Discount::Value(v) => *v,
             Discount::Param(n) => params[pidx(names, n)?],
         })
+    }
+
+    /// The sums over the terms of `group` with a logical `bgp` true (`tmp0`: the coefficients
+    /// `param*scaling_factor`) and with a numeric `bgp` (`tmp1`: the coefficients times the
+    /// means), as in `pac.update.parameters`; `num`: numeric means are allowed in `group`.
+    fn bgp_sums(&self, group: &str, names: &[String], params: &[f64], num: bool) -> Result<(f64, f64)> {
+        let (mut tmp0, mut tmp1) = (0.0, 0.0);
+        for t in self.bgp.iter().filter(|t| t.group == group) {
+            let coef = match &t.param {
+                Some(p) => params[pidx(names, p)?] * t.scaling,
+                None => t.scaling,
+            };
+            match t.bgp {
+                PacBgp::Bool(true) => tmp0 += coef,
+                PacBgp::Bool(false) => {}
+                PacBgp::Num(_) if !num => bail!(
+                    "It is not possible to provide a value for the mean of an exogenous variable appearing in the optimal part of the PAC equation."
+                ),
+                PacBgp::Num(v) => tmp1 += coef * v,
+            }
+        }
+        Ok((tmp0, tmp1))
+    }
+
+    /// `pac.bgp.set(pacmodel, paceq, variable, nonzeromean)` (`+pac/+bgp/set.m`): the first of
+    /// `additive`, `optim_additive` and `non_optimizing_behaviour` with a term in `variable`
+    /// gets the value; a warning if none has one.
+    pub fn bgp_set(&mut self, paceq: &str, variable: &str, value: PacBgp) {
+        for group in ["additive", "optim_additive", "non_optimizing_behaviour"] {
+            if let Some(t) = self.bgp.iter_mut().find(|t| t.group == group && t.var == variable) {
+                t.bgp = value;
+                return;
+            }
+        }
+        eprintln!("Warning: {variable} is not an exogenous variable in equation {paceq}.");
     }
 
     /// `pac.update.parameters`: new values of the `h` parameters and of the growth
@@ -223,10 +313,20 @@ impl PacModel {
         let mut pv = self.pac_values(names, params)?;
         pv.push(self.beta(names, params)?);
         let off = (is_var && comp.is_constant) as usize;
+        // by name, else the diff / unary operator auxiliary variable of the list that is the
+        // variable or whose original variable it is (`pac.update.parameters`)
         let find = |v: &str| -> Result<usize> {
-            comp.variables.iter().position(|x| x == v).map(|j| j + 1 + off).ok_or_else(|| {
-                anyhow!("Cannot find the trend variable {v} in the auxiliary VAR / Trend component model.")
-            })
+            let aux = |x: &str| vms.aux.iter().find(|a| a.0 == x);
+            comp.variables
+                .iter()
+                .position(|x| x == v)
+                .or_else(|| {
+                    comp.variables.iter().position(|x| aux(x).is_some_and(|a| a.0 == v || (a.1 == 8 && a.2 == v)))
+                })
+                .map(|j| j + 1 + off)
+                .ok_or_else(|| {
+                    anyhow!("Cannot find the trend variable {v} in the auxiliary VAR / Trend component model.")
+                })
         };
         // (id, kind, h param names, growth param)
         let mut items: Vec<(usize, String, &Vec<String>, Option<&String>)> = Vec::new();
@@ -270,11 +370,22 @@ impl PacModel {
                 }
             }
             if growth_flag && !lrcp.is_nan() {
-                // gamma (share of optimizing agents) is one: no rule of thumb agents
+                // gamma: share of optimizing agents (one without rule of thumb agents); then
+                // the corrections for the exogenous variables with a nonzero mean on the
+                // balanced growth path (pac.bgp.set)
+                let gamma = self.gamma(names, params)?;
                 let gg = -(lrcp - 1.0);
-                let cc = 1.0 - gg;
+                let mut cc = 1.0 - gg * gamma;
+                let (o0, _) = self.bgp_sums("optim_additive", names, params, false)?;
+                cc -= o0 * gamma;
+                if gamma < 1.0 {
+                    let (n0, _) = self.bgp_sums("non_optimizing_behaviour", names, params, true)?;
+                    cc -= (1.0 - gamma) * n0;
+                }
+                let (a0, _) = self.bgp_sums("additive", names, params, true)?;
+                cc -= a0;
                 if let Some(gp) = gp {
-                    out.push((gp.clone(), cc));
+                    out.push((gp.clone(), cc / gamma));
                 }
             }
         }
@@ -301,12 +412,25 @@ impl PacModel {
             let a1 = polyval1(&alpha, 1.0);
             let ab = polyval1(&alpha, beta);
             let img = Mat::identity(m, m) - &g;
-            let em = unit(m, m - 1);
-            let s1 = solve(&img, &em).ok_or_else(|| anyhow!("PAC: singular matrix"))?;
-            let s2 = solve(&img, &s1).ok_or_else(|| anyhow!("PAC: singular matrix"))?;
-            let d = a1 * ab * (em.transpose() * s2)[(0, 0)];
+            let d = a1 * ab * inv_img2_mm(&img)?;
             let sum: f64 = pv[1..pv.len() - 1].iter().sum();
-            out.push((gp.clone(), 1.0 - (sum + d)));
+            let gamma = self.gamma(names, params)?;
+            let mut cc = 1.0 / gamma - (sum + d);
+            // +pac/+mce/parameters.m reads the scaling factor of a calibrated optimizing
+            // additive term from an undefined `equations`
+            if self.bgp.iter().any(|t| t.group == "optim_additive" && t.param.is_some() && t.bgp == PacBgp::Bool(true))
+            {
+                bail!("Unrecognized function or variable 'equations'.");
+            }
+            let (o0, _) = self.bgp_sums("optim_additive", names, params, false)?;
+            cc -= o0;
+            if gamma < 1.0 {
+                let (n0, _) = self.bgp_sums("non_optimizing_behaviour", names, params, true)?;
+                cc -= (1.0 - gamma) * n0 / gamma;
+            }
+            let (a0, _) = self.bgp_sums("additive", names, params, true)?;
+            cc -= a0 / gamma;
+            out.push((gp.clone(), cc));
         }
         Ok(out)
     }

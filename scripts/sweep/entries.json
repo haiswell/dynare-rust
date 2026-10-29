@@ -1,0 +1,7405 @@
+[
+ {
+  "id": 0,
+  "test": [
+   "particle/dsge_base2.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 1,
+  "test": [
+   "estimation/dsmh/dsge_base_DSMH.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 2,
+  "test": [
+   "particle/dsge_base_HSSMC.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 3,
+  "test": [
+   "particle/dsge_base_Liu_West.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 4,
+  "test": [
+   "particle/dsge_base_apf.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 5,
+  "test": [
+   "particle/dsge_base_cpf.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 6,
+  "test": [
+   "particle/dsge_base_gf.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 7,
+  "test": [
+   "particle/dsge_base_gmf.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 8,
+  "test": [
+   "particle/dsge_base_nlkf.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 9,
+  "test": [
+   "particle/dsge_base_sis.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 10,
+  "test": [
+   "particle/first_spec_hssmc.mod"
+  ],
+  "extra": [
+   "particle/first_spec_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 11,
+  "test": [
+   "particle/first_spec.mod",
+   "particle/local_state_space_iteration_k_test.mod",
+   "particle/local_state_space_iteration_3_test.mod"
+  ],
+  "extra": [
+   "particle/first_spec_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 12,
+  "test": [
+   "particle/first_spec_MCMC.mod"
+  ],
+  "extra": [
+   "particle/first_spec_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 13,
+  "test": [
+   "occbin/ppf/swpkfppf.mod"
+  ],
+  "extra": [
+   "occbin/ppf/swpkfest_mh_mode.mat",
+   "occbin/ppf/usdata_pkf.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh1_blck1.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh1_blck2.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh1_blck3.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh1_blck4.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh_history_0.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh_history_1.mat",
+   "occbin/ppf/swpkfest/metropolis/swpkfest_mh_history_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 14,
+  "test": [
+   "decision_rules/first_order/walsh.mod"
+  ],
+  "extra": [
+   "decision_rules/first_order/+matlab/+namespace/y_k.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 15,
+  "test": [
+   "occbin/model_irrcap_twoconstraints/dynrbc.mod",
+   "occbin/model_irrcap_twoconstraints/dynrbc_0_std_shocks.mod"
+  ],
+  "extra": [
+   "occbin/model_irrcap_twoconstraints/dynrbc_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 16,
+  "test": [
+   "occbin/model_borrcon/borrcon.mod",
+   "occbin/model_borrcon/borrcon_0_std_shocks.mod"
+  ],
+  "extra": [
+   "occbin/model_borrcon/borrcon_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 17,
+  "test": [
+   "occbin/filter/NKM.mod"
+  ],
+  "extra": [
+   "occbin/filter/dataobsfile.mat",
+   "occbin/filter/NKM_mh_mode_saved.mat",
+   "occbin/filter/NKM_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 18,
+  "test": [
+   "occbin/filter/NKM_non_restrict_state_space.mod"
+  ],
+  "extra": [
+   "occbin/filter/dataobsfile.mat",
+   "occbin/filter/NKM_mh_mode_saved.mat",
+   "occbin/filter/NKM_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 19,
+  "test": [
+   "occbin/filter/NKM_calib_smoother.mod"
+  ],
+  "extra": [
+   "occbin/filter/dataobsfile.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 20,
+  "test": [
+   "occbin/filter/NKM_0_std_shocks.mod"
+  ],
+  "extra": [
+   "occbin/filter/dataobsfile.mat",
+   "occbin/filter/NKM_mh_mode_saved.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 21,
+  "test": [
+   "moments/example1_hp_test.mod"
+  ],
+  "extra": [
+   "moments/example1_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 22,
+  "test": [
+   "moments/fs2000_post_moments.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 23,
+  "test": [
+   "moments/example1_order2_pruning.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 24,
+  "test": [
+   "lmmcp/rbcii.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 25,
+  "test": [
+   "lmmcp/purely_backward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 26,
+  "test": [
+   "lmmcp/purely_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 27,
+  "test": [
+   "lmmcp/MCP_ramsey.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 28,
+  "test": [
+   "lmmcp/SMOPEC.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 29,
+  "test": [
+   "estimation/TaRB/fs2000_tarb.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 30,
+  "test": [
+   "estimation/pct/runpcttests.m"
+  ],
+  "extra": [
+   "estimation/pct/SW_2007_fmincon_parallel.mod",
+   "estimation/pct/fs2000.mod",
+   "estimation/pct/fs2000_data.m",
+   "estimation/pct/usmodel_data.mat",
+   "estimation/pct/tParallel.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 31,
+  "test": [
+   "parallel/ls2003.mod",
+   "parallel/serial_mhblocks_1.mod",
+   "parallel/serial_mhblocks_2.mod",
+   "parallel/pct_mhblocks_1.mod",
+   "parallel/pct_mhblocks_2.mod",
+   "parallel/serial_vs_pct.mod"
+  ],
+  "extra": [
+   "parallel/_estimation_commands_with_different_seeds.inc",
+   "parallel/_ls2003.inc",
+   "parallel/data_ca1.m",
+   "parallel/folder/endovars.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 32,
+  "test": [
+   "observation_trends_and_prefiltering/MCMC/Trend_loglinear_no_prefilter_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_no_prefilter_first_obs_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_no_prefilter_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_loglinear_prefilter_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_loglin_prefilt_first_obs_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_prefilter_first_obs_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_prefilter_MC.mod",
+   "observation_trends_and_prefiltering/MCMC/Trend_loglin_no_prefilt_first_obs_MC.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_exp_model_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_exp_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_model_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_MCMC_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 33,
+  "test": [
+   "dates/dseries_interact.mod"
+  ],
+  "extra": [
+   "dates/data_uav.xlsx"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 34,
+  "test": [
+   "dates/fs2000.mod"
+  ],
+  "extra": [
+   "dates/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 35,
+  "test": [
+   "optimizers/fs2000_1.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 36,
+  "test": [
+   "optimizers/fs2000_2.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 37,
+  "test": [
+   "optimizers/fs2000_3.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 38,
+  "test": [
+   "optimizers/fs2000_4.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 39,
+  "test": [
+   "optimizers/fs2000_4_with_optim.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 40,
+  "test": [
+   "optimizers/fs2000_5.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 41,
+  "test": [
+   "optimizers/fs2000_6.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 42,
+  "test": [
+   "optimizers/fs2000_7.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 43,
+  "test": [
+   "optimizers/fs2000_8.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 44,
+  "test": [
+   "optimizers/fs2000_8_with_optim.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 45,
+  "test": [
+   "optimizers/fs2000_9.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 46,
+  "test": [
+   "optimizers/fs2000_10.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 47,
+  "test": [
+   "optimizers/fs2000_101.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 48,
+  "test": [
+   "optimizers/fs2000_102.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 49,
+  "test": [
+   "optimizers/fs2000_w.mod"
+  ],
+  "extra": [
+   "optimizers/fs2000.common.inc",
+   "optimizers/optimizer_function_count.inc",
+   "optimizers/optimizer_function_wrapper.m",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 50,
+  "test": [
+   "estimation/slice/fs2000_slice.mod"
+  ],
+  "extra": [
+   "estimation/slice/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 51,
+  "test": [
+   "estimation/slice/fs2000_slice_use_prior.mod"
+  ],
+  "extra": [
+   "estimation/slice/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 52,
+  "test": [
+   "estimation/slice/bf.mod"
+  ],
+  "extra": [
+   "estimation/slice/datafile.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 53,
+  "test": [
+   "estimation/slice/fs2000_estimate_initial_states_log.mod"
+  ],
+  "extra": [
+   "estimation/slice/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 54,
+  "test": [
+   "estimation/slice/fs2000_estimate_initial_states.mod"
+  ],
+  "extra": [
+   "estimation/slice/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 55,
+  "test": [
+   "analytic_derivatives/fs2000_analytic_derivation.mod"
+  ],
+  "extra": [
+   "analytic_derivatives/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 56,
+  "test": [
+   "analytic_derivatives/fs2000_analytic_derivation_diag_H.mod"
+  ],
+  "extra": [
+   "analytic_derivatives/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 57,
+  "test": [
+   "analytic_derivatives/fs2000_analytic_derivation_newrat.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 58,
+  "test": [
+   "analytic_derivatives/BrockMirman_PertParamsDerivs.mod"
+  ],
+  "extra": [
+   "analytic_derivatives/nBrockMirmanSYM.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 59,
+  "test": [
+   "analytic_derivatives/burnside_3_order_PertParamsDerivs.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 60,
+  "test": [
+   "stochastic_simulations/pruning/AnSchorfheide_pruned_state_space.mod",
+   "stochastic_simulations/pruning/AS_pruned_state_space_red_shock.mod"
+  ],
+  "extra": [
+   "stochastic_simulations/pruning/Andreasen_et_al_2018_Dynare44Pruning_v2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 61,
+  "test": [
+   "stochastic_simulations/pruning/fs2000_pruning.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 62,
+  "test": [
+   "measurement_errors/fs2000_corr_me_ml_mcmc/fs2000_corr_ME.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 63,
+  "test": [
+   "TeX/fs2000_corr_ME.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 64,
+  "test": [
+   "estimation/MH_recover/fs2000_recover.mod",
+   "estimation/MH_recover/fs2000_recover_tarb.mod"
+  ],
+  "extra": [
+   "estimation/MH_recover/fs2000.common.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 65,
+  "test": [
+   "estimation/MH_recover/fs2000_recover_2.mod"
+  ],
+  "extra": [
+   "estimation/MH_recover/fs2000.common.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 66,
+  "test": [
+   "estimation/MH_recover/fs2000_recover_3.mod"
+  ],
+  "extra": [
+   "estimation/MH_recover/fs2000.common.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 67,
+  "test": [
+   "estimation/MH_recover/fs2000_slice_recover.mod"
+  ],
+  "extra": [
+   "estimation/MH_recover/fs2000_slice_recover_mh_tmp_blck1.mat",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 68,
+  "test": [
+   "estimation/MH_recover/fs2000_recover_tmp.mod"
+  ],
+  "extra": [
+   "estimation/MH_recover/fs2000_recover_tmp_mh_tmp_blck1.mat",
+   "estimation/MH_recover/fs2000_recover_tmp_mode.mat",
+   "estimation/MH_recover/fs2000.common.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 69,
+  "test": [
+   "estimation/fs2000.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 70,
+  "test": [
+   "estimation/dime_mcmc/fs2000.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 71,
+  "test": [
+   "estimation/hssmc/fs2000.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 72,
+  "test": [
+   "estimation/hssmc/dsge_base_hssmc.mod"
+  ],
+  "extra": [
+   "particle/mysample.m",
+   "particle/dsge_base.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 73,
+  "test": [
+   "gsa/ls2003a.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m",
+   "gsa/ls2003_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 74,
+  "test": [
+   "gsa/ls2003.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m",
+   "gsa/ls2003_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 75,
+  "test": [
+   "gsa/ls2003scr.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m",
+   "gsa/ls2003_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 76,
+  "test": [
+   "gsa/ls2003ide.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m",
+   "gsa/ls2003_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 77,
+  "test": [
+   "gsa/ls2003prior.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m",
+   "gsa/ls2003_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 78,
+  "test": [
+   "gsa/cod_ML_morris/cod_ML_morris.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 79,
+  "test": [
+   "gsa/morris/nk_est.mod"
+  ],
+  "extra": [
+   "gsa/morris/nk_est_data.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 80,
+  "test": [
+   "estimation/fs2000_MCMC_jumping_covariance.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 81,
+  "test": [
+   "ms-sbvar/test_ms_variances_repeated_runs.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 82,
+  "test": [
+   "fs2000/fs2000.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 83,
+  "test": [
+   "ls2003/ls2003_hessian_zero.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 84,
+  "test": [
+   "exogenous-observed-variables/preprocessor.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 85,
+  "test": [
+   "estimation/fs2000_with_weibull_prior.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 86,
+  "test": [
+   "estimation/fs2000.mod",
+   "estimation/fs2000_initialize_from_calib.mod",
+   "estimation/fs2000_calibrated_covariance.mod",
+   "estimation/fs2000_model_comparison.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 87,
+  "test": [
+   "estimation/fs2000_estimated_params_init.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 88,
+  "test": [
+   "estimation/fs2000_estimated_params_remove.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 89,
+  "test": [
+   "estimation/fs2000_fast.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 90,
+  "test": [
+   "estimation/fs2000.mod",
+   "estimation/fs2000_init_from_previous.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 91,
+  "test": [
+   "estimation/ls2003_endog_prior_restrict_estimation.mod"
+  ],
+  "extra": [
+   "gsa/data_ca1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 92,
+  "test": [
+   "estimation/independent_mh/fs2000_independent_mh.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 93,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/heteroskedastic_shocks/fs2000_het_check.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 94,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het_corr.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/heteroskedastic_shocks/fs2000_het_check.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 95,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het_sample_restriction.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 96,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het_dates.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 97,
+  "test": [
+   "estimation/t_proposal/fs2000_student.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 98,
+  "test": [
+   "estimation/tune_mh_jscale/fs2000.mod"
+  ],
+  "extra": [
+   "estimation/tune_mh_jscale/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 99,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_matched_moments.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 100,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams0.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 101,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams1.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 102,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_GMM_estimParams2.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 103,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams0.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 104,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams1.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 105,
+  "test": [
+   "estimation/method_of_moments/AnScho/AnScho_SMM_estimParams2.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AnScho/AnScho_MoM_common.inc",
+   "estimation/method_of_moments/AnScho/AnScho_MoM_data_2.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 106,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_Andreasen.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_Andreasen_Data_2.mat",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 107,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_SMM_ME.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 108,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_prefilter.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 109,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_SMM_ME_filter.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 110,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_optimizer.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_Andreasen_Data_2.mat",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 111,
+  "test": [
+   "estimation/method_of_moments/RBC/RBC_MoM_GMM_gradient_optim.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/RBC/RBC_MoM_common.inc",
+   "estimation/method_of_moments/RBC/RBC_Andreasen_Data_2.mat",
+   "estimation/method_of_moments/RBC/RBC_MoM_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 112,
+  "test": [
+   "estimation/method_of_moments/AFVRR/AFVRR_M0.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AFVRR/AFVRR_common.inc",
+   "estimation/method_of_moments/AFVRR/AFVRR_data.mat",
+   "estimation/method_of_moments/AFVRR/AFVRR_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 113,
+  "test": [
+   "estimation/method_of_moments/AFVRR/AFVRR_MFB.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AFVRR/AFVRR_common.inc",
+   "estimation/method_of_moments/AFVRR/AFVRR_data.mat",
+   "estimation/method_of_moments/AFVRR/AFVRR_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 114,
+  "test": [
+   "estimation/method_of_moments/AFVRR/AFVRR_MFB_RRA.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/AFVRR/AFVRR_common.inc",
+   "estimation/method_of_moments/AFVRR/AFVRR_data.mat",
+   "estimation/method_of_moments/AFVRR/AFVRR_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 115,
+  "test": [
+   "estimation/method_of_moments/CET/cet_interface.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 116,
+  "test": [
+   "estimation/method_of_moments/CET/cet_imh.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 117,
+  "test": [
+   "estimation/method_of_moments/CET/cet_mle.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 118,
+  "test": [
+   "estimation/method_of_moments/CET/cet_rwmh.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 119,
+  "test": [
+   "estimation/method_of_moments/CET/cet_mh_posterior_mode.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 120,
+  "test": [
+   "estimation/method_of_moments/CET/cet_slice.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 121,
+  "test": [
+   "estimation/method_of_moments/CET/cet_tarb.mod"
+  ],
+  "extra": [
+   "estimation/method_of_moments/CET/cet_data.mat",
+   "estimation/method_of_moments/CET/cet_irf_matching_file.m",
+   "estimation/method_of_moments/CET/cet_model.inc",
+   "estimation/method_of_moments/CET/cet_original_mode.mat",
+   "estimation/method_of_moments/CET/cet_steady_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 122,
+  "test": [
+   "estimation/conditional-likelihood/1/fs2000_estimation_exact.mod",
+   "estimation/conditional-likelihood/1/fs2000_estimation_conditional.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 123,
+  "test": [
+   "estimation/system_prior_restriction/Gali_2015.mod"
+  ],
+  "extra": [
+   "estimation/system_prior_restriction/Gali_2015_PC_slope.m",
+   "estimation/system_prior_restriction/Gali_2015_prior_restrictions.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 124,
+  "test": [
+   "estimation/no_init_estimation_check_first_obs/fs2000_init_check.mod"
+  ],
+  "extra": [
+   "estimation/no_init_estimation_check_first_obs/fsdat_mat.m",
+   "estimation/no_init_estimation_check_first_obs/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 125,
+  "test": [
+   "estimation/univariate/nls/staticmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 126,
+  "test": [
+   "estimation/univariate/nls/dynamicmodel1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 127,
+  "test": [
+   "estimation/univariate/nls/dynamicmodel2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 128,
+  "test": [
+   "model_info/NKM_3_back.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 129,
+  "test": [
+   "model_info/NKM_3_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 130,
+  "test": [
+   "model_info/bkk.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 131,
+  "test": [
+   "moments/example1_var_decomp.mod"
+  ],
+  "extra": [
+   "moments/example1_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 132,
+  "test": [
+   "moments/example1_bp_test.mod"
+  ],
+  "extra": [
+   "moments/example1_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 133,
+  "test": [
+   "moments/example1_theoretical_simulated.mod"
+  ],
+  "extra": [
+   "moments/example1_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 134,
+  "test": [
+   "moments/test_AR1_spectral_density.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 135,
+  "test": [
+   "moments/example1_one_sided_hp_test.mod"
+  ],
+  "extra": [
+   "moments/example1_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 136,
+  "test": [
+   "on-the-fly/ex1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 137,
+  "test": [
+   "on-the-fly/ex2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 138,
+  "test": [
+   "on-the-fly/ex3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 139,
+  "test": [
+   "on-the-fly/ex4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 140,
+  "test": [
+   "on-the-fly/ex5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 141,
+  "test": [
+   "on-the-fly/ex6.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 142,
+  "test": [
+   "equation_tags/example1_with_tags.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 143,
+  "test": [
+   "equation_tags/ramst_static_tag.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 144,
+  "test": [
+   "equation_tags/ramst_static_tag_block.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 145,
+  "test": [
+   "stochastic_simulations/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 146,
+  "test": [
+   "stochastic_simulations/example1_irf_shocks.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 147,
+  "test": [
+   "stochastic_simulations/example1long.mod",
+   "stochastic_simulations/example2long.mod",
+   "stochastic_simulations/example2long_use_dll.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 148,
+  "test": [
+   "stochastic_simulations/example2_simul_replic.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 149,
+  "test": [
+   "stochastic_simulations/histval_sto.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 150,
+  "test": [
+   "stochastic_simulations/histval_predetermined.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 151,
+  "test": [
+   "macro_processor/test_ifndef.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 152,
+  "test": [
+   "macro_processor/example1_macro.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 153,
+  "test": [
+   "irfs/example1_unit_std.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 154,
+  "test": [
+   "optimal_policy/OSR/osr_example.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 155,
+  "test": [
+   "optimal_policy/OSR/osr_example_objective_correctness.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 156,
+  "test": [
+   "optimal_policy/OSR/osr_objective_correctness_anal_deriv.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 157,
+  "test": [
+   "optimal_policy/OSR/osr_example_obj_corr_non_stat_vars.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 158,
+  "test": [
+   "optimal_policy/OSR/osr_example_param_bounds.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 159,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 160,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 161,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 162,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_7.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 163,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_8.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 164,
+  "test": [
+   "optimal_policy/OSR/osr_obj_corr_algo_9.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 165,
+  "test": [
+   "optimal_policy/OSR/OSR_planner_objective.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 166,
+  "test": [
+   "optimal_policy/ramsey_.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 167,
+  "test": [
+   "optimal_policy/nk_ramsey.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 168,
+  "test": [
+   "optimal_policy/nk_ramsey_model.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 169,
+  "test": [
+   "optimal_policy/nk_ramsey_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 170,
+  "test": [
+   "optimal_policy/neo_ramsey_det_bytecode.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 171,
+  "test": [
+   "optimal_policy/nk_ramsey_expectation.mod",
+   "optimal_policy/nk_ramsey_expectation_a.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 172,
+  "test": [
+   "optimal_policy/mult_elimination_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 173,
+  "test": [
+   "optimal_policy/neo_growth.mod",
+   "optimal_policy/neo_growth_ramsey.mod"
+  ],
+  "extra": [
+   "optimal_policy/neo_growth_common.inc",
+   "optimal_policy/neo_growth_ramsey_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 174,
+  "test": [
+   "optimal_policy/neo_growth_k_order.mod",
+   "optimal_policy/neo_growth_ramsey_k_order.mod"
+  ],
+  "extra": [
+   "optimal_policy/neo_growth_common.inc",
+   "optimal_policy/neo_growth_ramsey_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 175,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_ex_initval.mod",
+   "optimal_policy/Ramsey/ramsey_ex.mod"
+  ],
+  "extra": [
+   "optimal_policy/Ramsey/find_c.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 176,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_ex_initval_AR2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 177,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_ex_aux.mod"
+  ],
+  "extra": [
+   "optimal_policy/Ramsey/find_c.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 178,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_histval.mod"
+  ],
+  "extra": [
+   "optimal_policy/Ramsey/find_c.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 179,
+  "test": [
+   "optimal_policy/Ramsey/Gali_commitment.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 180,
+  "test": [
+   "optimal_policy/RamseyConstraints/test1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 181,
+  "test": [
+   "optimal_policy/Ramsey/Ramsey_Example_estimation.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 182,
+  "test": [
+   "discretionary_policy/dennis_1.mod",
+   "discretionary_policy/dennis_1_estim.mod",
+   "discretionary_policy/dennis_1_estim_MoM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 183,
+  "test": [
+   "discretionary_policy/Gali_discretion.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 184,
+  "test": [
+   "discretionary_policy/NK_discretion_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 185,
+  "test": [
+   "discretionary_policy/Gali_2015_chapter_3.mod",
+   "discretionary_policy/Gali_2015_chapter_3_nonlinear.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 186,
+  "test": [
+   "histval_initval_file/ramst_data_generate.mod",
+   "histval_initval_file/ramst_initval_file_data.m",
+   "histval_initval_file/ramst_initval_file.mod"
+  ],
+  "extra": [
+   "histval_initval_file/ramst_data.xlsx"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 187,
+  "test": [
+   "histval_initval_file/ramst_initval_file_with_dseries.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 188,
+  "test": [
+   "histval_initval_file/ramst_initval_file_data.m",
+   "histval_initval_file/ramst_datafile.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 189,
+  "test": [
+   "histval_initval_file/sim_exo_lead_lag.mod",
+   "histval_initval_file/sim_exo_lead_lag_initvalf.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 190,
+  "test": [
+   "stat_functions/ramst_normcdf_and_friends_mfile.mod"
+  ],
+  "extra": [
+   "stat_functions/ramst_normcdf_and_friends.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 191,
+  "test": [
+   "stat_functions/ramst_normcdf_and_friends_use_dll.mod"
+  ],
+  "extra": [
+   "stat_functions/ramst_normcdf_and_friends.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 192,
+  "test": [
+   "stat_functions/ramst_normcdf_and_friends_bytecode.mod"
+  ],
+  "extra": [
+   "stat_functions/ramst_normcdf_and_friends.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 193,
+  "test": [
+   "stat_functions/example1_abs_sign.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 194,
+  "test": [
+   "preprocessor_checks/comments.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 195,
+  "test": [
+   "preprocessor_checks/example1_mlv.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 196,
+  "test": [
+   "deterministic_simulations/ramst.mod",
+   "preprocessor_checks/ramst_model_edit.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 197,
+  "test": [
+   "auxiliary_variables/test1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 198,
+  "test": [
+   "expectations/expectation.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 199,
+  "test": [
+   "expectations/expectation_ss.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 200,
+  "test": [
+   "expectations/expectation_ss_old.mod"
+  ],
+  "extra": [
+   "expectations/expectation_ss_old_steadystate.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 201,
+  "test": [
+   "expectations/expectation_nested.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 202,
+  "test": [
+   "steady_state/walsh1_initval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 203,
+  "test": [
+   "steady_state/walsh1_old_ss.mod"
+  ],
+  "extra": [
+   "steady_state/walsh1_old_ss_steadystate.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 204,
+  "test": [
+   "steady_state/walsh1_ssm.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 205,
+  "test": [
+   "steady_state/walsh1_ssm_block.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 206,
+  "test": [
+   "steady_state/multi_leads.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 207,
+  "test": [
+   "steady_state/example1_trust_region.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 208,
+  "test": [
+   "steady_state/example1_block_trust_region.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 209,
+  "test": [
+   "steady_state/Gali_2015_chapter_6_4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 210,
+  "test": [
+   "steady_state/ramst_solve_algo_0.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 211,
+  "test": [
+   "steady_state/fs2000_ssfile.mod"
+  ],
+  "extra": [
+   "steady_state/fs2000_ssfile_aux.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 212,
+  "test": [
+   "steady_state_operator/standard.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 213,
+  "test": [
+   "steady_state_operator/use_dll.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 214,
+  "test": [
+   "steady_state_operator/block.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 215,
+  "test": [
+   "steady_state_operator/bytecode_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 216,
+  "test": [
+   "block_bytecode/ireland.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 217,
+  "test": [
+   "block_bytecode/lola_solve_one_boundary.mod",
+   "block_bytecode/lola_solve_one_boundary_mfs1.mod",
+   "block_bytecode/lola_solve_one_boundary_mfs2.mod",
+   "block_bytecode/lola_solve_one_boundary_mfs3.mod"
+  ],
+  "extra": [
+   "block_bytecode/lola_common.inc",
+   "block_bytecode/lola_data.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 218,
+  "test": [
+   "decision_rules/k_order/fs2000k2a.mod",
+   "decision_rules/k_order/fs2000k2_use_dll.mod",
+   "decision_rules/k_order/fs2000k_1_use_dll.mod",
+   "decision_rules/k_order/fs2000k3_use_dll.mod",
+   "decision_rules/k_order/fs2000k2_m.mod",
+   "decision_rules/k_order/fs2000k_1_m.mod",
+   "decision_rules/k_order/fs2000k3_m.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 219,
+  "test": [
+   "stochastic_simulations/pruning/fs2000k3_p.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 220,
+  "test": [
+   "decision_rules/k_order/burnside_k_order.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 221,
+  "test": [
+   "stochastic_simulations/fs2000_k_order_simul.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 222,
+  "test": [
+   "partial_information/PItest3aHc0PCLsimModPiYrVarobsAll.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 223,
+  "test": [
+   "partial_information/PItest3aHc0PCLsimModPiYrVarobsCNR.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 224,
+  "test": [
+   "partial_information/Partial_ramsey.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 225,
+  "test": [
+   "partial_information/Partial_steady_state_model.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 226,
+  "test": [
+   "arima/mod1.mod",
+   "arima/mod1a.mod",
+   "arima/mod1b.mod",
+   "arima/mod1c.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 227,
+  "test": [
+   "arima/mod2.mod",
+   "arima/mod2a.mod",
+   "arima/mod2b.mod",
+   "arima/mod2c.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 228,
+  "test": [
+   "data/mod1a.mod"
+  ],
+  "extra": [
+   "data/test.xlsx"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 229,
+  "test": [
+   "fs2000/fs2000a.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 230,
+  "test": [
+   "fs2000/fs2000c.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 231,
+  "test": [
+   "fs2000/fs2000_calib.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 232,
+  "test": [
+   "fs2000/fs2000_calib_dseries.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 233,
+  "test": [
+   "fs2000/fs2000_missing_data.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul_missing_obs.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 234,
+  "test": [
+   "fs2000/fs2000_dseries_a.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul_dseries.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 235,
+  "test": [
+   "fs2000/fs2000_dseries_b.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul_dseries.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 236,
+  "test": [
+   "steady_state/homotopy/homotopy1_test.mod"
+  ],
+  "extra": [
+   "steady_state/homotopy/common.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 237,
+  "test": [
+   "steady_state/homotopy/homotopy2_test.mod"
+  ],
+  "extra": [
+   "steady_state/homotopy/common.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 238,
+  "test": [
+   "steady_state/homotopy/homotopy3_test.mod"
+  ],
+  "extra": [
+   "steady_state/homotopy/common.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 239,
+  "test": [
+   "steady_state/homotopy/homotopy_from_initval_to_endval.mod"
+  ],
+  "extra": [
+   "steady_state/homotopy/common.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 240,
+  "test": [
+   "bvar_a_la_sims/bvar_standalone.mod"
+  ],
+  "extra": [
+   "bvar_a_la_sims/bvar_sample.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 241,
+  "test": [
+   "bvar_a_la_sims/bvar_and_dsge.mod"
+  ],
+  "extra": [
+   "bvar_a_la_sims/bvar_sample.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 242,
+  "test": [
+   "AIM/fs2000x10L9_L.mod",
+   "AIM/fs2000x10L9_L_AIM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 243,
+  "test": [
+   "AIM/fs2000x10_L9_L.mod",
+   "AIM/fs2000x10_L9_L_AIM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 244,
+  "test": [
+   "AIM/fs2000_b1L1L.mod",
+   "AIM/fs2000_b1L1L_AIM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 245,
+  "test": [
+   "AIM/ls2003_2L0L.mod",
+   "AIM/ls2003_2L0L_AIM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 246,
+  "test": [
+   "AIM/ls2003_2L2L.mod",
+   "AIM/ls2003_2L2L_AIM.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 247,
+  "test": [
+   "conditional_variance_decomposition/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 248,
+  "test": [
+   "conditional_variance_decomposition/example3.mod"
+  ],
+  "extra": [
+   "conditional_variance_decomposition/example3_steady_state_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 249,
+  "test": [
+   "dsge-var/simul_hybrid.mod",
+   "dsge-var/dsgevar_forward_calibrated_lambda.mod",
+   "dsge-var/dsgevar_forward_estimated_lambda.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 250,
+  "test": [
+   "external_function/benchmark.mod",
+   "external_function/first_deriv_given.mod",
+   "external_function/first_deriv_given_dll.mod",
+   "external_function/first_and_2nd_deriv_given.mod",
+   "external_function/first_and_2nd_deriv_given_namespace.mod",
+   "external_function/first_and_2nd_deriv_given_dll.mod",
+   "external_function/first_and_2nd_deriv_given_dll_namespace.mod",
+   "external_function/no_deriv_given.mod",
+   "external_function/no_deriv_given_dll.mod",
+   "external_function/extfun_in_mlv.mod"
+  ],
+  "extra": [
+   "external_function/extFunDeriv.m",
+   "external_function/extFunNoDerivs.m",
+   "external_function/extFunWithFirstAndSecondDerivs.m",
+   "external_function/+matlab/+namespace/extFunWithFirstAndSecondDerivsNamespace.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 251,
+  "test": [
+   "minimal_state_space_system/as2007_minimal.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 252,
+  "test": [
+   "minimal_state_space_system/sw_minimal.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 253,
+  "test": [
+   "identification/kim/kim2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 254,
+  "test": [
+   "identification/as2007/as2007.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 255,
+  "test": [
+   "identification/as2007/as2007_kronflags.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 256,
+  "test": [
+   "identification/as2007/as2007_QT.mod"
+  ],
+  "extra": [
+   "identification/as2007/G_QT.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 257,
+  "test": [
+   "identification/as2007/as2007_QT_equal_autocorr.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 258,
+  "test": [
+   "identification/as2007/as2007_order_1_2_3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 259,
+  "test": [
+   "identification/as2007/as2007_order3_no_stoch_simul.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 260,
+  "test": [
+   "identification/BrockMirman/BrockMirman.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 261,
+  "test": [
+   "identification/cgg/cgg_criteria_differ.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 262,
+  "test": [
+   "identification/ident_unit_root/ident_unit_root.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 263,
+  "test": [
+   "identification/rbc_ident/rbc_ident_std_as_structural_par.mod",
+   "identification/rbc_ident/rbc_ident_varexo_only.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 264,
+  "test": [
+   "identification/correlated_errors/fs2000_corr.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 265,
+  "test": [
+   "identification/forward_looking/forward_looking_empty_ghx.mod"
+  ],
+  "extra": [
+   "identification/forward_looking/forward_looking_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 266,
+  "test": [
+   "identification/forward_looking/forward_looking_varobs_x.mod"
+  ],
+  "extra": [
+   "identification/forward_looking/forward_looking_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 267,
+  "test": [
+   "model_diagnostics/example2_block_model_diag.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 268,
+  "test": [
+   "deterministic_simulations/initval_endval_blocks/initval_endval_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 269,
+  "test": [
+   "deterministic_simulations/initval_endval_blocks/histval_initval_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 270,
+  "test": [
+   "conditional_forecasts/1/fs2000_cal.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 271,
+  "test": [
+   "conditional_forecasts/2/fs2000_est.mod"
+  ],
+  "extra": [
+   "conditional_forecasts/2/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 272,
+  "test": [
+   "conditional_forecasts/3/fs2000_conditional_forecast_initval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 273,
+  "test": [
+   "conditional_forecasts/4/fs2000_conditional_forecast_histval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 274,
+  "test": [
+   "conditional_forecasts/6/fs2000_cal.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 275,
+  "test": [
+   "conditional_forecasts/fs2000_calib_smoother_cf.mod"
+  ],
+  "extra": [
+   "conditional_forecasts/2/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 276,
+  "test": [
+   "recursive/ls2003.mod"
+  ],
+  "extra": [
+   "recursive/data_ca1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 277,
+  "test": [
+   "recursive/ls2003_bayesian.mod"
+  ],
+  "extra": [
+   "recursive/data_ca1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 278,
+  "test": [
+   "recursive/ls2003_bayesian_xls.mod"
+  ],
+  "extra": [
+   "recursive/data_ca1_xls.xlsx"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 279,
+  "test": [
+   "recursive/ls2003_bayesian_csv.mod"
+  ],
+  "extra": [
+   "recursive/data_ca1_csv.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 280,
+  "test": [
+   "ms-sbvar/test_exclusions.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 281,
+  "test": [
+   "ms-sbvar/test_exclusions_nc.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 282,
+  "test": [
+   "ms-sbvar/test_lower_cholesky.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 283,
+  "test": [
+   "ms-sbvar/test_lower_cholesky_a.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 284,
+  "test": [
+   "ms-sbvar/test_lower_cholesky_nc.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 285,
+  "test": [
+   "ms-sbvar/test_upper_cholesky.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 286,
+  "test": [
+   "ms-sbvar/test_upper_cholesky_nc.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 287,
+  "test": [
+   "ms-sbvar/test_ms_variances.mod"
+  ],
+  "extra": [
+   "ms-sbvar/msdata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 288,
+  "test": [
+   "ms-sbvar/BVAR_contemp_reduced_form.mod"
+  ],
+  "extra": [
+   "ms-sbvar/MacroData.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 289,
+  "test": [
+   "ms-dsge/test_ms_dsge.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 290,
+  "test": [
+   "kalman/lyapunov/fs2000_lyap.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 291,
+  "test": [
+   "kalman/lik_init/fs2000_ns_lik_init_2.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_ns_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 292,
+  "test": [
+   "kalman/lik_init/fs2000_ns_lik_init_3.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_ns_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 293,
+  "test": [
+   "kalman/lik_init/fs2000_ns_lik_init_5.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_ns_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 294,
+  "test": [
+   "kalman/lik_init/fs2000_lik_init_1.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 295,
+  "test": [
+   "kalman/lik_init/fs2000_lik_init_2.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 296,
+  "test": [
+   "kalman/lik_init/fs2000_lik_init_3.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 297,
+  "test": [
+   "kalman/lik_init/fs2000_lik_init_4.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 298,
+  "test": [
+   "kalman/lik_init/fs2000_lik_init_5.mod"
+  ],
+  "extra": [
+   "kalman/lik_init/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 299,
+  "test": [
+   "kalman/block/fs2000.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 300,
+  "test": [
+   "kalman/block/fs2000_missing_data.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul_missing_obs.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 301,
+  "test": [
+   "kalman_initial_state/fs2000_smoother_only_initial_state.mod"
+  ],
+  "extra": [
+   "kalman_initial_state/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 302,
+  "test": [
+   "kalman_initial_state/fs2000_ns_smoother_only_initial_state.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 303,
+  "test": [
+   "kalman_initial_state/fs2000_kalman_initial.mod"
+  ],
+  "extra": [
+   "kalman_initial_state/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 304,
+  "test": [
+   "kalman_initial_state/fs2000_kalman_initial_2_lag.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 305,
+  "test": [
+   "kalman_filter_smoother/gen_data.mod",
+   "kalman_filter_smoother/algo1.mod",
+   "kalman_filter_smoother/algo2.mod",
+   "kalman_filter_smoother/algo3.mod",
+   "kalman_filter_smoother/algo4.mod",
+   "kalman_filter_smoother/algo4a.mod",
+   "kalman_filter_smoother/algo4b.mod",
+   "kalman_filter_smoother/algoH1.mod",
+   "kalman_filter_smoother/algoH2.mod",
+   "kalman_filter_smoother/algoH3.mod",
+   "kalman_filter_smoother/fs2000.mod",
+   "kalman_filter_smoother/fs2000_1.mod",
+   "kalman_filter_smoother/fs2000_2.mod",
+   "kalman_filter_smoother/fs2000a.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 306,
+  "test": [
+   "kalman_filter_smoother/fs2000_smoother_only.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 307,
+  "test": [
+   "kalman_filter_smoother/fs2000_smoother_only_ns.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 308,
+  "test": [
+   "kalman_filter_smoother/fs2000_smoother_redux.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 309,
+  "test": [
+   "kalman_filter_smoother/trend_cycle_smoother_redux.mod"
+  ],
+  "extra": [
+   "filter_step_ahead/trend_cycle_decomposition_data.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 310,
+  "test": [
+   "kalman_filter_smoother/test_compute_Pinf_Pstar_data.mod",
+   "kalman_filter_smoother/test_compute_Pinf_Pstar.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 311,
+  "test": [
+   "kalman_filter_smoother/SOE.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/SOE_data_file.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 312,
+  "test": [
+   "kalman_filter_smoother/check_variable_dimensions/fs2000.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 313,
+  "test": [
+   "kalman_filter_smoother/check_variable_dimensions/fs2000_ML.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 314,
+  "test": [
+   "kalman_filter_smoother/rbc_non_stationary_obs.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/data_rbc_non_stationary_obs.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 315,
+  "test": [
+   "kalman/likelihood_from_dynare/fs2000_uncorr_ME.mod",
+   "kalman/likelihood_from_dynare/fs2000_corr_ME.mod",
+   "kalman/likelihood_from_dynare/fs2000_corr_ME_missing.mod",
+   "kalman/likelihood_from_dynare/fs2000_uncorr_ME_missing.mod"
+  ],
+  "extra": [
+   "kalman/likelihood_from_dynare/fs2000_model.inc",
+   "kalman/likelihood_from_dynare/fs2000_estimation_check.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 316,
+  "test": [
+   "kalman/likelihood_from_dynare/fs2000ns_uncorr_ME.mod",
+   "kalman/likelihood_from_dynare/fs2000ns_corr_ME.mod",
+   "kalman/likelihood_from_dynare/fs2000ns_corr_ME_missing.mod",
+   "kalman/likelihood_from_dynare/fs2000ns_uncorr_ME_missing.mod"
+  ],
+  "extra": [
+   "kalman/likelihood_from_dynare/fs2000ns_model.inc",
+   "kalman/likelihood_from_dynare/fs2000ns_estimation_check.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 317,
+  "test": [
+   "decision_rules/second_order/burnside_1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 318,
+  "test": [
+   "kalman_filter_smoother/compare_results_simulation/fs2000_ML.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/compare_results_simulation/fsdat_simul_logged.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 319,
+  "test": [
+   "kalman_filter_smoother/compare_results_simulation/fs2000_ML_loglinear.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m",
+   "kalman_filter_smoother/compare_results_simulation/fsdat_simul_logged.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 320,
+  "test": [
+   "kalman_filter_smoother/compare_results_simulation/fs2000.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/compare_results_simulation/fsdat_simul_logged.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 321,
+  "test": [
+   "kalman_filter_smoother/compare_results_simulation/fs2000_loglinear.mod"
+  ],
+  "extra": [
+   "kalman_filter_smoother/fsdat_simul.m",
+   "kalman_filter_smoother/compare_results_simulation/fsdat_simul_logged.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 322,
+  "test": [
+   "kalman_skewed/skew_in_shocks_block.mod",
+   "kalman_skewed/skew_in_estimated_params.mod",
+   "kalman_skewed/ireland2004_stoch_simul.mod",
+   "kalman_skewed/ireland2004_ml.mod",
+   "kalman_skewed/ireland2004_bayes.mod"
+  ],
+  "extra": [
+   "kalman_skewed/ireland2004_model.inc",
+   "kalman_skewed/ireland2004_post1980.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 323,
+  "test": [
+   "decision_rules/second_order/burnside_1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 324,
+  "test": [
+   "decision_rules/second_order/ds1.mod",
+   "decision_rules/second_order/ds2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 325,
+  "test": [
+   "ep/rbc2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 326,
+  "test": [
+   "ep/rbc_mc.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 327,
+  "test": [
+   "ep/ar_backward_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 328,
+  "test": [
+   "ep/pfm_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 329,
+  "test": [
+   "ep/ar_backward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 330,
+  "test": [
+   "ep/rbcii.mod",
+   "ep/rbcii_MCP.mod"
+  ],
+  "extra": [
+   "ep/rbcii-calibration.inc",
+   "ep/rbcii_steadystate.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 331,
+  "test": [
+   "ep/zeroshocks/rstrue.mod",
+   "ep/zeroshocks/rs.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 332,
+  "test": [
+   "ep/zeroshocks/rstrue.mod",
+   "ep/zeroshocks/rs.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 333,
+  "test": [
+   "ep/linearmodel0.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 334,
+  "test": [
+   "ep/linearmodel1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 335,
+  "test": [
+   "ep/rbc_bytecode.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 336,
+  "test": [
+   "ep/burnside.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 337,
+  "test": [
+   "ep/hybrid/burnside_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 338,
+  "test": [
+   "ep/hybrid/rs.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 339,
+  "test": [
+   "ep/integration/burnside.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 340,
+  "test": [
+   "ep/integration/burnside2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 341,
+  "test": [
+   "stochastic_simulations/example1_noprint.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 342,
+  "test": [
+   "stochastic_simulations/example_seeds.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 343,
+  "test": [
+   "stochastic-backward-models/solow_cd.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 344,
+  "test": [
+   "stochastic-backward-models/solow_ces.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 345,
+  "test": [
+   "stochastic-backward-models/solow_cd_with_steadystate.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 346,
+  "test": [
+   "deterministic_simulations/ramst.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 347,
+  "test": [
+   "deterministic_simulations/ramst_dseries.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 348,
+  "test": [
+   "deterministic_simulations/ramst_a.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 349,
+  "test": [
+   "deterministic_simulations/ramst_mshocks.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 350,
+  "test": [
+   "deterministic_simulations/ramst_mshocks_vec.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 351,
+  "test": [
+   "deterministic_simulations/ramst_mshocks_relative_to_initval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 352,
+  "test": [
+   "deterministic_simulations/predetermined_variables.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 353,
+  "test": [
+   "deterministic_simulations/histval_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 354,
+  "test": [
+   "deterministic_simulations/ramst_vec.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 355,
+  "test": [
+   "deterministic_simulations/Solow_no_varexo.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 356,
+  "test": [
+   "deterministic_simulations/simul_ZLB_purely_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 357,
+  "test": [
+   "deterministic_simulations/simul_ZLB_purely_forward_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 358,
+  "test": [
+   "deterministic_simulations/Irreversible_investment.mod",
+   "deterministic_simulations/Irreversible_investment_leadlag.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 359,
+  "test": [
+   "deterministic_simulations/linear_state_space_arma.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 360,
+  "test": [
+   "deterministic_simulations/linear_state_space_arma_condpaths.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 361,
+  "test": [
+   "deterministic_simulations/purely_forward/ar1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 362,
+  "test": [
+   "deterministic_simulations/purely_forward/nk.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 363,
+  "test": [
+   "deterministic_simulations/purely_backward/ar1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 364,
+  "test": [
+   "deterministic_simulations/purely_static/toto.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 365,
+  "test": [
+   "deterministic_simulations/rbc_det1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 366,
+  "test": [
+   "deterministic_simulations/rbc_det2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 367,
+  "test": [
+   "deterministic_simulations/rbc_det3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 368,
+  "test": [
+   "deterministic_simulations/rbc_det4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 369,
+  "test": [
+   "deterministic_simulations/rbc_det4_endval_initval_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 370,
+  "test": [
+   "deterministic_simulations/rbc_det5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 371,
+  "test": [
+   "deterministic_simulations/rbc_det6.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 372,
+  "test": [
+   "deterministic_simulations/homotopy.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 373,
+  "test": [
+   "deterministic_simulations/homotopy_histval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 374,
+  "test": [
+   "deterministic_simulations/homotopy_endval_steady_linearization.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/homotopy_linearization.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 375,
+  "test": [
+   "deterministic_simulations/homotopy_marginal_linearization.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/homotopy_linearization.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 376,
+  "test": [
+   "deterministic_simulations/homotopy_linearization_condpaths.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/homotopy_linearization.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 377,
+  "test": [
+   "deterministic_simulations/homotopy_marglinearization_condpaths.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/homotopy_linearization.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 378,
+  "test": [
+   "deterministic_simulations/homotopy_exclude_varexo.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 379,
+  "test": [
+   "deterministic_simulations/rbc_det_exo_lag_2a.mod",
+   "deterministic_simulations/rbc_det_exo_lag_2b.mod",
+   "deterministic_simulations/rbc_det_exo_lag_2c.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 380,
+  "test": [
+   "deterministic_simulations/multiple_lead_lags/sim_base.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_exo_lead_lag_aux_vars.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_exo_lead_lag.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_endo_lead_lag_aux_vars.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_endo_lead_lag.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_lead_lag_aux_vars.mod",
+   "deterministic_simulations/multiple_lead_lags/sim_lead_lag.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 381,
+  "test": [
+   "deterministic_simulations/ramst_block_mfs1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 382,
+  "test": [
+   "deterministic_simulations/linear_approximation/sw.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 383,
+  "test": [
+   "deterministic_simulations/multiple_lead_lags/AR2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 384,
+  "test": [
+   "deterministic_simulations/multiple_lead_lags/AR2_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 385,
+  "test": [
+   "deterministic_simulations/ramst.mod",
+   "deterministic_simulations/multiple_lead_lags/ramst_augmented_histval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 386,
+  "test": [
+   "deterministic_simulations/rbc_det.mod",
+   "deterministic_simulations/rbc_det_stack_solve_algo_7.mod",
+   "deterministic_simulations/rbc_det_stack_solve_algo_7_exo_lag.mod",
+   "deterministic_simulations/rbc_det_stack_solve_algo_7_exo_lead.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 387,
+  "test": [
+   "deterministic_simulations/pfwee.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 388,
+  "test": [
+   "deterministic_simulations/pfwee_constant_sim_length.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 389,
+  "test": [
+   "deterministic_simulations/pfwee_learnt_in.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_learnt_in.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 390,
+  "test": [
+   "deterministic_simulations/pfwee_learnt_in_bare_1st_period.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_learnt_in.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 391,
+  "test": [
+   "deterministic_simulations/pfwee_learnt_in_dseries.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_learnt_in.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 392,
+  "test": [
+   "deterministic_simulations/pfwee_learnt_in_dseries_bare_1st_period.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_learnt_in.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 393,
+  "test": [
+   "deterministic_simulations/pfwee_multiple_shocks.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 394,
+  "test": [
+   "deterministic_simulations/pfwee_homotopy_linearization.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_homotopy.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 395,
+  "test": [
+   "deterministic_simulations/pfwee_homotopy_marginal_linearization.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_homotopy.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 396,
+  "test": [
+   "deterministic_simulations/pfwee_homotopy_linearization_condpaths.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_homotopy.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 397,
+  "test": [
+   "deterministic_simulations/pfwee_homotopy_marglin_condpaths.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/pfwee_homotopy.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 398,
+  "test": [
+   "deterministic_simulations/pfwee_marginal_linearization.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 399,
+  "test": [
+   "deterministic_simulations/ramst_shock_paths.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 400,
+  "test": [
+   "deterministic_simulations/ramst_shock_paths_pfwee.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 401,
+  "test": [
+   "deterministic_simulations/ramst_shock_paths_controlled.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 402,
+  "test": [
+   "deterministic_simulations/lbj/rbc.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 403,
+  "test": [
+   "lmmcp/rbc.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 404,
+  "test": [
+   "lmmcp/sw_lmmcp.mod",
+   "lmmcp/sw_newton.mod"
+  ],
+  "extra": [
+   "lmmcp/sw-common-header.inc",
+   "lmmcp/sw-common-footer.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 405,
+  "test": [
+   "trend_var/fs2000_nonstationary.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 406,
+  "test": [
+   "trend_var/fs2000_log_nonstationary.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 407,
+  "test": [
+   "decision_rules/third_order/FV2011.mod"
+  ],
+  "extra": [
+   "decision_rules/third_order/comparison_policy_functions_dynare_mathematica.m",
+   "decision_rules/third_order/FV_2011_policyfunctions.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 408,
+  "test": [
+   "decision_rules/example1.mod",
+   "decision_rules/example1_use_dll.mod"
+  ],
+  "extra": [
+   "decision_rules/example1_results_dyn_432.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 409,
+  "test": [
+   "decision_rules/ar_qz_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 410,
+  "test": [
+   "shock_decomposition/example1_calib_shock_decomp.mod"
+  ],
+  "extra": [
+   "shock_decomposition/example1_calib_shock_decomp_data.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 411,
+  "test": [
+   "shock_decomposition/fs2000_est.mod"
+  ],
+  "extra": [
+   "shock_decomposition/fsdat_simul.m",
+   "shock_decomposition/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 412,
+  "test": [
+   "shock_decomposition/fs2000_est_varlist.mod"
+  ],
+  "extra": [
+   "shock_decomposition/fsdat_simul.m",
+   "shock_decomposition/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 413,
+  "test": [
+   "shock_decomposition/fs2000_cal_groups.mod"
+  ],
+  "extra": [
+   "shock_decomposition/fsdat_simul.m",
+   "shock_decomposition/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 414,
+  "test": [
+   "shock_decomposition/fs2000_forecasts.mod"
+  ],
+  "extra": [
+   "shock_decomposition/fsdat_simul.m",
+   "shock_decomposition/fs2000.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 415,
+  "test": [
+   "shock_decomposition/ls2003_plot.mod"
+  ],
+  "extra": [
+   "ls2003/data_ca1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 416,
+  "test": [
+   "shock_decomposition/shock_decomp_backward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 417,
+  "test": [
+   "stochastic_purely_forward/stochastic_purely_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 418,
+  "test": [
+   "stochastic_purely_forward/stochastic_purely_forward_with_static.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 419,
+  "test": [
+   "forecast/forecast_test_AR1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 420,
+  "test": [
+   "forecast/forecast_test_AR1_order_2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 421,
+  "test": [
+   "forecast/forecast_test_AR1_varexo_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 422,
+  "test": [
+   "forecast/fs2000_forecast.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 423,
+  "test": [
+   "forecast/fs2000_forecast_varexo_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 424,
+  "test": [
+   "forecast/forecast_test_AR1_varexo_det_order_2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 425,
+  "test": [
+   "forecast/fs2000_forecast.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 426,
+  "test": [
+   "forecast/fs2000_forecast_varexo_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 427,
+  "test": [
+   "forecast/example1_varexo_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 428,
+  "test": [
+   "forecast/Hansen_exo_det_forecast.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 429,
+  "test": [
+   "forecast/rbc_basic_forecast_varexo_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 430,
+  "test": [
+   "forecast/linear_exo_det_forecast.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 431,
+  "test": [
+   "forecast/ls2003_rolling_window_forecast.mod"
+  ],
+  "extra": [
+   "recursive/data_ca1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 432,
+  "test": [
+   "gradient/fs2000_numgrad_13.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 433,
+  "test": [
+   "gradient/fs2000_numgrad_15.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 434,
+  "test": [
+   "gradient/fs2000_numgrad_2.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 435,
+  "test": [
+   "gradient/fs2000_numgrad_3.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 436,
+  "test": [
+   "gradient/fs2000_numgrad_5.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 437,
+  "test": [
+   "filter_step_ahead/fs2000_filter_step_ahead_bayesian.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 438,
+  "test": [
+   "filter_step_ahead/fs2000_filter_step_ahead_ML.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 439,
+  "test": [
+   "filter_step_ahead/trend_cycle_decomposition.mod"
+  ],
+  "extra": [
+   "filter_step_ahead/trend_cycle_decomposition_data.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 440,
+  "test": [
+   "loglinear/example4_exp.mod",
+   "loglinear/example4_loglinear.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 441,
+  "test": [
+   "loglinear/example4_loglinear_lagged_exogenous.mod",
+   "loglinear/example4_loglinear_lagged_exogenous_a.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 442,
+  "test": [
+   "loglinear/example4_exp_histval.mod",
+   "loglinear/example4_loglinear_histval.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 443,
+  "test": [
+   "smoother2histval/fs2000_smooth.mod",
+   "smoother2histval/fs2000_simul.mod"
+  ],
+  "extra": [
+   "smoother2histval/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 444,
+  "test": [
+   "smoother2histval/fs2000_smooth_stoch_simul.mod"
+  ],
+  "extra": [
+   "smoother2histval/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 445,
+  "test": [
+   "smoother2histval/fs2000_smooth_forecast.mod"
+  ],
+  "extra": [
+   "smoother2histval/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 446,
+  "test": [
+   "smoother2histval/fs2000_calib_smoother.mod"
+  ],
+  "extra": [
+   "smoother2histval/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 447,
+  "test": [
+   "epilogue/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 448,
+  "test": [
+   "differentiate_forward_vars/RBC_differentiate_forward.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 449,
+  "test": [
+   "partitioning/partitions.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 450,
+  "test": [
+   "prior_posterior_function/fs2000_prior_posterior_function.mod"
+  ],
+  "extra": [
+   "fs2000/fsdat_simul.m",
+   "prior_posterior_function/posterior_function_demo.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 451,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_loglinear_no_prefilter.mod",
+   "observation_trends_and_prefiltering/ML/Trend_loglinear_no_prefilter_first_obs.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_exp_model_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/Trend_no_prefilter_conditional_forecast.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 452,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_loglinear_prefilter.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_exp_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 453,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_loglinear_prefilter_first_obs.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_exp_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 454,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_no_prefilter.mod",
+   "observation_trends_and_prefiltering/ML/Trend_no_prefilter_first_obs.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_model_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/Trend_no_prefilter_conditional_forecast.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 455,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_prefilter.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 456,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_prefilter_first_obs.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_model_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_ML_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 457,
+  "test": [
+   "observation_trends_and_prefiltering/ML/Trend_no_prefilter_selected_var.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 458,
+  "test": [
+   "observation_trends_and_prefiltering/calib_smoother/Tr_no_prefilter_calib_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_no_prefil_f_obs_loglin_cal_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_no_prefilter_loglin_calib_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_no_prefilt_first_obs_cal_smooth.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_prefil_f_obs_loglin_cal_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_prefilter_calib_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_prefilter_loglin_calib_smoother.mod",
+   "observation_trends_and_prefiltering/calib_smoother/Tr_prefilt_first_obs_cal_smooth.mod"
+  ],
+  "extra": [
+   "observation_trends_and_prefiltering/Trend_exp_model_calib_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_exp_model_calib_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_model_calib_no_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_model_calib_prefilter_common.inc",
+   "observation_trends_and_prefiltering/Trend_load_data_common.inc",
+   "observation_trends_and_prefiltering/Trend_diagnostics_calib_common.inc",
+   "observation_trends_and_prefiltering/generate_trend_stationary_AR1.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 459,
+  "test": [
+   "bgp/solow-1/solow.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 460,
+  "test": [
+   "bgp/nk-1/nk.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 461,
+  "test": [
+   "bgp/ramsey-1/ramsey.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 462,
+  "test": [
+   "model-inversion/bk-1/solow_ces.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 463,
+  "test": [
+   "model-inversion/bk-2/solow_ces.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 464,
+  "test": [
+   "model-inversion/bk-3a/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 465,
+  "test": [
+   "model-inversion/bk-3a-nlsolve/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 466,
+  "test": [
+   "model-inversion/bk-3b/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 467,
+  "test": [
+   "model-inversion/bk-3b-nlsolve/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 468,
+  "test": [
+   "model-inversion/bk-4/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 469,
+  "test": [
+   "model-inversion/bk-4-nlsolve/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 470,
+  "test": [
+   "model-inversion/bk-5/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 471,
+  "test": [
+   "model-inversion/bk-5-nlsolve/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 472,
+  "test": [
+   "model-inversion/bk-6/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 473,
+  "test": [
+   "model-inversion/bk-7/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 474,
+  "test": [
+   "model-inversion/bk-8/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 475,
+  "test": [
+   "model-inversion/bk-9/msm1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 476,
+  "test": [
+   "model-inversion/bk-9/msm2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 477,
+  "test": [
+   "model-inversion/bk-diff-1/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 478,
+  "test": [
+   "model-inversion/bk-diff-2/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 479,
+  "test": [
+   "model-inversion/bk-diff-3/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 480,
+  "test": [
+   "model-inversion/bk-diff-4/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 481,
+  "test": [
+   "model-inversion/bk-diff-5/varmodel.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 482,
+  "test": [
+   "model-inversion/nk-1/simulate.mod",
+   "model-inversion/nk-1/invert.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 483,
+  "test": [
+   "model-inversion/nk-2/simulate.mod",
+   "model-inversion/nk-2/invert.mod",
+   "model-inversion/nk-2/z_check_inversion.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 484,
+  "test": [
+   "dynare-command-options/ramst.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 485,
+  "test": [
+   "log_transform/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 486,
+  "test": [
+   "deterministic_simulations/ramst.mod",
+   "log_transform/ramst.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 487,
+  "test": [
+   "log_transform/fs2000_nonstationary.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 488,
+  "test": [
+   "log_transform/nk_ramsey.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 489,
+  "test": [
+   "solve_algo_12_14/simul_backward_reference.mod",
+   "solve_algo_12_14/simul_backward_12.mod",
+   "solve_algo_12_14/simul_backward_14.mod"
+  ],
+  "extra": [
+   "solve_algo_12_14/simul_backward_common.inc",
+   "solve_algo_12_14/backward_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 490,
+  "test": [
+   "solve_algo_12_14/purely_backward_reference.mod",
+   "solve_algo_12_14/purely_backward_12.mod",
+   "solve_algo_12_14/purely_backward_14.mod"
+  ],
+  "extra": [
+   "solve_algo_12_14/purely_backward_common.inc",
+   "solve_algo_12_14/backward_model.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 491,
+  "test": [
+   "solve_algo_12_14/purely_static_reference.mod",
+   "solve_algo_12_14/purely_static_12.mod",
+   "solve_algo_12_14/purely_static_14.mod"
+  ],
+  "extra": [
+   "solve_algo_12_14/purely_static_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 492,
+  "test": [
+   "solve_algo_12_14/purely_forward_reference.mod",
+   "solve_algo_12_14/purely_forward_12.mod",
+   "solve_algo_12_14/purely_forward_14.mod"
+  ],
+  "extra": [
+   "solve_algo_12_14/purely_forward_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 493,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_ex_initval.mod",
+   "deprecated/ramsey_ex.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 494,
+  "test": [
+   "deterministic_simulations/ramst.mod",
+   "deprecated/ramst.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 495,
+  "test": [
+   "deterministic_simulations/ramst_pf_controlled_paths.mod",
+   "deterministic_simulations/ramst_pf_controlled_paths_lbj.mod",
+   "deterministic_simulations/ramst_pf_controlled_paths_ssa7.mod",
+   "deterministic_simulations/ramst_pf_controlled_paths_check.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/ramst_pf_controlled_paths_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 496,
+  "test": [
+   "deterministic_simulations/ramst_pfwee_controlled_paths.mod"
+  ],
+  "extra": [
+   "deterministic_simulations/ramst_pf_controlled_paths_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 497,
+  "test": [
+   "var-expectations/1/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 498,
+  "test": [
+   "var-expectations/1-with-time-shift-a/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 499,
+  "test": [
+   "var-expectations/2/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 500,
+  "test": [
+   "var-expectations/2-with-time-shift/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 501,
+  "test": [
+   "var-expectations/3/example1.mod",
+   "var-expectations/4/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 502,
+  "test": [
+   "var-expectations/3-with-time-shift/example1.mod",
+   "var-expectations/4-with-time-shift/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 503,
+  "test": [
+   "var-expectations/5/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 504,
+  "test": [
+   "var-expectations/5-with-time-shift/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 505,
+  "test": [
+   "var-expectations/6/example1.mod",
+   "var-expectations/6/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 506,
+  "test": [
+   "var-expectations/6-with-time-shift/example1.mod",
+   "var-expectations/6-with-time-shift/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 507,
+  "test": [
+   "var-expectations/7/example1.mod",
+   "var-expectations/7/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 508,
+  "test": [
+   "var-expectations/8/example1.mod",
+   "var-expectations/8/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 509,
+  "test": [
+   "var-expectations/9/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 510,
+  "test": [
+   "var-expectations/10/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 511,
+  "test": [
+   "var-expectations/11/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 512,
+  "test": [
+   "var-expectations/12/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 513,
+  "test": [
+   "trend-component-and-var-models/vm1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 514,
+  "test": [
+   "trend-component-and-var-models/vm2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 515,
+  "test": [
+   "trend-component-and-var-models/vm3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 516,
+  "test": [
+   "trend-component-and-var-models/vm4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 517,
+  "test": [
+   "trend-component-and-var-models/vm5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 518,
+  "test": [
+   "trend-component-and-var-models/tcm1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 519,
+  "test": [
+   "trend-component-and-var-models/tcm2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 520,
+  "test": [
+   "trend-component-and-var-models/tcm3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 521,
+  "test": [
+   "trend-component-and-var-models/tcm4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 522,
+  "test": [
+   "trend-component-and-var-models/tcm5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 523,
+  "test": [
+   "trend-component-and-var-models/tcm6.mod",
+   "trend-component-and-var-models/tcm7.mod",
+   "trend-component-and-var-models/tcm8.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 524,
+  "test": [
+   "trend-component-and-var-models/tcm9.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 525,
+  "test": [
+   "trend-component-and-var-models/tcm10.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 526,
+  "test": [
+   "trend-component-and-var-models/tcm11.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 527,
+  "test": [
+   "trend-component-and-var-models/tcm12.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 528,
+  "test": [
+   "trend-component-and-var-models/legacy/vm1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 529,
+  "test": [
+   "trend-component-and-var-models/legacy/vm2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 530,
+  "test": [
+   "trend-component-and-var-models/legacy/vm3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 531,
+  "test": [
+   "trend-component-and-var-models/legacy/tcm1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 532,
+  "test": [
+   "trend-component-and-var-models/legacy/tcm2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 533,
+  "test": [
+   "trend-component-and-var-models/legacy/tcm3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 534,
+  "test": [
+   "trend-component-and-var-models/legacy/tcm4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 535,
+  "test": [
+   "trend-component-and-var-models/legacy/tcm5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 536,
+  "test": [
+   "pac/var-1/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 537,
+  "test": [
+   "pac/var-2/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 538,
+  "test": [
+   "pac/var-3/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 539,
+  "test": [
+   "pac/var-4/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 540,
+  "test": [
+   "pac/var-5/example1.mod",
+   "pac/var-5/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 541,
+  "test": [
+   "pac/var-6/example1.mod",
+   "pac/var-6/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 542,
+  "test": [
+   "pac/var-7/example1.mod",
+   "pac/var-7/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 543,
+  "test": [
+   "pac/var-8/example1.mod",
+   "pac/var-8/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 544,
+  "test": [
+   "pac/var-8e/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 545,
+  "test": [
+   "pac/var-9/example1.mod",
+   "pac/var-9/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 546,
+  "test": [
+   "pac/var-9e/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 547,
+  "test": [
+   "pac/var-10e/example1.mod",
+   "pac/var-10e/example2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 548,
+  "test": [
+   "pac/var-11e/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 549,
+  "test": [
+   "pac/var-12/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 550,
+  "test": [
+   "pac/var-12/example2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 551,
+  "test": [
+   "pac/var-12/example3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 552,
+  "test": [
+   "pac/var-12/example4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 553,
+  "test": [
+   "pac/var-12/example5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 554,
+  "test": [
+   "pac/var-12/example11.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 555,
+  "test": [
+   "pac/var-12/example12.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 556,
+  "test": [
+   "pac/trend-component-1/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 557,
+  "test": [
+   "pac/trend-component-2/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 558,
+  "test": [
+   "pac/trend-component-3/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 559,
+  "test": [
+   "pac/trend-component-4/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 560,
+  "test": [
+   "pac/trend-component-5/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 561,
+  "test": [
+   "pac/trend-component-6/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 562,
+  "test": [
+   "pac/trend-component-7/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 563,
+  "test": [
+   "pac/trend-component-9/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 564,
+  "test": [
+   "pac/trend-component-10/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 565,
+  "test": [
+   "pac/trend-component-11/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 566,
+  "test": [
+   "pac/trend-component-12/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 567,
+  "test": [
+   "pac/trend-component-13a/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 568,
+  "test": [
+   "pac/trend-component-13b/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 569,
+  "test": [
+   "pac/trend-component-14/example1.mod",
+   "pac/trend-component-14/substitution.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 570,
+  "test": [
+   "pac/trend-component-15/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 571,
+  "test": [
+   "pac/trend-component-16/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 572,
+  "test": [
+   "pac/trend-component-17/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 573,
+  "test": [
+   "pac/trend-component-18/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 574,
+  "test": [
+   "pac/trend-component-19/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 575,
+  "test": [
+   "pac/trend-component-19/example2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 576,
+  "test": [
+   "pac/trend-component-19/example3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 577,
+  "test": [
+   "pac/trend-component-19-growth-lin-comb/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 578,
+  "test": [
+   "pac/trend-component-1-mce/example_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 579,
+  "test": [
+   "pac/trend-component-1-mce/example_sto.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 580,
+  "test": [
+   "pac/trend-component-2-mce/example_det.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 581,
+  "test": [
+   "pac/trend-component-2-mce/example_sto.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 582,
+  "test": [
+   "pac/trend-component-20-1/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 583,
+  "test": [
+   "pac/trend-component-20-2/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 584,
+  "test": [
+   "pac/trend-component-20-3/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 585,
+  "test": [
+   "pac/trend-component-20-4/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 586,
+  "test": [
+   "pac/trend-component-21/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 587,
+  "test": [
+   "pac/trend-component-22/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 588,
+  "test": [
+   "pac/trend-component-23/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 589,
+  "test": [
+   "pac/trend-component-24/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 590,
+  "test": [
+   "pac/trend-component-25/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 591,
+  "test": [
+   "pac/trend-component-26/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 592,
+  "test": [
+   "pac/trend-component-27/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 593,
+  "test": [
+   "pac/trend-component-28/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 594,
+  "test": [
+   "pac/trend-component-28/example2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 595,
+  "test": [
+   "pac/trend-component-28/example3.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 596,
+  "test": [
+   "pac/trend-component-28/example4.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 597,
+  "test": [
+   "pac/trend-component-28/example5.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 598,
+  "test": [
+   "pac/trend-component-28/example6.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 599,
+  "test": [
+   "pac/trend-component-29/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 600,
+  "test": [
+   "pac/trend-component-29/example2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 601,
+  "test": [
+   "pac/trend-component-30/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 602,
+  "test": [
+   "write/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 603,
+  "test": [
+   "ecb/backward-models/irf/solow_1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 604,
+  "test": [
+   "ecb/backward-models/irf/solow_2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 605,
+  "test": [
+   "ecb/cherrypick/test1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 606,
+  "test": [
+   "ecb/cherrypick/test2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 607,
+  "test": [
+   "ecb/contribution-plots/contrib1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 608,
+  "test": [
+   "ecb/contribution-plots/contrib2.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 609,
+  "test": [
+   "estimation/univariate/bayesian.mod"
+  ],
+  "extra": [
+   "estimation/univariate/data.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 610,
+  "test": [
+   "estimation/univariate/bayesian_param_names.mod"
+  ],
+  "extra": [
+   "estimation/univariate/data.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 611,
+  "test": [
+   "ecb/SURGibbs/fulton_fish.mod"
+  ],
+  "extra": [
+   "ecb/SURGibbs/fishdata.csv"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 612,
+  "test": [
+   "estimation/univariate/ols/ols_wc_1.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 613,
+  "test": [
+   "estimation/univariate/ols/ols_wc_2.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 614,
+  "test": [
+   "estimation/univariate/ols/ols_wc_3.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 615,
+  "test": [
+   "estimation/univariate/ols/ols_date_range.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 616,
+  "test": [
+   "estimation/univariate/ols/ols_param_names.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 617,
+  "test": [
+   "estimation/univariate/ols/ols_base.mod"
+  ],
+  "extra": [
+   "estimation/univariate/ols/mc-ols.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 618,
+  "test": [
+   "ecb/SUR/sur_noniterative.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 619,
+  "test": [
+   "ecb/SUR/sur_params_noniterative.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 620,
+  "test": [
+   "ecb/SUR/panel_var_diff_NB_simulation_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 621,
+  "test": [
+   "ecb/SUR/panel_var_diff_NB_simulation_zero_eq.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 622,
+  "test": [
+   "ecb/pooled_ols/panel_var_diff_NB_simulation_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 623,
+  "test": [
+   "ecb/pooled_ols/test_param_names.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 624,
+  "test": [
+   "ecb/pooled_fgls/panel_var_diff_NB_simulation_test.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 625,
+  "test": [
+   "ecb/pooled_fgls/test_param_names.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 626,
+  "test": [
+   "heterogeneity/ks.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat",
+   "heterogeneity/expect_error.m",
+   "heterogeneity/print_test_summary.m",
+   "heterogeneity/run_test.m",
+   "heterogeneity/test_solve_functionality.m",
+   "heterogeneity/test_simulate_stochastic.m",
+   "heterogeneity/test_check_steady_state.m",
+   "heterogeneity/test_field_validation.m",
+   "heterogeneity/test_permutation.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 627,
+  "test": [
+   "heterogeneity/hank_1a.mod"
+  ],
+  "extra": [
+   "heterogeneity/hank_1a.mat",
+   "heterogeneity/print_test_summary.m",
+   "heterogeneity/run_test.m",
+   "heterogeneity/test_simulate_stochastic.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 628,
+  "test": [
+   "heterogeneity/hank_1a.mod"
+  ],
+  "extra": [
+   "heterogeneity/hank_1a.mat",
+   "heterogeneity/print_test_summary.m",
+   "heterogeneity/run_test.m",
+   "heterogeneity/test_simulate_news_shocks.m"
+  ],
+  "dynare_args": [
+   "-DDET_SHOCKS=1"
+  ],
+  "should_fail": false
+ },
+ {
+  "id": 629,
+  "test": [
+   "heterogeneity/hank_2a.mod"
+  ],
+  "extra": [
+   "heterogeneity/hank_2a.mat",
+   "heterogeneity/print_test_summary.m",
+   "heterogeneity/run_test.m",
+   "heterogeneity/test_simulate_stochastic.m",
+   "heterogeneity/test_permutation.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 630,
+  "test": [
+   "heterogeneity/ks_commands.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 631,
+  "test": [
+   "heterogeneity/ks_commands.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DDET_SHOCKS=1"
+  ],
+  "should_fail": false
+ },
+ {
+  "id": 632,
+  "test": [
+   "heterogeneity/ks_news_shocks_stochastic_options_xfail.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DTEST_OPTION=\"periods\""
+  ],
+  "should_fail": true
+ },
+ {
+  "id": 633,
+  "test": [
+   "heterogeneity/ks_news_shocks_stochastic_options_xfail.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DTEST_OPTION=\"irf\""
+  ],
+  "should_fail": true
+ },
+ {
+  "id": 634,
+  "test": [
+   "heterogeneity/ks_news_shocks_stochastic_options_xfail.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DTEST_OPTION=\"irf_shocks\""
+  ],
+  "should_fail": true
+ },
+ {
+  "id": 635,
+  "test": [
+   "heterogeneity/ks_news_shocks_stochastic_options_xfail.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DTEST_OPTION=\"relative_irf\""
+  ],
+  "should_fail": true
+ },
+ {
+  "id": 636,
+  "test": [
+   "heterogeneity/ks_news_shocks_stochastic_options_xfail.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks.mat"
+  ],
+  "dynare_args": [
+   "-DTEST_OPTION=\"combined\""
+  ],
+  "should_fail": true
+ },
+ {
+  "id": 637,
+  "test": [
+   "heterogeneity/nonseparable_het_lead_lag_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 638,
+  "test": [
+   "heterogeneity/het_exo_lag_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 639,
+  "test": [
+   "heterogeneity/het_exo_lead_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 640,
+  "test": [
+   "heterogeneity/het_endo_lag_deep_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 641,
+  "test": [
+   "heterogeneity/het_endo_lead_deep_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 642,
+  "test": [
+   "heterogeneity/analytical_rbc.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 643,
+  "test": [
+   "heterogeneity/analytical_rbc_2capital.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 644,
+  "test": [
+   "heterogeneity/ks_two_shocks.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks_two_shocks.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 645,
+  "test": [
+   "heterogeneity/ks_steady_state.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks_sp.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 646,
+  "test": [
+   "heterogeneity/ks_steady_state_dense.mod"
+  ],
+  "extra": [
+   "heterogeneity/ks_sp_dense.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 647,
+  "test": [
+   "heterogeneity/hank_1a_steady_state.mod"
+  ],
+  "extra": [
+   "heterogeneity/hank_1a_sp.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 648,
+  "test": [
+   "heterogeneity/hank_2a_steady_state.mod"
+  ],
+  "extra": [
+   "heterogeneity/hank_2a_sp.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 649,
+  "test": [
+   "heterogeneity/large_file_download/ks_ssj.mod"
+  ],
+  "extra": [
+   "heterogeneity/large_file_download/print_test_summary.m",
+   "heterogeneity/large_file_download/run_test.m",
+   "heterogeneity/large_file_download/test_solve_with_custom_impulse_responses.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 650,
+  "test": [
+   "heterogeneity/large_file_download/hank_1a_ssj.mod"
+  ],
+  "extra": [
+   "heterogeneity/large_file_download/print_test_summary.m",
+   "heterogeneity/large_file_download/run_test.m",
+   "heterogeneity/large_file_download/test_solve_functionality.m",
+   "heterogeneity/large_file_download/test_solve_with_custom_impulse_responses.m",
+   "heterogeneity/large_file_download/test_simulate_stochastic.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 651,
+  "test": [
+   "heterogeneity/large_file_download/hank_2a_ssj.mod"
+  ],
+  "extra": [
+   "heterogeneity/large_file_download/print_test_summary.m",
+   "heterogeneity/large_file_download/run_test.m",
+   "heterogeneity/large_file_download/test_solve_functionality.m",
+   "heterogeneity/large_file_download/test_solve_with_custom_impulse_responses.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 652,
+  "test": [
+   "preprocessor_checks/ramst_all_values_required_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 653,
+  "test": [
+   "preprocessor_checks/example1_undeclared_vars_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 654,
+  "test": [
+   "estimation/estim_param_in_shock_value_xfail.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 655,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_ex_wrong_ss_file_xfail.mod"
+  ],
+  "extra": [
+   "optimal_policy/Ramsey/find_c.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 656,
+  "test": [
+   "estimation/fs2000_mixed_ML_xfail.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 657,
+  "test": [
+   "estimation/fs2000_stochastic_singularity_xfail.mod"
+  ],
+  "extra": [
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 658,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het_XFAIL.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 659,
+  "test": [
+   "estimation/heteroskedastic_shocks/fs2000_het_XFAIL2.mod"
+  ],
+  "extra": [
+   "estimation/heteroskedastic_shocks/fs2000_het_model.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 660,
+  "test": [
+   "identification/ident_unit_root/ident_unit_root_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 661,
+  "test": [
+   "identification/LindeTrabandt/LindeTrabandt2019_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 662,
+  "test": [
+   "steady_state/Linear_steady_state_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 663,
+  "test": [
+   "optimal_policy/Ramsey/ramsey_histval_xfail.mod"
+  ],
+  "extra": [
+   "optimal_policy/Ramsey/find_c.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 664,
+  "test": [
+   "occbin/model_irrcap_twoconstraints/dynrbc_token_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 665,
+  "test": [
+   "particle/first_spec_xfail_0.mod"
+  ],
+  "extra": [
+   "particle/first_spec_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 666,
+  "test": [
+   "particle/first_spec_xfail_1.mod"
+  ],
+  "extra": [
+   "particle/first_spec_common.inc"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 667,
+  "test": [
+   "kalman_initial_state/fs2000_kalman_initial_xfail.mod"
+  ],
+  "extra": [
+   "kalman_initial_state/fs2000_common.inc",
+   "fs2000/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 668,
+  "test": [
+   "preprocessor_checks/example1_extra_exo_xfail.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 669,
+  "test": [
+   "estimation/tune_mh_jscale/fs2000_1_xfail.mod"
+  ],
+  "extra": [
+   "estimation/tune_mh_jscale/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 670,
+  "test": [
+   "estimation/tune_mh_jscale/fs2000_2_xfail.mod"
+  ],
+  "extra": [
+   "estimation/tune_mh_jscale/fs2000.inc",
+   "estimation/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 671,
+  "test": [
+   "estimation/no_init_estimation_check_first_obs/fs2000_init_check_XFAIL.mod"
+  ],
+  "extra": [
+   "estimation/no_init_estimation_check_first_obs/fsdat_mat.m",
+   "estimation/no_init_estimation_check_first_obs/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 672,
+  "test": [
+   "estimation/no_init_estimation_check_first_obs/fs2000_init_check_XFAIL2.mod"
+  ],
+  "extra": [
+   "estimation/no_init_estimation_check_first_obs/fsdat_mat_XFAIL.m",
+   "estimation/no_init_estimation_check_first_obs/fsdat_simul.m"
+  ],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 673,
+  "test": [
+   "var-expectations/1-with-time-shift-b/example1.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 674,
+  "test": [
+   "estimation/univariate/nls/staticmodelx.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": true
+ },
+ {
+  "id": 675,
+  "test": [
+   "run_all_unit_tests.m"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 676,
+  "test": [
+   "histval_initval_file_unit_tests.m"
+  ],
+  "extra": [
+   "histval_initval_file/my_assert.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 677,
+  "test": [
+   "run_kronecker_tests.m"
+  ],
+  "extra": [
+   "kronecker/test_kron.m",
+   "kronecker/nash_matrices.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 678,
+  "test": [
+   "nonlinearsolvers.m"
+  ],
+  "extra": [
+   "solver-test-functions/brown.m",
+   "solver-test-functions/broydenbanded.m",
+   "solver-test-functions/broydentridiagonal.m",
+   "solver-test-functions/chebyquad.m",
+   "solver-test-functions/discreteboundaryvalue.m",
+   "solver-test-functions/discreteintegralequation.m",
+   "solver-test-functions/helicalvalley.m",
+   "solver-test-functions/powell1.m",
+   "solver-test-functions/powell2.m",
+   "solver-test-functions/rosenbrock.m",
+   "solver-test-functions/trigonometric.m",
+   "solver-test-functions/variablydimensioned.m",
+   "solver-test-functions/watson.m",
+   "solver-test-functions/wood.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 679,
+  "test": [
+   "cyclereduction.m"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 680,
+  "test": [
+   "logarithmicreduction.m"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 681,
+  "test": [
+   "kalman/likelihood/test_kalman_mex.m"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 682,
+  "test": [
+   "contribs.m"
+  ],
+  "extra": [
+   "sandbox.mod",
+   "simulateddata.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 683,
+  "test": [
+   "run_block_bytecode_tests.m"
+  ],
+  "extra": [
+   "block_bytecode/run_ls2003.m",
+   "block_bytecode/ls2003.mod"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 684,
+  "test": [
+   "run_reporting_tests.m"
+  ],
+  "extra": [
+   "reporting/AnnualTable.m",
+   "reporting/CommResidTablePage.m",
+   "reporting/CountryGraphPage.m",
+   "reporting/CountryTablePage.m",
+   "reporting/db_a.csv",
+   "reporting/db_q.csv",
+   "reporting/dc_a.csv",
+   "reporting/dc_q.csv",
+   "reporting/ResidTablePage.m",
+   "reporting/runDynareReport.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 685,
+  "test": [
+   "../examples/stochastic_simulations/aguiar_gopinath_2007_trend.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 686,
+  "test": [
+   "../examples/stochastic_simulations/collard_2001_theoretical_moments.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 687,
+  "test": [
+   "../examples/stochastic_simulations/collard_2001_simulated_moments.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 688,
+  "test": [
+   "../examples/stochastic_simulations/collard_2001_analytical_steady_state.mod"
+  ],
+  "extra": [
+   "../examples/stochastic_simulations/collard_2001_analytical_steady_state_helper.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 689,
+  "test": [
+   "../examples/stochastic_simulations/schorfheide_2000_nonstationary.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 690,
+  "test": [
+   "../examples/stochastic_simulations/nk_baseline.mod"
+  ],
+  "extra": [
+   "../examples/stochastic_simulations/nk_baseline_steadystate.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 691,
+  "test": [
+   "../examples/estimation/schorfheide_2000.mod"
+  ],
+  "extra": [
+   "../examples/estimation/schorfheide_2000_data.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 692,
+  "test": [
+   "../examples/estimation/gali_2015.mod"
+  ],
+  "extra": [
+   "../examples/estimation/gali_2015_phillips_curve_slope.m",
+   "../examples/estimation/gali_2015_prior_restrictions.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 693,
+  "test": [
+   "../examples/estimation/rbc_irf_matching.mod"
+  ],
+  "extra": [
+   "../examples/estimation/rbc_irf_matching_data.csv",
+   "../examples/estimation/rbc_irf_matching_transformations.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 694,
+  "test": [
+   "../examples/perfect_foresight/perfect_foresight_rbc.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 695,
+  "test": [
+   "../examples/perfect_foresight/perfect_foresight_expectation_errors.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 696,
+  "test": [
+   "../examples/optimal_policy/nk_ramsey_osr.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 697,
+  "test": [
+   "../examples/optimal_policy/nk_ramsey_steady_file.mod"
+  ],
+  "extra": [
+   "../examples/optimal_policy/nk_ramsey_steady_file_steadystate.m"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 698,
+  "test": [
+   "../examples/heterogeneity/hank_one_asset.mod"
+  ],
+  "extra": [
+   "../examples/heterogeneity/hank_one_asset.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 699,
+  "test": [
+   "../examples/heterogeneity/hank_one_asset_steady_state.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 700,
+  "test": [
+   "../examples/heterogeneity/hank_two_assets.mod"
+  ],
+  "extra": [
+   "../examples/heterogeneity/hank_two_assets.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 701,
+  "test": [
+   "../examples/heterogeneity/hank_two_assets_steady_state.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 702,
+  "test": [
+   "../examples/heterogeneity/krusell_smith_1998.mod"
+  ],
+  "extra": [
+   "../examples/heterogeneity/krusell_smith_1998.mat"
+  ],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 703,
+  "test": [
+   "../examples/heterogeneity/krusell_smith_1998_steady_state.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 704,
+  "test": [
+   "../examples/occbin/rbc_occbin.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 705,
+  "test": [
+   "../examples/macroprocessor/bkk_1992.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 706,
+  "test": [
+   "../examples/reporting/collard_2001_reporting.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ },
+ {
+  "id": 707,
+  "test": [
+   "../examples/semistructural/pac_model.mod"
+  ],
+  "extra": [],
+  "dynare_args": [],
+  "should_fail": false
+ }
+]

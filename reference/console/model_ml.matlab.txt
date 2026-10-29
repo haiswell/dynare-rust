@@ -1,0 +1,28 @@
+Initial value of the log posterior (or likelihood): -468.3982
+improvement < crit termination
+
+Final value of minus the log posterior (or likelihood):432.167409 
+
+RESULTS FROM MAXIMUM LIKELIHOOD ESTIMATION
+parameters
+              Estimate    s.d. t-stat
+
+a               0.7064  0.0668 10.5818 
+b               0.4733  0.1305  3.6269 
+c               0.6067  0.0564 10.7490 
+
+standard deviation of shocks
+              Estimate    s.d. t-stat
+
+ex              1.0315  0.1298  7.9443 
+ez              0.4730  0.0236 20.0035 
+
+standard deviation of measurement errors
+              Estimate    s.d. t-stat
+
+x               0.3016  0.2803  1.0759 
+
+correlation of shocks
+              Estimate    s.d. t-stat
+
+ex,ez          -0.0406  0.0759  0.5347 

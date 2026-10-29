@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Simulation with a higher-order decision rule: port of `simult_.m` (order 2, pruned or
-//! not; order 3 pruned, Andreasen et al. 2018), of `k_order_simul` (order 3 without
-//! pruning: the full Taylor expansion of the k-order rule at `σ = 1`), and of `irf.m` at
+//! not; order 3 pruned, Andreasen et al. 2018), of `k_order_simul` (order >= 3 without
+//! pruning: the full Taylor expansion of the k-order rule at `σ = 1`; order >= 4 pruned), and of `irf.m` at
 //! order > 1 (generalized impulse responses as averages over simulated shock paths).
 
 use super::KOrderDr;
@@ -123,17 +123,17 @@ pub fn simult(dr: &KOrderDr, y0: &[f64], ex: &Mat, pruning: bool) -> Mat {
                 yhat3 = ipred.iter().map(|&k| y3[k]).collect();
             }
         }
-        (3, false) => {
+        (o, false) if o >= 3 => {
             // k_order_simul: y_t - ys = sum_k sum_{j+q=k} g_{w^j σ^q} w^{⊗j} / (j! q!)
-            let g: Vec<Mat> = (0..=3).map(|j| dr.g_k(j)).collect();
+            let g: Vec<Mat> = (0..=o).map(|j| dr.g_k(j)).collect();
             let nw = ns + dr.n_exo;
-            let tuples: Vec<Vec<Vec<usize>>> = (0..=3).map(|j| super::sorted_tuples(nw, j)).collect();
+            let tuples: Vec<Vec<Vec<usize>>> = (0..=o).map(|j| super::sorted_tuples(nw, j)).collect();
             for t in 1..=iter {
                 let prev: Vec<f64> = (0..n).map(|i| out[(i, t - 1)]).collect();
                 let mut w = state_dev(&prev);
                 w.extend(shock(t - 1));
                 let mut y = ys_dr.clone();
-                for j in 0..=3 {
+                for j in 0..=o {
                     for (c, tup) in tuples[j].iter().enumerate() {
                         // folded tensor: each unique tuple times its multiplicity
                         let mult = multiplicity(tup) as f64;
@@ -148,9 +148,79 @@ pub fn simult(dr: &KOrderDr, y0: &[f64], ex: &Mat, pruning: bool) -> Mat {
                 put(&mut out, t, &y);
             }
         }
+        (o, true) if o >= 4 => {
+            // k_order_simul's simulate_pruning (Andreasen et al. 2018 at any order): the order-q
+            // component x_q sums, over the columns of g_l = D_l / l! (over (y*, u, σ), σ = 1),
+            // the products where the state indices carry components whose orders add up to
+            // q - (number of shock and σ indices)
+            let nw = ns + dr.n_exo;
+            let nx = nw + 1;
+            let fact: Vec<f64> = (0..=o).map(|l| (1..=l).product::<usize>() as f64).collect();
+            let tuples: Vec<Vec<Vec<usize>>> = (0..=o).map(|l| super::sorted_tuples(nx, l)).collect();
+            let mut phat = vec![vec![0.0; ns]; o + 1]; // phat[q] (q = 1..=o)
+            phat[1] = state_dev(y0);
+            for t in 1..=iter {
+                let u = shock(t - 1);
+                let mut psim = vec![vec![0.0; n]; o + 1];
+                for l in 1..=o {
+                    let d = &dr.derivs[l - 1];
+                    for tup in &tuples[l] {
+                        let states: Vec<usize> = tup.iter().copied().filter(|&i| i < ns).collect();
+                        let mut base = multiplicity(tup) as f64 / fact[l];
+                        for &i in tup.iter().filter(|&&i| i >= ns && i < nw) {
+                            base *= u[i - ns];
+                        }
+                        if base == 0.0 {
+                            continue;
+                        }
+                        let col = super::tensor::col_of(tup, nx);
+                        let nonstate = l - states.len();
+                        for q in l.max(1)..=o {
+                            let m = q - nonstate;
+                            let f = if states.is_empty() {
+                                if q == l { 1.0 } else { 0.0 }
+                            } else {
+                                compositions_sum(&states, m, &phat)
+                            };
+                            if f != 0.0 {
+                                for k in 0..n {
+                                    psim[q][k] += d[(k, col)] * base * f;
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut y = ys_dr.clone();
+                for q in 1..=o {
+                    axpy(&mut y, 1.0, &psim[q]);
+                    phat[q] = ipred.iter().map(|&k| psim[q][k]).collect();
+                }
+                put(&mut out, t, &y);
+            }
+        }
         _ => panic!("korder::simult: unsupported order {}", dr.order),
     }
     out
+}
+
+/// `sum over the compositions m = c_1 + ... + c_s (c_i >= 1) of prod_i phat[c_i][states[i]]`.
+fn compositions_sum(states: &[usize], m: usize, phat: &[Vec<f64>]) -> f64 {
+    let s = states.len();
+    if s == 0 {
+        return if m == 0 { 1.0 } else { 0.0 };
+    }
+    if m < s {
+        return 0.0;
+    }
+    let (first, rest) = (states[0], &states[1..]);
+    let mut acc = 0.0;
+    for c in 1..=(m - rest.len()) {
+        let v = phat.get(c).map_or(0.0, |p| p[first]);
+        if v != 0.0 {
+            acc += v * compositions_sum(rest, m - c, phat);
+        }
+    }
+    acc
 }
 
 /// Number of distinct orderings of a sorted tuple.

@@ -7,6 +7,7 @@
 //             occbin_setup(likelihood_inversion_filter, smoother_inversion_filter);
 //             otherwise y, pi, i with a measurement error on i and the PKF
 //   RELAX     filter_use_relaxation
+//   PARTICLE  the filter_particle_* options of occbin_setup (ignored by Dynare 7.2)
 
 var y pi i inot r_nat u_s;
 varexo eps_d eps_s eps_m;
@@ -83,6 +84,24 @@ occbin_setup(likelihood_inversion_filter, smoother_inversion_filter);
 @#else
 @#ifdef RELAX
 occbin_setup(filter_use_relaxation);
+@#elseif defined(PARTICLE)
+// the OccBin particle-filter options: parsed by the preprocessor into options_occbin_, but
+// not forwarded to options_.occbin by Dynare 7.2's occbin.setup (dump_occbin_particle.m)
+occbin_setup(particle_filtering, filter_init_periods_using_particles,
+             filter_particle_number_of_particles=50, filter_particle_number_of_shocks_per_particle=3,
+             filter_particle_draw_states_from_empirical_density=false,
+             filter_particle_state_importance_sampling_pkf_init=false,
+             filter_particle_state_importance_sampling_logpost_crit_threshold=7,
+             filter_particle_state_importance_sampling_slice_override_iteration=20,
+             filter_particle_state_importance_sampling_slice_burnin=3,
+             filter_particle_initial_state_ergodic_simul, filter_particle_diagnostics,
+             filter_particle_diagnostics_graph_periods=[2 3], filter_particle_diagnostics_nograph,
+             filter_particle_state_draws=[1 2 3], filter_particle_use_pkf_updated_state_threshold=2);
+@#elseif defined(SETUP_OPTS)
+// options +occbin/setup.m does not forward in Dynare 7.2 (no effect; dump_occbin_setup_opts.m)
+occbin_setup(smoother_max_check_ahead_periods=2, smoother_plot, smoother_first_period_occbin_update=5, smoother_max_number_of_iterations=1,
+             posterior_importance_sampling, posterior_importance_sampling_filter='ppf', posterior_importance_sampling_orig_filter='pkf',
+             posterior_importance_sampling_sub_draws=50, posterior_importance_sampling_orig_dname='orig', posterior_importance_sampling_orig_fname='orig_est');
 @#else
 occbin_setup;
 @#endif

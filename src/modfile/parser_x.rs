@@ -58,8 +58,10 @@ const BOOLEAN_FLAGS: &[&str] = &[
     "conditional_likelihood",
 ];
 
-/// Commands that do not take `options_` defaults (blocks parsed through `command`).
-const NO_GLOBAL_OPTIONS: &[&str] = &["shock_groups", "conditional_forecast_paths", "model_comparison"];
+/// Commands that do not take `options_` defaults (blocks parsed through `command`;
+/// `set_dynare_seed`, whose arguments are positional).
+const NO_GLOBAL_OPTIONS: &[&str] =
+    &["shock_groups", "conditional_forecast_paths", "model_comparison", "set_dynare_seed"];
 
 /// Parser state of stream X.
 #[derive(Default)]
@@ -74,6 +76,7 @@ pub(super) struct XParse {
     pub homotopy_setup: Vec<(String, Option<f64>, f64)>,
     /// `homotopy_setup(from_initval_to_endval)`: `options_.homotopy_from_initval_to_endval`.
     pub homotopy_from_initval_to_endval: bool,
+    pub homotopy_block: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -130,6 +133,10 @@ impl<'a> Parser<'a> {
             return;
         }
         for (k, v) in &self.x.global_opts {
+            // read by rplot only
+            if k == "rplottype" && name != "rplot" {
+                continue;
+            }
             if !opts.iter().any(|(kk, _)| kk == k) {
                 opts.push((k.clone(), v.clone()));
             }
@@ -150,7 +157,22 @@ impl<'a> Parser<'a> {
             Tok::Str(s) | Tok::Ident(s) => s.clone(),
             _ => bail!("{loc}: set_param_value: expected a parameter name"),
         };
-        let v = self.eval_tokens(value)?;
+        // a MATLAB variable holding the name, or a MATLAB value
+        // (`set_param_value(param, steady_state.params.(param))` in a for loop): kept for the
+        // warning of an unsupported MATLAB statement
+        let matlab_name =
+            matches!(name_tok.tok, Tok::Ident(_)) && !self.b.symbol(&name).is_some_and(|s| s.kind == SymbolKind::Param);
+        let v = match self.eval_tokens(value) {
+            Ok(v) if !matlab_name => v,
+            Err(e) if !matlab_name && !value.iter().any(|t| t.is(".") || t.is("{")) => return Err(e),
+            _ => {
+                self.commands.push(Command::Other(
+                    MATLAB_STATEMENT.into(),
+                    vec![(format!("set_param_value {}", raw_join_spaced(toks)), OptValue::Flag)],
+                ));
+                return Ok(());
+            }
+        };
         match self.b.symbol(&name) {
             Some(s) if s.kind == SymbolKind::Param => {
                 let k = s.index;
@@ -164,6 +186,8 @@ impl<'a> Parser<'a> {
 
     /// `options_.X = V;` / `options_.a.b = V;`
     fn x_options_assignment(&mut self) -> Result<()> {
+        // a native MATLAB statement: ends with its line when no ';' ends it
+        self.c.native_end = self.c.native_line_end();
         self.c.i += 1;
         let toks = self.c.statement()?;
         let loc = toks.first().map(|t| t.loc.to_string()).unwrap_or_default();
@@ -187,6 +211,10 @@ impl<'a> Parser<'a> {
         let value = match &toks[eq + 1..] {
             [t] if t.is_ident("true") => OptValue::Num(1.0),
             [t] if t.is_ident("false") => OptValue::Num(0.0),
+            // options_.initial_date = dates('1989Q4')
+            [d, o, t, c] if d.is_ident("dates") && o.is("(") && c.is(")") && matches!(t.tok, Tok::Str(_)) => {
+                self.parse_value(std::slice::from_ref(t))
+            }
             v => self.parse_value(v),
         };
         let value = match value {
@@ -293,6 +321,7 @@ impl<'a> Parser<'a> {
     fn x_homotopy_setup(&mut self) -> Result<()> {
         self.c.i += 1;
         let ho = self.header_options()?;
+        self.x.homotopy_block = true;
         // options_.homotopy_from_initval_to_endval, written by the preprocessor at the block
         self.x.homotopy_from_initval_to_endval =
             ho.iter().any(|(k, v)| k == "from_initval_to_endval" && !matches!(v, OptValue::Num(x) if *x == 0.0));

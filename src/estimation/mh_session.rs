@@ -174,6 +174,8 @@ pub struct SessionInputs<'a> {
     /// Keep the burn-in in memory too (Brooks–Gelman, Geweke, trace plots).
     pub keep_all: bool,
     pub progress: Option<&'a (dyn Fn(&MhProgress) + Sync)>,
+    /// Prefix of the console messages (`Estimation::mcmc`, `method_of_moments::mcmc`).
+    pub disp: &'a str,
 }
 
 /// Result of [`run`].
@@ -247,7 +249,7 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
     let mut mh = inp.mh.clone();
     let mx = max_nruns(npar, fo.max_number_of_bytes);
     mh_files::write_prior_definition(inp.dname, inp.names, inp.priors, &mh.jscale)?;
-    let disp = "Estimation::mcmc";
+    let disp = inp.disp;
     let uses_hessian =
         inp.sampler.method != SamplingMethod::Slice || inp.sampler.slice.initialize_with_mode || fo.load_mh_file;
     let t0 = Instant::now();
@@ -267,11 +269,6 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
             bail!("mh_replic = 0: nothing to sample (use load_mh_file to load a previous MCMC)");
         }
         let (r, _) = mh_files::load_last_record(&paths)?;
-        println!(
-            "{disp}: I am loading past Metropolis-Hastings simulations ({} chains x {} draws).",
-            r.nblck,
-            r.total_draws()
-        );
         return finish(&paths, r, None, inp, fo, &mh, vec![], 1, factor, true, t0);
     } else if fo.mh_recover {
         println!("{disp}: Recover mode!");
@@ -298,6 +295,15 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
         let prev_files: usize = record.mh_draws[..k - 1].iter().map(|r| r[1] as usize).sum();
         let prev_lines = if old { record.mh_draws[k - 2][2] as usize } else { 0 };
         set_proposal_to_previous(&mut record, fo, inp.sampler, &mut mh, &mut proposal_chol, disp)?;
+        // posterior_sampler_initialization.m: as many mh files as expected means nothing crashed
+        let expected_per_block: usize = record.mh_draws.iter().map(|r| r[1] as usize).sum();
+        let existing: usize = (1..=nb).map(|b| paths.mh_files_of_block(b).len()).sum();
+        if expected_per_block > prev_files && existing == expected_per_block * nb {
+            println!("{disp}: It appears that you don't need to use the mh_recover option!");
+            println!("                  You have to edit the mod file and remove the mh_recover option");
+            println!("                  in the estimation command.");
+            bail!("{disp}: mh_recover option not required!");
+        }
         if uses_hessian {
             // posterior_sampler_core.m: record.ProposalCovariance = d, ProposalScaleVec = jscale
             let d = proposal_chol.clone().or_else(|| chol_upper(inp.invhess));
@@ -307,7 +313,6 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
         let mut st = Vec::with_capacity(nb);
         writer_starts = Vec::with_capacity(nb);
         prior_acc = vec![0.0; nb];
-        let mut complete = 0;
         for b in 0..nb {
             // Draws of this chain on disk (all sessions), in its contiguous files.
             let files = paths.mh_files_of_block(b + 1);
@@ -331,15 +336,14 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
                 let nruns = mh.replic.saturating_sub(done);
                 if nruns == 0 {
                     println!("{disp}: Chain {} is complete!", b + 1);
-                    complete += 1;
                     writer_starts.push(None);
                 } else {
-                    println!("{disp}: Chain {} is not complete! ({done} of {} draws saved)", b + 1, mh.replic);
+                    println!("{disp}: Chain {} is not complete!", b + 1);
                     writer_starts.push(Some(WriterStart { new_file: last_file + 1, first_line: 1, nruns }));
                 }
                 st.push(ChainStart { x: f.row(n - 1).to_vec(), lp: f.logpo2[n - 1], rng: seed.to_chacha(b), nruns });
             } else {
-                println!("{disp}: Chain {} is not complete! (no draw saved)", b + 1);
+                println!("{disp}: Chain {} is not complete!", b + 1);
                 let (x, lp) = if old {
                     (record.last_parameters.row(b).iter().copied().collect(), record.last_log_post[b])
                 } else {
@@ -358,9 +362,6 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
                 writer_starts.push(Some(ws));
                 st.push(ChainStart { x, lp, rng: seed.to_chacha(b), nruns: mh.replic });
             }
-        }
-        if complete == nb {
-            println!("{disp}: It appears that you don't need to use the mh_recover option! (every chain is complete)");
         }
         starts = st;
         continued = true;
@@ -439,6 +440,7 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
             record.proposal_covariance = d;
         }
         let previous = record.total_draws();
+        print!("{disp}: I am writing a new mh-history file... ");
         // new history row (posterior_sampler_initialization.m)
         let in_last = mx as f64 - lln as f64;
         let to_save = mh.replic as f64 - in_last;
@@ -450,16 +452,24 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
         record.max_nruns.push(mx as f64);
         record.initial_seeds = record.last_seeds.clone();
         mh_files::write_new_record(&paths, &record)?;
-        println!("{disp}: Ok. I have loaded {previous} simulations.\n");
+        println!("Done.");
+        if !fo.use_mh_covariance_matrix {
+            println!("{disp}: Ok. I have loaded {previous} simulations.\n");
+        }
         writer_starts = vec![Some(WriterStart { new_file, first_line, nruns: mh.replic }); record.nblck];
         prior_acc = vec![0.0; record.nblck];
         continued = true;
         eval_secs = time_eval(inp.obj, &starts[0].x);
     } else {
         // fresh run (possibly initialized from a previous MCMC)
+        println!("{disp}: {}", if mh.nblocks > 1 { "Multiple chains mode." } else { "One Chain mode." });
         let deleted = paths.delete_all()?;
         if deleted > 0 {
             println!("{disp}: Old mh-files successfully erased!");
+        }
+        if paths.log().exists() {
+            println!("{disp}: Old metropolis.log file successfully erased!");
+            println!("{disp}: Creation of a new metropolis.log file.");
         }
         let _ = std::fs::remove_file(paths.log());
         log_line(
@@ -478,6 +488,9 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
             None
         };
         let t = Instant::now();
+        if mh.nblocks > 1 || fo.previous.is_some() {
+            println!("{disp}: Searching for initial values...");
+        }
         let (ix2, ilp, seeds): (Vec<Vec<f64>>, Vec<f64>, Vec<RngState>) = if let Some(prev) = &fo.previous {
             let (x, l, s, nb) = initialize_from_previous(prev, &inp, &mh, d.as_ref(), &mut factor, disp)?;
             mh.nblocks = nb;
@@ -527,6 +540,7 @@ pub fn run(inp: SessionInputs, fo: &MhFileOptions) -> Result<SessionOutput> {
             keeped_draws: None,
         };
         let id = mh_files::write_new_record(&paths, &record)?;
+        println!("{disp}: Write details about the MCMC... Ok!");
         println!("{disp}: Details about the MCMC are available in {}\n", paths.history(id).display());
         starts = (0..nb)
             .map(|b| ChainStart { x: ix2[b].clone(), lp: ilp[b], rng: seeds[b].to_chacha(b), nruns: mh.replic })
@@ -624,6 +638,7 @@ fn initialize_from_previous(
     }
     println!("{disp}: Initializing from past Metropolis-Hastings simulations...");
     println!("{disp}: Past MH path {}", folder0.join("metropolis").display());
+    println!("{disp}: Past model name {}", folder0.file_name().map(|f| f.to_string_lossy()).unwrap_or_default());
     let prior_file = prev.prior.clone().unwrap_or_else(|| folder0.join("prior").join("definition.mat"));
     let names0 =
         mh_files::read_prior_names(&prior_file).with_context(|| format!("{disp}: Path to prior file is not found!"))?;
@@ -778,10 +793,36 @@ fn finish(
     from_files: bool,
     t0: Instant,
 ) -> Result<SessionOutput> {
-    let disp = "Estimation::mcmc";
+    let disp = inp.disp;
     let kd = cut_sample(&record, inp.mh_drop, fo.max_number_of_bytes);
     let total = record.total_draws();
     let first_draw = 1usize.max((inp.mh_drop * total as f64).floor() as usize + 1);
+    let acceptance = if from_files || mem.is_none() {
+        mh_files::overall_acceptance_ratio(paths).unwrap_or_else(|_| record.acceptance_ratio.clone())
+    } else {
+        record.acceptance_ratio.clone()
+    };
+    // posterior_sampler.m: the diagnostic output (no sampler run with mh_replic = 0)
+    if mh.replic > 0 {
+        println!();
+        println!("{disp}: Number of mh files: {} per block.", record.total_files());
+        println!("{disp}: Total number of generated files: {}.", record.total_files() * record.nblck);
+        println!("{disp}: Total number of iterations: {total}.");
+        println!("{disp}: Current acceptance ratio per chain:");
+        let chain_line = |i: usize, v: String| {
+            println!("{:55}Chain {}{}: {v}", "", if i < 10 { " " } else { "" }, i);
+        };
+        for (i, a) in acceptance.iter().enumerate() {
+            chain_line(i + 1, format!("{}%", crate::gsa::stats::num2str(100.0 * a)));
+        }
+        let evals_it: &[f64] = if evals.is_empty() { &record.function_eval_per_iteration } else { &evals };
+        if evals_it.iter().copied().fold(f64::NEG_INFINITY, f64::max) > 1.0 {
+            println!("{disp}: Current function evaluations per iteration:");
+            for (i, e) in evals_it.iter().enumerate() {
+                chain_line(i + 1, crate::gsa::stats::num2str(*e));
+            }
+        }
+    }
     println!("{disp}: Total number of MH draws per chain: {total}.");
     println!("{disp}: Total number of generated MH files: {}.", record.total_files());
     println!("{disp}: I'll use mh-files {} to {}.", kd.first_mh_file, record.total_files());
@@ -789,11 +830,6 @@ fn finish(
     println!("{disp}: Finally I keep {} draws per chain.\n", total - first_draw + 1);
     record.keeped_draws = Some(kd);
     mh_files::update_last_record(paths, &record)?;
-    let acceptance = if from_files || mem.is_none() {
-        mh_files::overall_acceptance_ratio(paths).unwrap_or_else(|_| record.acceptance_ratio.clone())
-    } else {
-        record.acceptance_ratio.clone()
-    };
     let chains = match mem {
         Some(c) => c,
         None => {

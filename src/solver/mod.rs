@@ -22,7 +22,8 @@ pub use dmperm::{Dmperm, dmperm};
 pub use first_order::{CheckEigen, DecisionRule, FirstOrderSolver, first_order};
 pub use state_space::{StateSpaceIndex, kalman_transition_matrix, kalman_transition_matrix_into, state_space_index};
 pub use steady_state::{
-    SolveOutcome, SteadyOptions, dynare_solve, dynare_solve_r, steady_state, steady_state_r, steady_state_r_aux,
+    SolveOutcome, SteadyOptions, dynare_solve, dynare_solve_r, steady_state, steady_state_bytecode, steady_state_r,
+    steady_state_r_aux,
 };
 pub use structure::DrStructure; // model_diagnostics, block decomposition
 /// Options of the first-order solver (`options_.qz_criterium`, `options_.qz_zero_threshold`).

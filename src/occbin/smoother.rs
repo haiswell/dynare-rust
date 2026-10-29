@@ -298,6 +298,7 @@ pub fn occbin_smoother(
     }
     // linear smoother (oo_.occbin.linear_smoother)
     let lin = crate::forecast::dsge_smoother(dsge, data, x, false)?;
+    println!("OccBin: linear smoother done.");
     let res = lin.resolved.clone();
     let dr = &res.dr;
     let n = dr.order_var.len();
@@ -361,7 +362,7 @@ pub fn occbin_smoother(
     };
     // a_initial = set_Kalman_smoother_starting_values(...) (filter_initial_state), not
     // predicted with the OccBin smoother
-    let a_initial = kalman_starting_values(&res, &full, &data.filter_initial_state);
+    let a_initial = kalman_starting_values(&res, &full, &data.filter_initial_state_at(&res.params));
     let decl = |alpha: &Vector| -> Vec<f64> {
         let mut e = vec![0.0; n];
         for k in 0..n {
@@ -397,6 +398,7 @@ pub fn occbin_smoother(
     let mut so: SimulOptions = occ.smoother_simul.clone();
     so.shocks = shocks_of(&etahat);
     so.exo_pos = (0..n_exo).collect();
+    println!("OccBin smoother iteration 1.");
     so.endo_init = decl(&alphahat0);
     so.init_regime = Some(regime_history.clone());
     so.periods = nobs + 1;
@@ -479,6 +481,7 @@ pub fn occbin_smoother(
             error_flag = 0;
         }
         iter += 1;
+        println!("OccBin smoother iteration {iter}.");
         let pass = h3z(&mut c, &a_initial, &pstar, &[], Some(&tv))
             .map_err(|e| anyhow!("OccBin smoother: time-varying smoother failed ({e})"))?;
         alphahat = pass.alphahat;

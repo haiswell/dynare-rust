@@ -8,6 +8,14 @@
 //! The smoother is not on the MCMC hot path; it uses plain nalgebra arithmetic.
 
 use super::{HMatrix, KalmanOptions, MissingData};
+
+/// Set while dynare-rust runs a smoother that Dynare does not run (e.g. at the posterior mean
+/// after an MCMC): the algorithm-switch messages of `DsgeSmoother.m` are not printed.
+pub static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn verbose() -> bool {
+    !QUIET.load(std::sync::atomic::Ordering::Relaxed)
+}
 use crate::linalg::{Mat, Vector, mul};
 
 /// Smoother results (state space of the T passed in; Dynare's DsgeSmoother runs it on the
@@ -192,6 +200,17 @@ pub fn smoother_request(
                     );
                 }
                 // ---- end estimation completion
+                // (one println! so that parallel draws do not interleave the lines)
+                if !verbose() {
+                } else if kalman_algo == 1 {
+                    println!(
+                        "DsgeSmoother: Switching to univariate filter. This may be a sign of stochastic singularity."
+                    );
+                } else {
+                    println!(
+                        "DsgeSmoother: Switching to univariate filter. This is usually due to co-integration and/or having\nDsgeSmoother: fewer stochastic trends than observables. This is unproblematic.\nDsgeSmoother: However, occasionally, there is a problem of stochastic singularity."
+                    );
+                }
                 kalman_algo = if kalman_algo == 1 { 2 } else { 4 };
             }
         }

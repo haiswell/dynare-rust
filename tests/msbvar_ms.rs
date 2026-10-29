@@ -373,3 +373,32 @@ fn log_posterior_matches_dynare_metropolis_draws() {
     }
     assert!(n >= 100);
 }
+
+/// `ms_compute_mdd` options: Dynare's spellings (`proposal_draws`, `use_mean_center`, what its
+/// preprocessor accepts) and the reference manual's (`mdd_proposal_draws`, `mdd_use_mean_center`,
+/// which Dynare 7.2's preprocessor rejects with a syntax error).
+#[test]
+fn ms_compute_mdd_option_spellings() {
+    let src = std::fs::read_to_string(dir().join("ms_small.mod")).unwrap();
+    let tmp = std::env::temp_dir().join(format!("msbvar_mdd_opts_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    for (opts, draws, mean) in [
+        ("proposal_type=2, proposal_draws=1234, use_mean_center", 1234, true),
+        ("proposal_type=2, mdd_proposal_draws=4321, mdd_use_mean_center", 4321, true),
+        ("proposal_type=2", 100000, false),
+    ] {
+        let f = tmp.join("m.mod");
+        std::fs::write(&f, format!("{src}\nms_compute_mdd({opts});\n")).unwrap();
+        let mf = parse_mod_file(&f, &[]).unwrap();
+        let o = mf
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                Command::Other(n, o) if n == "ms_compute_mdd" => Some(o),
+                _ => None,
+            })
+            .unwrap();
+        let mo = dynare::msbvar::ms_commands::mdd_options(o);
+        assert_eq!((mo.proposal_type, mo.proposal_draws, mo.use_mean_center), (2, draws, mean), "{opts}");
+    }
+}

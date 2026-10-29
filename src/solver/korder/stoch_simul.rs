@@ -365,6 +365,9 @@ pub struct StochSimulOutput {
     pub mean: Vec<f64>,
     pub var: Mat,
     pub autocorr: Vec<Mat>,
+    /// `oo_.skewness`, `oo_.kurtosis` of the simulated moments (empty otherwise).
+    pub skewness: Vec<f64>,
+    pub kurtosis: Vec<f64>,
     /// `oo_.endo_simul` when `periods > 0` (`n x periods`, declaration order).
     pub endo_simul: Option<Mat>,
     /// `oo_.exo_simul` of that simulation (`periods x n_exo`).
@@ -393,8 +396,8 @@ pub fn stoch_simul_at(
     seed: u64,
     at: Option<(&[f64], &[f64])>,
 ) -> Result<StochSimulOutput> {
-    if !(2..=3).contains(&so.order) {
-        bail!("stoch_simul: dynare-rust supports order = 2 or 3 here (got {})", so.order);
+    if so.order < 2 {
+        bail!("stoch_simul: dynare-rust supports order >= 2 here (got {})", so.order);
     }
     if mf.model.n_exo() == 0 {
         bail!("stoch_simul:: does not support having no varexo in the model.");
@@ -489,6 +492,8 @@ pub fn stoch_simul_at(
         contemporaneous_correlation: None,
         variance_decomposition_me: None,
         conditional_variance_decomposition_me: None,
+        skewness: vec![],
+        kurtosis: vec![],
     };
     let names: Vec<String> = var_list.iter().map(|&j| m.endo_names[j].clone()).collect();
 
@@ -587,9 +592,11 @@ pub fn stoch_simul_at(
             out.mean = sm.mean.clone();
             out.var = sm.var.clone();
             out.autocorr = sm.autocorr.clone();
+            out.skewness = sm.skewness.clone();
+            out.kurtosis = sm.kurtosis.clone();
             out.variance_decomposition = sm.vardec.clone();
             out.variance_decomposition_me = me.as_ref().map(|(_, v)| v.clone());
-        } else if so.pruning {
+        } else if so.pruning && so.order <= 3 {
             pruned_moments(m, &dr, &sol1, &var_list, &names, &a, so.order, tex.as_ref(), &mut out)?;
         } else if so.order == 2 {
             // disp_th_moments.m at order 2: first-order second moments, second-order mean
@@ -610,7 +617,7 @@ pub fn stoch_simul_at(
             out.conditional_variance_decomposition_me = r.conditional_vardec_me;
             out.contemporaneous_correlation = r.contemporaneous_correlation;
         }
-        // order 3 without pruning: no theoretical moments in Dynare either
+        // order 3 without pruning, order >= 4: no theoretical moments in Dynare either
     }
 
     // irf.m (generalized IRFs)
@@ -759,6 +766,10 @@ pub fn run_at(
     {
         let path = out_dir.join(format!("{fname}_stoch_simul.json"));
         let mut j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        if !res.skewness.is_empty() {
+            j["skewness"] = json!(res.skewness);
+            j["kurtosis"] = json!(res.kurtosis);
+        }
         if let Some(v) = &res.variance_decomposition {
             j["variance_decomposition"] = mj(v);
         }

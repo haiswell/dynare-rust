@@ -19,8 +19,10 @@ enum Rule {
     Open(f64, f64),
 }
 
-fn rule(key: &str) -> Option<Rule> {
+fn rule(cmd: &str, key: &str) -> Option<Rule> {
     Some(match key {
+        // options_.ep.stochastic.order: 0 is the deterministic extended path (the default)
+        "order" if cmd == "extended_path" => Rule::Int(0.0, 100.0),
         "irf"
         | "forecast"
         | "periods"
@@ -43,9 +45,9 @@ fn rule(key: &str) -> Option<Rule> {
 }
 
 /// Checks the options of a command; the error reads "invalid value for option X ...".
-pub fn check_options(opts: &Options) -> Result<()> {
+pub fn check_options(cmd: &str, opts: &Options) -> Result<()> {
     for (k, v) in opts {
-        let Some(r) = rule(k) else { continue };
+        let Some(r) = rule(cmd, k) else { continue };
         let x = match v {
             OptValue::Num(x) => *x,
             OptValue::Vec(x) if x.len() == 1 => x[0],

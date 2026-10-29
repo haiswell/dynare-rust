@@ -226,11 +226,11 @@ pub fn gmhmaxlik(
         if !opts.silent {
             println!();
             println!("{}", "=".repeat(58));
-            println!("   Change in the posterior covariance matrix = {d_variance:.6}.");
-            println!("   Change in the posterior mean = {d_mean:.6}.");
-            println!("   Current mode = {mode_value:.6}");
-            println!("   Mode improvement = {:.6}", (old_mode_value - mode_value).abs());
-            println!("   New value of jscale = {scale:.6}");
+            println!("   Change in the posterior covariance matrix = {}.", crate::gsa::stats::num2str(d_variance));
+            println!("   Change in the posterior mean = {}.", crate::gsa::stats::num2str(d_mean));
+            println!("   Current mode = {}", crate::gsa::stats::num2str(mode_value));
+            println!("   Mode improvement = {}", crate::gsa::stats::num2str((old_mode_value - mode_value).abs()));
+            println!("   New value of jscale = {}", crate::gsa::stats::num2str(scale));
             println!("{}", "=".repeat(58));
         }
         old_mode_value = mode_value;
@@ -244,7 +244,7 @@ pub fn gmhmaxlik(
     let hessian = solve(&out.variance, &Mat::identity(n, n))
         .ok_or_else(|| anyhow::anyhow!("gmhmaxlik: the estimated posterior covariance matrix is singular"))?;
     if !opts.silent {
-        println!("\nOptimal value of the scale parameter = {scale:.6}\n");
+        println!("\nOptimal value of the scale parameter = {}\n", crate::gsa::stats::num2str(scale));
     }
     Ok(GmhmaxlikResult {
         x: out.mode,

@@ -139,8 +139,9 @@ fn check_estimation(name: &str, res: &Value, r: &Value, laplace_tol: f64, mc_tol
 #[test]
 fn schorfheide_2000() {
     let r = common::json_ref::<Value>(refdir("schorfheide_2000").join("ref.json"));
-    let (work, _) =
+    let (work, all) =
         run("schorfheide_2000", &["schorfheide_2000.mod", "schorfheide_2000_data.m"], "schorfheide_2000.mod");
+    assert!(!all.contains("option `order`"), "order=1 is the default linear estimation:\n{all}");
     let res = json(&work.join("schorfheide_2000/Output/schorfheide_2000_results.json"));
     check_estimation("schorfheide_2000", &res, &r, 1e-3, 0.3, 0.3);
 }
@@ -243,7 +244,14 @@ fn rbc_irf_matching_bayesian_slice() {
     );
     assert_eq!(all.matches("Computing Hessian at the mode").count(), 1, "the slice run must skip the mode:\n{all}");
     let res = json(&work.join("rbc_irf_matching_part12/method_of_moments/rbc_irf_matching_part12_mom_mcmc.json"));
-    let mut g = floats(&res["posterior_mean"]);
+    // The data / model IRF comparison is at the posterior mean (Dynare 7.2: xparam1 =
+    // get_posterior_parameters('mean')), not at the prior mode the chains start from: the model
+    // response of ghat at t = 2 is rho_g_1 = root_g_1 + root_g_2.
+    let row = all.lines().rev().find(|l| l.starts_with("ghat eps_g (2)")).expect("IRF comparison table");
+    let model_irf2: f64 = row.split_whitespace().last().unwrap().parse().unwrap();
+    let means = floats(&res["posterior_mean"]);
+    assert!((model_irf2 - means.iter().sum::<f64>()).abs() < 1e-4, "{row} vs means {means:?}");
+    let mut g = means;
     let mut w = floats(&p["posterior_mean"]);
     g.sort_by(f64::total_cmp);
     w.sort_by(f64::total_cmp);
@@ -359,7 +367,21 @@ fn pac_model_simulation_and_nls_estimation() {
 /// calibration (as the comment of the example says) and the shocks have the calibrated variances.
 #[test]
 fn pac_model_native_draws() {
-    let (work, _) = run("pac_model", &["pac_model.mod"], "pac_model.mod");
+    let (work, log) = run("pac_model", &["pac_model.mod"], "pac_model.mod");
+    // the table of pac.estimate.nls (dyn_table.m), layout as MATLAB's
+    for l in [
+        "                    NLS Estimation of equation 'zpac'",
+        "    Dependent Variable: diff(z)",
+        "    Observations: 4001 from 2005Q1 to 3005Q1",
+        "                Estimates          t-statistic          Std. Error   ",
+        "             ________________    ________________    ________________",
+        "_____________________________________________________________________",
+    ] {
+        assert!(log.lines().any(|x| x == l), "missing line {l:?} in:\n{log}");
+    }
+    for k in ["    e_c_m ", "    c_z_1 ", "    c_z_2 ", "    R^2: ", "    s^2: "] {
+        assert!(log.lines().any(|x| x.starts_with(k)), "missing {k:?}");
+    }
     let (names, got) = csv_named(&work.join("pac_model/Output/pac_model_TrueData.csv"));
     assert_eq!(names, ["y", "x", "z", "v", "ex", "ey", "ez"]);
     assert_eq!(got.len(), 5010);
@@ -373,4 +395,24 @@ fn pac_model_native_draws() {
     for (e, c) in est.iter().zip([0.1, 0.7, -0.3]) {
         assert!((e - c).abs() < 0.06, "{est:?}");
     }
+}
+
+/// nk_ramsey_osr.mod with -DRamsey=0: the OSR parameter table is `dyntable`'s (MATLAB: header
+/// `Variables  Value`, `%10.6f` values).
+#[test]
+fn nk_ramsey_osr_parameter_table() {
+    let work = common::temp_dir("ex72_nk_osr_table");
+    std::fs::copy(refdir("nk_ramsey_osr").join("nk_ramsey_osr.mod"), work.join("nk_ramsey_osr.mod")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_dynare-rs"))
+        .args(["nk_ramsey_osr.mod", "nograph", "-DRamsey=0"])
+        .current_dir(&work)
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{log}");
+    let l: Vec<&str> = log.lines().collect();
+    let i = l.iter().position(|x| *x == "OPTIMAL VALUE OF THE PARAMETERS").expect("title");
+    assert_eq!(l[i + 1], "Variables        Value");
+    assert_eq!(l[i + 2], "alpha       100.000000");
+    assert_eq!(l[i + 4], "Objective function :          51.1572");
 }

@@ -30,6 +30,7 @@ pub mod prior_posterior; // stream F
 pub mod q3;
 pub mod q3_mcmc;
 pub mod q3_occbin;
+pub mod recursive;
 pub mod samplers;
 pub mod skewed;
 pub mod special;

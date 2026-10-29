@@ -56,6 +56,37 @@ fn ostr(o: &Options, key: &str) -> Option<String> {
         .and_then(|(_, v)| if let OptValue::Str(s) = v { Some(s.trim_matches('\'').to_string()) } else { None })
 }
 
+/// The options of `ms_compute_mdd` (`options_.ms.proposal_*`, `use_mean_center`).
+///
+/// The reference manual names two of them `mdd_proposal_draws` and `mdd_use_mean_center`,
+/// spellings Dynare 7.2's preprocessor rejects (it only knows `proposal_draws` and
+/// `use_mean_center`); both spellings are accepted here. `use_mean_center` has no effect, as in
+/// Dynare: ms_compute_mdd.m passes `-use_mean` to the MEX, whose command-line parser only knows
+/// `-mean` (checked with Dynare 7.2: the same seed with and without `-use_mean` gives
+/// byte-identical mdd files, `-mean` changes them).
+pub fn mdd_options(o: &Options) -> MddOptions {
+    let mut mo = MddOptions::default();
+    if let Some(x) = onum(o, "proposal_type") {
+        mo.proposal_type = x as usize;
+    }
+    if let Some(x) = onum(o, "proposal_draws").or_else(|| onum(o, "mdd_proposal_draws")) {
+        mo.proposal_draws = x as usize;
+    }
+    if let Some(x) = onum(o, "proposal_lower_bound") {
+        mo.lower = x;
+    }
+    if let Some(x) = onum(o, "proposal_upper_bound") {
+        mo.upper = x;
+    }
+    mo.use_mean_center = oflag(o, "use_mean_center") || oflag(o, "mdd_use_mean_center");
+    if mo.use_mean_center {
+        println!(
+            "Note: ms_compute_mdd: use_mean_center has no effect (as in Dynare 7.2, whose MEX ignores the -use_mean flag): the proposal stays centred on the best posterior draw."
+        );
+    }
+    mo
+}
+
 pub fn run_ms_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str, seed: u64) -> Result<()> {
     let Command::Other(name, o) = c else { bail!("ms command: unexpected command") };
     let out = dir.join(fname).join("Output");
@@ -172,20 +203,7 @@ pub fn run_ms_command(mf: &ModFile, c: &Command, dir: &Path, fname: &str, seed: 
                 bail!("ERROR: Could not find Metropolis Hastings file: simulation_{sim_tag}.out");
             }
             let est = if sim_tag == ftag { est } else { ms_files::load_estimate(dir, &sim_tag)? };
-            let mut mo = MddOptions::default();
-            if let Some(x) = onum(o, "proposal_type") {
-                mo.proposal_type = x as usize;
-            }
-            if let Some(x) = onum(o, "proposal_draws") {
-                mo.proposal_draws = x as usize;
-            }
-            if let Some(x) = onum(o, "proposal_lower_bound") {
-                mo.lower = x;
-            }
-            if let Some(x) = onum(o, "proposal_upper_bound") {
-                mo.upper = x;
-            }
-            mo.use_mean_center = oflag(o, "use_mean_center");
+            let mo = mdd_options(o);
             println!("Using the posterior draws of {}", sim.display());
             let (draws, lps) = read_simulation_lp(&sim, est.theta.len())?;
             let res = mdd::mdd(&est.setup, &est.theta, &draws, Some(&lps), &mo, seed)?;

@@ -94,34 +94,25 @@ fn key_values(o: &Options) -> Result<Vec<(String, f64)>> {
 
 /// `GetPosteriorParametersStatistics.m` on equally weighted draws (`draws[k]` = parameter k):
 /// prints the table, returns the means and the JSON rows.
-fn report(dsge: &DsgeModel, draws: &[Vec<f64>], conf: f64, title: &str) -> (Vec<f64>, Vec<serde_json::Value>) {
-    println!("\nESTIMATION RESULTS ({title})\n");
-    println!(
-        "{:<36} {:>10} {:>11} {:>11} {:>22}",
-        "",
-        "prior mean",
-        "post. mean",
-        "post. sd",
-        format!("{:.0}% HPD interval", 100.0 * conf)
-    );
+fn report(
+    mf: &crate::modfile::ModFile,
+    dsge: &DsgeModel,
+    draws: &[Vec<f64>],
+    conf: f64,
+    density: Option<f64>,
+) -> (Vec<f64>, Vec<serde_json::Value>) {
     let mut means = vec![];
     let mut table = vec![];
+    let mut stats = vec![];
     for (k, d) in draws.iter().enumerate() {
         let mut xs = d.clone();
         let m = posterior_moments(&mut xs, conf);
-        println!(
-            "{:<36} {:>10.4} {:>11.4} {:>11.4} {:>10.4} {:>11.4}",
-            dsge.estimated_names[k],
-            dsge.priors[k].mean,
-            m.mean,
-            m.var.sqrt(),
-            m.hpd.0,
-            m.hpd.1
-        );
         means.push(m.mean);
         table.push(json!({"name": dsge.estimated_names[k], "mean": m.mean, "median": m.median, "sd": m.var.sqrt(),
             "hpd_lower": m.hpd.0, "hpd_upper": m.hpd.1}));
+        stats.push(m);
     }
+    crate::driver::print_smc_posterior_table(mf, dsge, &stats, conf, density);
     (means, table)
 }
 
@@ -139,6 +130,7 @@ fn write_csv(p: &Path, names: &[String], cols: usize, get: impl Fn(usize, usize)
 /// Returns the posterior means.
 #[allow(clippy::too_many_arguments)]
 pub fn run_smc(
+    mf: &crate::modfile::ModFile,
     post: &dyn Objective,
     dsge: &DsgeModel,
     nobs: usize,
@@ -152,7 +144,7 @@ pub fn run_smc(
 ) -> Result<Vec<f64>> {
     let method = smc_method(o).unwrap_or_default();
     if method == "dsmh" {
-        return super::estimation::run_dsmh(post, dsge, nobs, o, ro, out_dir, fname, results);
+        return super::estimation::run_dsmh(mf, post, dsge, nobs, o, ro, out_dir, fname, results);
     }
     if dsge.priors.is_empty() {
         bail!("posterior_sampling_method = {method} needs priors (not available for maximum likelihood)");
@@ -180,10 +172,9 @@ pub fn run_smc(
                     other => println!("WARNING: hssmc: Unknown option ({other})!"),
                 }
             }
-            println!("Estimation:hssmc: {} particles, {} steps, lambda = {}", h.particles, h.steps, h.lambda);
             crate::progress::phase("HSSMC sampler");
             let r = hssmc(post, &dsge.priors, &dsge.bounds, &h)?;
-            println!("Estimation:hssmc: done in {}.", hms(t.elapsed().as_secs_f64()));
+            crate::progress::note(format!("hssmc done in {}", hms(t.elapsed().as_secs_f64())));
             let folder = dname.join("hssmc");
             std::fs::create_dir_all(&folder)?;
             let mut vars = vec![
@@ -196,9 +187,8 @@ pub fn run_smc(
             }
             let refs: Vec<(&str, &MatValue)> = vars.iter().map(|(k, v)| (*k, v)).collect();
             matfile::write_values(&folder.join(format!("particles-{}-{}.mat", h.steps, h.steps)), &refs)?;
-            println!("\nLog data density is {:.6}.", r.log_marginal_density);
             let draws: Vec<Vec<f64>> = (0..n).map(|k| r.particles.row(k).iter().copied().collect()).collect();
-            let (means, table) = report(dsge, &draws, conf, &format!("HSSMC, {} particles", h.particles));
+            let (means, table) = report(mf, dsge, &draws, conf, Some(r.log_marginal_density));
             write_csv(&out_dir.join(format!("{fname}_hssmc_particles.csv")), names, r.particles.ncols(), |k, j| {
                 r.particles[(k, j)]
             })?;
@@ -237,10 +227,9 @@ pub fn run_smc(
             if d.nchain < 6 {
                 bail!("check_posterior_sampler_options:: DIME requires nchain to be at least 6 (got {}).", d.nchain);
             }
-            println!("Estimation:dime: {} chains, {} iterations, tune = {}", d.nchain, d.niter, d.tune);
             crate::progress::phase("DIME sampler");
             let r = dime(post, &dsge.priors, &dsge.bounds, &d)?;
-            println!("Estimation:dime: done in {}.", hms(t.elapsed().as_secs_f64()));
+            crate::progress::note(format!("dime done in {}", hms(t.elapsed().as_secs_f64())));
             // <dname>/dime/chains.mat: chains (niter x nchain x ndim), lprobs, tune
             let folder = dname.join("dime");
             std::fs::create_dir_all(&folder)?;
@@ -272,7 +261,7 @@ pub fn run_smc(
                 all.iter().map(|v| (v[a] - mu[a]) * (v[b] - mu[b])).sum::<f64>() / (all.len() as f64 - 1.0)
             });
             crate::estimation::mh_files::write_mh_mode(out_dir, fname, &mode, &cov, kernel, names)?;
-            let (means, table) = report(dsge, &draws, conf, &format!("DIME, {} draws", post_draws.len()));
+            let (means, table) = report(mf, dsge, &draws, conf, None);
             write_csv(&out_dir.join(format!("{fname}_dime_draws.csv")), names, post_draws.len(), |k, j| {
                 post_draws[j][k]
             })?;
@@ -332,7 +321,7 @@ pub fn run_smc(
             }
             std::fs::write(folder.join(format!("{fname}_param_traj.csv")), traj)?;
             let draws: Vec<Vec<f64>> = (0..n).map(|k| r.param.row(k).iter().copied().collect()).collect();
-            let (means, table) = report(dsge, &draws, conf, &format!("online, {} particles", on.particles));
+            let (means, table) = report(mf, dsge, &draws, conf, None);
             write_csv(&out_dir.join(format!("{fname}_online_particles.csv")), names, r.param.ncols(), |k, j| {
                 r.param[(k, j)]
             })?;
@@ -346,6 +335,6 @@ pub fn run_smc(
     };
     let rpath = out_dir.join(format!("{fname}_results.json"));
     std::fs::write(&rpath, serde_json::to_string_pretty(&*results)?)?;
-    println!("Results written to {}", rpath.display());
+    crate::progress::note(format!("Results written to {}", rpath.display()));
     Ok(means)
 }

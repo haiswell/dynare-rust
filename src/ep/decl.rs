@@ -28,6 +28,10 @@ pub struct LearntShock {
     pub periods: Vec<i64>,
     pub kind: LearntKind,
     pub value: f64,
+    /// The value when it mentions endogenous variables, and the number of commands before the
+    /// block (`ModFile::resolve_learnt` evaluates it there).
+    pub expr: Option<crate::modfile::Ast>,
+    pub pos: usize,
     // ---- shocks/shock_paths ----
     /// `learnt_in = DATE` (then `learnt_in` is 0).
     pub learnt_in_date: Option<crate::dates::Date>,
@@ -42,6 +46,8 @@ pub struct LearntEndval {
     pub exo: usize,
     pub kind: LearntKind,
     pub value: f64,
+    pub expr: Option<crate::modfile::Ast>,
+    pub pos: usize,
     /// `learnt_in = DATE` (then `learnt_in` is 0). ---- shocks/shock_paths ----
     pub learnt_in_date: Option<crate::dates::Date>,
 }

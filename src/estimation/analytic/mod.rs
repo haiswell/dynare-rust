@@ -929,7 +929,7 @@ impl AnalyticPosterior<'_> {
         let a0 = if post.data.filter_initial_state.is_empty() {
             vec![0.0; mm]
         } else {
-            crate::estimation::q3::kalman_a0(dsge, res, idx, &post.data.filter_initial_state)
+            crate::estimation::q3::kalman_a0(dsge, res, idx, &post.data.filter_initial_state_at(&res.params))
         };
         let qq = mul(&mul(&res.r, false, &res.q, false), false, &res.r, true);
         let mut kalman_algo = if opts.kalman_algo == 2 { 2 } else { 1 };

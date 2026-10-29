@@ -1,0 +1,11 @@
+var y c r;
+varexo e u;
+parameters a b disc p_unused;
+a=0.9; b=0.5; disc=0.99; p_unused=1;
+model;
+y = a*y(-1) + e - r*disc;
+c = b*c(-1) + u + y(+1);
+end;
+shocks; var e=1; var u=1; end;
+planner_objective c^2;
+ramsey_policy(instruments=(r), planner_discount=disc);

@@ -65,7 +65,7 @@ fn setup(stage: usize, x0: &[f64]) -> Setup {
     dynare::estimation::q3::kalman_options(&est, &mut k);
     let mut data = dynare::dsge::LikelihoodData::new(&sample, k);
     data.first_obs = first_obs;
-    dynare::estimation::q3::attach(&mf, &est, &mut data, first_obs).unwrap();
+    dynare::estimation::q3::attach(&mf, &est, &mut data, first_obs, dynare::dates::Date::parse("1Y").unwrap()).unwrap();
     Setup { mf, est, dsge, data }
 }
 

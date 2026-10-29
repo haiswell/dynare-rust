@@ -500,7 +500,7 @@ pub fn k_order_welfare(
     use crate::solver::korder::tensor::{add_sym3_first, col_of, kron_power_apply, tuple_of};
     let order = kdr.order;
     if order > 3 {
-        anyhow::bail!("evaluate_planner_objective: order = {order} > 3 is not supported");
+        anyhow::bail!("k_order_welfare: order > 3 goes through korder::general::k_order_welfare");
     }
     let dr = &kdr.first;
     let (ns, ne) = (dr.nspred, kdr.n_exo);
@@ -698,7 +698,12 @@ pub fn evaluate_planner_objective_korder(
     let x0 = vec![0.0; nx];
     let obj = model.planner_objective(ys, &x0, p).ok_or_else(none)?;
     let u3 = model.planner_objective_g3(ys, &x0, p).unwrap_or_default();
-    let w = k_order_welfare(kdr, &obj.uy, &obj.uyy, &u3, beta, sigma_e)?;
+    let w = if kdr.order > 3 {
+        let ud = model.planner_objective_derivatives_k(kdr.order, ys, &x0, p).ok_or_else(none)?;
+        crate::solver::korder::general::k_order_welfare(kdr, &ud, beta, sigma_e)?
+    } else {
+        k_order_welfare(kdr, &obj.uy, &obj.uyy, &u3, beta, sigma_e)?
+    };
     let nw = ns + kdr.n_exo;
     let g: Vec<Mat> = (0..=kdr.order)
         .map(|j| {

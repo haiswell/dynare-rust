@@ -1,0 +1,50 @@
+{
+ "source": "Dynare 7.2 tests/var-expectations/8/example1.mod (MATLAB R2025b), M_ after var_expectation.update",
+ "endo_names": [
+  "foo",
+  "z",
+  "x",
+  "y",
+  "AUX_UOP_10",
+  "AUX_UOP_42",
+  "AUX_DIFF_60",
+  "AUX_DIFF_LAG_62",
+  "AUX_DIFF_LAG_63",
+  "AUX_DIFF_32",
+  "AUX_DIFF_LAG_35",
+  "AUX_DIFF_LAG_25",
+  "AUX_ENDO_LAG_15_1"
+ ],
+ "param_names": [
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "beta",
+  "var_expectation_model_varexp_constant",
+  "var_expectation_model_varexp_AUX_DIFF_60_0",
+  "var_expectation_model_varexp_AUX_UOP_42_0",
+  "var_expectation_model_varexp_AUX_DIFF_32_0",
+  "var_expectation_model_varexp_AUX_DIFF_60_1",
+  "var_expectation_model_varexp_AUX_UOP_42_1",
+  "var_expectation_model_varexp_AUX_DIFF_32_1"
+ ],
+ "params": [
+  0.9,
+  -0.2,
+  0.3,
+  0.5,
+  0.4,
+  0.8,
+  0.9803921568627451,
+  0,
+  0.8823529411764706,
+  0,
+  0,
+  -0.19607843137254902,
+  0,
+  0.2941176470588235
+ ]
+}

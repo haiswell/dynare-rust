@@ -38,8 +38,11 @@ mod ramsey;
 // ---- heterogeneity: the model(heterogeneity=...) block (dtree_het.rs)
 #[path = "dtree_het.rs"]
 mod het;
+// ---- VAR models / PAC: unary-op substitution and PacModelTable::transformPass (dtree_pac.rs)
+#[path = "dtree_pac.rs"]
+pub(crate) mod pac;
 pub(crate) use het::{HetAuxOut, HetInput, het_transform};
-pub(crate) use ramsey::PlannerIn;
+pub(crate) use ramsey::{PlannerIn, RamseyOut};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum UOp {
@@ -103,6 +106,8 @@ pub(crate) enum SymType {
     // ---- heterogeneity: aggregate variables seen from a model(heterogeneity=...) block
     AggEndo,
     AggExo,
+    /// `pac_expectation` / `pac_target_nonstationary` operators (see `dtree_pac.rs`).
+    Placeholder,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +133,9 @@ pub enum ModelItem {
     Trend { vars: Vec<String>, ast: Ast, nums: Vec<String>, log: bool },
     /// `var(deflator = ast) vars;` (`log`: `log_deflator`).
     Deflator { vars: Vec<String>, ast: Ast, nums: Vec<String>, log: bool },
+    /// An expression of a statement before the model block parsed into the model's tree
+    /// (`pac_model(growth = ...)`, `pac_target_info`): `pac::PacInput` refers to it by rank.
+    Preamble { ast: Ast, nums: Vec<String> },
 }
 
 /// What the transform pass produces.
@@ -151,6 +159,10 @@ pub(crate) struct Transformed {
     pub orig_max_lag_with_diffs: i32,
     /// Ramsey first-order conditions (before the aux substitution), as lhs expressions.
     pub ramsey_focs: Vec<NodeId>,
+    /// Ramsey model: the sizes (the multipliers are the `aux` entries of type 6).
+    pub ramsey: Option<RamseyOut>,
+    /// VAR models / PAC: resolved keys, symbol ids of the PAC parameters.
+    pub pac: pac::PacOutput,
 }
 
 struct AuxRec {
@@ -318,6 +330,15 @@ struct Tree {
     /// heterogeneity: offsets of the aggregate endogenous / exogenous variables in the
     /// converted [`Dag`] (after the heterogeneous ones).
     agg_offsets: (usize, usize),
+    // ---- VAR models / PAC (dtree_pac.rs)
+    /// Names of the `var_expectation` / `pac_expectation` / `pac_target_nonstationary`
+    /// placeholders (symbol `pac::PH_BASE + k`), preamble expressions.
+    placeholders: Vec<String>,
+    pre: Vec<Id>,
+    uop_nodes: LagEquiv,
+    uop_table: SubstTable,
+    diff_nodes: LagEquiv,
+    diff_table: SubstTable,
 }
 
 impl Tree {
@@ -351,6 +372,12 @@ impl Tree {
             nonstationary: BTreeMap::new(),
             trend_param_offset: None,
             agg_offsets: (0, 0),
+            placeholders: Vec::new(),
+            pre: Vec::new(),
+            uop_nodes: LagEquiv::new(),
+            uop_table: SubstTable::new(),
+            diff_nodes: LagEquiv::new(),
+            diff_table: SubstTable::new(),
         };
         // DataTree::initConstants
         t.zero = t.add_num("0");
@@ -380,6 +407,9 @@ impl Tree {
     }
 
     fn sym_ty(&self, s: u32) -> SymType {
+        if s >= pac::PH_BASE {
+            return SymType::Placeholder;
+        }
         self.syms[s as usize].ty
     }
 
@@ -824,7 +854,7 @@ impl Tree {
                     let v = self.get_local(s, lag);
                     self.decrease_m(v, n, memo)
                 }
-                SymType::Param | SymType::Excluded => id,
+                SymType::Param | SymType::Excluded | SymType::Placeholder => id,
             },
             N::Un(op, a, info) => {
                 let a2 = self.decrease_m(a, n, memo);
@@ -954,6 +984,9 @@ impl Tree {
                 None => self.add_num(&fmt_g16(*v)),
             },
             Ast::Var { name, lag, loc } => {
+                if let Some(s) = self.placeholder_symbol(name) {
+                    return Ok(self.add_var(s.map_err(|e| anyhow!("{loc}: {e}"))?, *lag));
+                }
                 let s = match lookup(name) {
                     Some(s) => s,
                     None => match name.as_str() {
@@ -1230,7 +1263,7 @@ impl Tree {
             }
             let (a, _) = self.eq_args(self.equations[eq].eq);
             let lhs = match self.node(a) {
-                N::Var(s, _) => Some(self.names[s as usize].clone()),
+                N::Var(s, _) => Some(self.sym_name(s)),
                 _ => None,
             };
             let name = match lhs {
@@ -1412,7 +1445,10 @@ impl Tree {
         }
     }
 
-    fn substitute_diff(&mut self) -> Result<()> {
+    /// `DynamicModel::substituteDiff`; `exprs`: the preamble expressions substituted after the
+    /// equations (the `var_expectation_model` expressions, then the PAC growth ones, `growth`:
+    /// those also searched for diff nodes).
+    fn substitute_diff(&mut self, exprs: &[usize], growth: &[usize]) -> Result<()> {
         let mut nodes = LagEquiv::new();
         let used = self.used_locals();
         let keys: Vec<u32> = self.locals.keys().copied().collect();
@@ -1427,6 +1463,9 @@ impl Tree {
             let e = self.equations[k].eq;
             self.find_diff_nodes(e, &mut nodes, &mut seen);
         }
+        for &g in growth {
+            self.find_diff_nodes(self.pre[g], &mut nodes, &mut seen); // findDiffNodesInGrowth
+        }
         let mut table = SubstTable::new();
         let mut neweqs = Vec::new();
         for &s in &keys {
@@ -1438,7 +1477,13 @@ impl Tree {
             let e = self.equations[k].eq;
             self.equations[k].eq = self.subst_diff(e, &nodes, &mut table, &mut neweqs)?;
         }
+        for &g in exprs {
+            // substituteDiffNodesInExpression, substituteDiffNodesInGrowth
+            self.pre[g] = self.subst_diff(self.pre[g], &nodes, &mut table, &mut neweqs)?;
+        }
         self.push_neweqs(neweqs);
+        self.diff_nodes = nodes;
+        self.diff_table = table;
         Ok(())
     }
 
@@ -1795,7 +1840,11 @@ impl Tree {
         let r = match self.node(id) {
             N::Num(c) => dag.num(self.consts[c as usize].1),
             N::Var(s, lag) => {
-                let sym = self.syms[s as usize].clone();
+                let sym = if s >= pac::PH_BASE {
+                    Sym { ty: SymType::Placeholder, index: 0 }
+                } else {
+                    self.syms[s as usize].clone()
+                };
                 match sym.ty {
                     SymType::Endo => dag.endo(sym.index, lag),
                     SymType::Exo => dag.exo(sym.index, lag),
@@ -1809,6 +1858,7 @@ impl Tree {
                     SymType::Excluded => {
                         bail!("'{}' was removed by var_remove/model_remove but is still used", self.names[s as usize])
                     }
+                    SymType::Placeholder => bail!("internal error: PAC operator left in the model"),
                     // only in the balanced-growth test (trend variables as parameters)
                     SymType::Trend | SymType::LogTrend => match self.trend_param_offset {
                         Some(off) => dag.param(off + sym.index),
@@ -1885,6 +1935,8 @@ pub(crate) struct Input<'a> {
     pub bg: BgContext,
     /// Ramsey step ([`PlannerIn`]), when the model has `ramsey_model`.
     pub planner: Option<PlannerIn>,
+    /// VAR models / PAC ([`pac::PacInput`]).
+    pub pac: &'a pac::PacInput,
 }
 
 /// what `DynamicModel::testTrendDerivativesEqualToZero` evaluates at: the
@@ -1901,6 +1953,7 @@ pub struct BgContext {
 /// Replays the model block and runs the transform pass; converts the result into `dag`.
 pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
     let mut t = Tree::new(inp.syms, inp.names, inp.n_endo);
+    t.placeholders = inp.pac.placeholders();
     t.predetermined = inp.predetermined.into_iter().collect();
     let lookup = inp.lookup;
     let mut q4_lines: Vec<Option<usize>> = Vec::new(); // JSON "line"
@@ -1947,6 +2000,11 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
                     t.nonstationary.insert(s, (*log, d));
                 }
             }
+            ModelItem::Preamble { ast, nums } => {
+                let mut it = nums.iter();
+                let v = t.replay(ast, &mut it, lookup)?;
+                t.pre.push(v);
+            }
             ModelItem::Remove { selection } => {
                 let m = |e: &Equation| {
                     selection.iter().any(|sel| sel.iter().all(|(k, v)| e.tags.iter().any(|(a, b)| a == k && b == v)))
@@ -1977,8 +2035,29 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
     t.expand_eq_tags()?;
     t.substitute_model_local_variables()?;
     let mut ramsey_focs = Vec::new();
+    let mut ramsey = None;
+    let mut ramsey_lag_with_diffs = 0;
     if let Some(p) = &inp.planner {
-        let n = t.ramsey_focs(p, lookup)?;
+        // nested model-local variables (`# k = l*s;` with `# l = ...;`): the FOCs differentiate
+        // the equations with every model-local variable substituted
+        for _ in 0..t.locals.len() {
+            if t.used_locals().is_empty() {
+                break;
+            }
+            t.substitute_model_local_variables()?;
+        }
+        // ModFile::transformPass substitutes diff and EXPECTATION before taking the FOCs: their
+        // aux variables get a FOC and their aux equations a multiplier
+        // (`orig_maximum_lag_with_diffs_expanded` still counts the diffs of the model)
+        for k in 0..t.equations.len() {
+            let e = t.equations[k].eq;
+            ramsey_lag_with_diffs = ramsey_lag_with_diffs.max(t.mx(Mx::LagDiffs, e));
+        }
+        t.substitute_diff(&[], &[])?;
+        t.substitute_expectation()?;
+        let r = t.ramsey_focs(p, lookup)?;
+        let n = r.orig_endo;
+        ramsey = Some(r);
         q4_lines.splice(0..0, std::iter::repeat_n(None, n));
         let mut memo = HashMap::new();
         for k in 0..n {
@@ -2001,12 +2080,22 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
             max_lag = max_lag.max(-l);
         }
     }
-    let mut max_lag_with_diffs = 0;
+    let mut max_lag_with_diffs = ramsey_lag_with_diffs;
     for k in 0..t.equations.len() {
         let e = t.equations[k].eq;
         max_lag_with_diffs = max_lag_with_diffs.max(t.mx(Mx::LagDiffs, e));
     }
-    t.substitute_diff()?;
+    let pac_out = if inp.pac.is_empty() {
+        t.substitute_diff(&[], &[])?;
+        pac::PacOutput::default()
+    } else {
+        t.substitute_unary_ops(inp.pac)?;
+        let growth = t.growth_order(inp.pac);
+        let mut exprs: Vec<usize> = inp.pac.ve.iter().map(|m| m.expr).collect();
+        exprs.extend(&growth);
+        t.substitute_diff(&exprs, &growth)?;
+        t.pac_transform(inp.pac, lookup)?
+    };
     t.substitute_expectation()?;
     if json_on() {
         let map = t.json_mapping(q4_n_orig); // variable_mapping
@@ -2031,7 +2120,9 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
     if json_on() {
         // modfile.json: the transformed model, aux equations last
         let tr = t.json_equations(&q4_lines, true);
-        let orig: Vec<String> = t.aux.iter().map(|a| t.json_str(a.shown.unwrap_or(a.rhs))).collect();
+        // (the Ramsey multipliers are not in `Model::aux_vars`)
+        let orig: Vec<String> =
+            t.aux.iter().filter(|a| a.ty != 6).map(|a| t.json_str(a.shown.unwrap_or(a.rhs))).collect();
         JSON_CAPTURE.with(|c| {
             let mut b = c.borrow_mut();
             let cap = b.as_mut().unwrap();
@@ -2083,7 +2174,7 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
         let rhs = t.convert(rhs, dag, &mut memo)?;
         let orig_index = os.map(|s| t.syms[s as usize].index);
         let (orig_index, orig_lead_lag) = match ty {
-            1 | 3 | 5 | 7 | 8 | 9 => (orig_index, ol),
+            1 | 3 | 5 | 7 | 8 | 9 | 10 | 11 => (orig_index, ol),
             _ => (None, None),
         };
         aux.push((
@@ -2103,6 +2194,8 @@ pub(crate) fn transform(inp: Input<'_>, dag: &mut Dag) -> Result<Transformed> {
         orig_max_lag: max_lag,
         orig_max_lag_with_diffs: max_lag_with_diffs,
         ramsey_focs,
+        ramsey,
+        pac: pac_out,
     })
 }
 
@@ -2199,7 +2292,7 @@ impl Tree {
         match self.node(id) {
             N::Num(c) => out.push_str(&self.consts[c as usize].0),
             N::Var(s, lag) => {
-                out.push_str(&self.names[s as usize]);
+                out.push_str(&self.sym_name(s));
                 if lag != 0 {
                     out.push_str(&format!("({lag})"));
                 }
@@ -2325,7 +2418,11 @@ impl Tree {
                     SymType::LogTrend => "logTrendVariable",
                     SymType::AggEndo => "endogenous",
                     SymType::AggExo => "exogenous",
+                    SymType::Placeholder => "pacExpectation",
                 };
+                if ty == "pacExpectation" {
+                    return json!({"node_type": "PacExpectationNode", "name": self.sym_name(s)});
+                }
                 json!({"node_type": "VariableNode", "name": self.names[s as usize], "type": ty, "lag": lag})
             }
             N::Un(op, a, k) => {

@@ -394,7 +394,7 @@ pub fn write_xls(
     let (a, b, first) = p.window().unwrap_or((0, p.z.t, p.initial_date));
     let comp = p.z.c - 1;
     // WriteShockDecomp2Excel: screen_shocks only with more than 18 components and no groups
-    let screen = spec.q4.screen_shocks && spec.groups.is_none() && comp > 18;
+    let screen = (spec.q4.screen_shocks || spec.init_cond) && spec.groups.is_none() && comp > 18;
     let mut fig_name1 = p.fig_name_long.clone();
     if screen {
         fig_name1 += "_screen";

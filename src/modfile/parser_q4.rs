@@ -224,6 +224,13 @@ pub(crate) struct Q4Flags {
     found: Vec<bool>,
 }
 
+impl Q4Flags {
+    /// `exclude_eqs=` or `include_eqs=` is given.
+    pub fn selects_equations(&self) -> bool {
+        self.exclude.is_some() || self.include.is_some()
+    }
+}
+
 /// Port of the preprocessor's parsing of `exclude_eqs=` / `include_eqs=` (a file, or a list
 /// of `name` tags, or `[tagname=value]` / `[tagname=(v1, 'v2')]`).
 fn parse_selection(arg: &str, cwd: Option<&std::path::Path>) -> Result<Selection> {

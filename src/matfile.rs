@@ -4,7 +4,7 @@
 //! for handing results back to MATLAB.
 //!
 //! Reads: real numeric arrays of any storage type, char arrays, cell arrays,
-//! compressed (`miCOMPRESSED`) or not. Writes: uncompressed double matrices
+//! compressed (`miCOMPRESSED`) or not; v7.3 (HDF5) files through `matfile_h5`. Writes: uncompressed double matrices
 //! and cell columns of strings, which every MATLAB version loads.
 
 use std::collections::BTreeMap;
@@ -161,6 +161,10 @@ pub fn read(path: &Path) -> Result<BTreeMap<String, MatValue>> {
 pub fn parse(bytes: &[u8]) -> Result<BTreeMap<String, MatValue>> {
     if bytes.len() < 128 {
         bail!("not a MAT-file (too short)");
+    }
+    if bytes.get(512..520) == Some(b"\x89HDF\r\n\x1a\n") {
+        // v7.3: HDF5
+        return crate::matfile_h5::parse(bytes);
     }
     if &bytes[126..128] != b"IM" {
         bail!("only little-endian Level 5 MAT-files are supported (v7.3/HDF5 is not)");

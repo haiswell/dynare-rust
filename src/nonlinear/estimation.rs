@@ -71,6 +71,7 @@ const SUPPORTED: &[&str] = &[
     "mh_init_scale_factor",
     "mh_init_scale",
     "prior_trunc",
+    "cova_compute",
     "optim",
     "filter_algorithm",
     "number_of_particles",
@@ -142,23 +143,23 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     let order = requested_order(o);
     let particle = ParticleOptions::from_options(o)?;
     println!("\nEstimation using a non linear filter!\n");
-    println!(
+    crate::progress::note(format!(
         "order = {order}, filter = {} ({}), {} particles",
         format!("{:?}", particle.algorithm).to_lowercase(),
         particle.algorithm.matlab_name(),
         particle.number_of_particles
-    );
+    ));
 
     // ---- data -------------------------------------------------------------
     let ds = crate::dataset::Dataset::load(mf, dir, o)?; // makedataset.m
     let (datapath, first_obs, sample) = (ds.path.clone(), ds.first_obs, ds.sample(&mf.varobs)?);
     let nobs = sample.nrows();
     let presample = num(o, "presample").unwrap_or(0.0) as usize;
-    println!(
+    crate::progress::note(format!(
         "Data: {} ({} observables, {nobs} observations from first_obs = {first_obs}).",
         datapath.display(),
         mf.varobs.len()
-    );
+    ));
 
     // ---- model and initial values -----------------------------------------------
     let names: Vec<String> = mf.estimated_params_dynare_order().iter().map(|e| mf.estimated_param_name(e)).collect();
@@ -207,11 +208,8 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     if !f0.is_finite() {
         bail!("initial_estimation_checks: the posterior is not finite at the initial values (info {info0}).");
     }
-    println!(
-        "Initial value of the log posterior (or likelihood): {:.6}  ({:.2} ms per evaluation)",
-        -f0,
-        t.elapsed().as_secs_f64() * 1e3
-    );
+    println!("Initial value of the log posterior (or likelihood): {}", crate::gsa::stats::num2str(-f0));
+    crate::progress::note(format!("({:.2} ms per evaluation)", t.elapsed().as_secs_f64() * 1e3));
     let mut results = json!({
         "model": fname,
         "order": order,
@@ -226,7 +224,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     // ---- DSMH (dynare_estimation_1.m: issmc -> no mode finding, no MCMC) ---------
     if super::smc_run::smc_method(o).is_some() {
         // dsmh, hssmc, dime_mcmc, online
-        return super::smc_run::run_smc(&post, dsge, nobs, o, ro, out_dir, fname, &mut results, Some(&nm), &x_init);
+        return super::smc_run::run_smc(mf, &post, dsge, nobs, o, ro, out_dir, fname, &mut results, Some(&nm), &x_init);
     }
 
     // ---- mode finding ------------------------------------------------------------
@@ -243,6 +241,8 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
             .with_priors(&dsge.priors);
     let mfo = mh_session::MhFileOptions::from_options(o, &sampler, dir)?;
     let mode_estim = sampler.mh_posterior_mode_estimation() || mfo.mh_posterior_mode_estimation;
+    // dynare_estimation_1.m: cova_compute = 0 computes no Hessian at the mode (stdh = NaN)
+    let cova_compute = num(o, "cova_compute").unwrap_or(1.0) != 0.0;
     let (xmode, fmode, hh) = if mode_estim {
         println!("No posterior maximization (mh_posterior_mode_estimation); the MCMC starts from the prior mode.");
         let x = prior_mode_start(&dsge.priors, &dsge.bounds);
@@ -255,6 +255,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
     } else if mode_compute == 0 {
         let hh = match hh_file {
             Some(h) => h,
+            None if !cova_compute => Mat::from_element(n, n, f64::NAN),
             None => {
                 println!("mode_compute = 0 and no Hessian in the mode file: computing it with hessian.m.");
                 hessian(&post, &x_init, [1e-2, 1.0])
@@ -273,11 +274,11 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
             }
             let res = gmhmaxlik(&post, &x_init, hh_file.as_ref(), mh_jscale, &dsge.bounds, &prior_sd, &gopts)?;
             mh_jscale = res.scale;
-            println!(
-                "\nmode_compute = 6: done ({} function evaluations, {}).",
+            crate::progress::note(format!(
+                "mode_compute = 6: done ({} function evaluations, {}).",
                 res.func_count,
                 hms(t.elapsed().as_secs_f64())
-            );
+            ));
             (res.x, res.fval, res.hessian)
         } else {
             // [stream O] dynare_minimize_objective.m: every mode_compute but 6
@@ -292,36 +293,51 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
                 stream: u64::MAX - 1,
             };
             let res = crate::estimation::optim::minimize(mode_compute, &post, &x_init, &ctx)?;
-            println!(
-                "\nmode_compute = {mode_compute}: {} ({} iterations, {} function evaluations, {}).",
+            crate::progress::note(format!(
+                "mode_compute = {mode_compute}: {} ({} iterations, {} function evaluations, {}).",
                 res.message,
                 res.iterations,
                 res.func_count,
                 hms(t.elapsed().as_secs_f64())
-            );
-            let h = hessian(&post, &res.x, [1e-2, 1.0]);
+            ));
+            let h = if cova_compute { hessian(&post, &res.x, [1e-2, 1.0]) } else { Mat::from_element(n, n, f64::NAN) };
             (res.x, res.fval, h)
         };
-        println!("Final value of minus the log posterior (or likelihood): {fval:.6}");
+        println!("\nFinal value of minus the log posterior (or likelihood):{fval:.6} ");
         let mode_path = out_dir.join(format!("{fname}_mode.mat"));
-        matfile::write(
-            &mode_path,
-            &[
-                ("xparam1", MatOut::Vector(&x)),
-                ("hh", MatOut::Matrix(&hh)),
-                ("fval", MatOut::Scalar(fval)),
-                ("parameter_names", MatOut::Strings(&dsge.estimated_names)),
-            ],
-        )?;
-        println!("Mode saved to {}", mode_path.display());
+        if cova_compute || mode_compute == 6 {
+            matfile::write(
+                &mode_path,
+                &[
+                    ("xparam1", MatOut::Vector(&x)),
+                    ("hh", MatOut::Matrix(&hh)),
+                    ("fval", MatOut::Scalar(fval)),
+                    ("parameter_names", MatOut::Strings(&dsge.estimated_names)),
+                ],
+            )?;
+        } else {
+            matfile::write(
+                &mode_path,
+                &[
+                    ("xparam1", MatOut::Vector(&x)),
+                    ("fval", MatOut::Scalar(fval)),
+                    ("parameter_names", MatOut::Strings(&dsge.estimated_names)),
+                ],
+            )?;
+        }
+        crate::progress::note(format!("Mode saved to {}", mode_path.display()));
         (x, fval, hh)
     };
     let invhess = inverse_hessian(&hh);
     let sd_mode: Vec<f64> = match &invhess {
+        _ if !cova_compute => vec![f64::NAN; n],
         Some(v) => (0..n).map(|i| v[(i, i)].max(0.0).sqrt()).collect(),
         None => vec![f64::NAN; n],
     };
     let laplace = if mode_estim {
+        f64::NAN
+    } else if !cova_compute {
+        print_mode_table(mf, dsge, &xmode, &sd_mode);
         f64::NAN
     } else {
         print_mode_table(mf, dsge, &xmode, &sd_mode);
@@ -346,7 +362,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
         } else {
             invhess.ok_or_else(|| anyhow!("the Hessian at the mode is not invertible: cannot start the MCMC"))?
         };
-        let mh_bounds = mcmc_bounds(&xmode, &dsge.priors, num(o, "prior_trunc").unwrap_or(0.0))?;
+        let mh_bounds = mcmc_bounds(&xmode, &dsge.priors, crate::dsge::prior_trunc(mf))?;
         let mh_post = NonlinearPosterior { model: &nm, bounds: &mh_bounds };
         let mut mh = MhOptions::new(n);
         mh.replic = mh_replic;
@@ -370,11 +386,16 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
                 &mh_bounds,
                 &TuneOptions { target, guess: Some(guess), seed: ro.seed, prefetch: ro.prefetch, ..Default::default() },
             )?;
-            println!("mh_jscale has been set equal to {jscale:.5}");
+            println!("mh_jscale has been set equal to {}", crate::gsa::stats::num2str(jscale));
         }
         mh.mh_jscale = jscale;
         mh.jscale = vec![jscale; n];
-        println!("Estimation::mcmc ({}): {} chains x {} draws.", sampler.title(), mh.nblocks, mh.replic);
+        crate::progress::note(format!(
+            "Estimation::mcmc ({}): {} chains x {} draws.",
+            sampler.title(),
+            mh.nblocks,
+            mh.replic
+        ));
         crate::progress::phase(format!("MCMC: {} chains x {} draws", mh.nblocks, mh.replic));
         crate::progress::chains(mh.nblocks, mh.replic);
         let t = Instant::now();
@@ -393,6 +414,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
         };
         let res = mh_session::run(
             mh_session::SessionInputs {
+                disp: "Estimation::mcmc",
                 obj: &mh_post,
                 xparam1: &xmode,
                 invhess: &invhess,
@@ -410,10 +432,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
             &mfo,
         )?;
         let secs = t.elapsed().as_secs_f64();
-        println!("Estimation::mcmc: done in {}. Acceptance ratio per chain:", hms(secs));
-        for (k, a) in res.acceptance.iter().enumerate() {
-            println!("{:>60}Chain {:2}: {:.4}%", "", k + 1, 100.0 * a);
-        }
+        crate::progress::note(format!("Estimation::mcmc: done in {}.", hms(secs)));
         if mfo.mh_posterior_mode_estimation {
             let (m, sd, kernel) = mh_session::posterior_mode_from_mcmc(&dname, fname, out_dir, &dsge.estimated_names)?;
             println!(
@@ -428,9 +447,9 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
             &res.chains,
             &PosteriorOptions { mh_drop, mh_conf_sig: num(o, "mh_conf_sig").unwrap_or(0.9), ..Default::default() },
         )?;
-        println!("\nESTIMATION RESULTS\n\nLog data density (Modified Harmonic Mean) is {:.6}.", stats.mhm.log_marginal);
+        print_ifac(mf, dsge, &stats.ifac);
+        crate::driver::print_marginal_density_messages(&stats.mhm);
         print_posterior_table(mf, dsge, &stats);
-        print_ifac(dsge, &stats.ifac);
         write_posterior_csv(out_dir, fname, dsge, &xmode, &sd_mode, &stats)?;
         results["mcmc"] = json!({
             "replic": res.record.total_draws(), "new_draws": res.new_draws, "nblocks": res.chains.len(),
@@ -444,7 +463,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
         point = stats.mean.clone();
     }
     std::fs::write(&rpath, serde_json::to_string_pretty(&results)?)?;
-    println!("Results written to {}", rpath.display());
+    crate::progress::note(format!("Results written to {}", rpath.display()));
     Ok(point)
 }
 
@@ -453,6 +472,7 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, out_dir: &Path, o: &Options, r
 /// `results["dsmh"]` to `<fname>_results.json`; returns the posterior means.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_dsmh(
+    mf: &ModFile,
     post: &dyn crate::estimation::Objective,
     dsge: &DsgeModel,
     nobs: usize,
@@ -469,37 +489,28 @@ pub(crate) fn run_dsmh(
     std::fs::create_dir_all(out_dir)?;
     let rpath = out_dir.join(format!("{fname}_results.json"));
     let d = dsmh_options(o, ro.seed, ro.quiet)?;
-    println!("Estimation:dsmh: H = {}, N = {}, G = {}, M = {}, K = {}, tau = {}", d.h, d.n, d.g, d.m, d.k, d.tau);
     crate::progress::phase("DSMH sampler");
     let t = Instant::now();
     let r = dsmh(post, &dsge.priors, &dsge.bounds, nobs, &d)?;
-    println!(
-        "Estimation:dsmh: done in {}. Log marginal data density: {:.6}",
+    crate::progress::note(format!(
+        "dsmh done in {}. Log marginal data density: {:.6}",
         hms(t.elapsed().as_secs_f64()),
         r.log_marginal_density
-    );
+    ));
     let conf = num(o, "mh_conf_sig").unwrap_or(0.9);
     let np = r.particles.ncols();
-    println!("\nESTIMATION RESULTS (DSMH, {np} particles)\n");
-    println!("{:<36} {:>10} {:>11} {:>11} {:>22}", "", "prior mean", "post. mean", "post. sd", "90% HPD interval");
     let mut means = Vec::with_capacity(n);
     let mut table = Vec::new();
+    let mut stats = Vec::with_capacity(n);
     for k in 0..n {
         let mut xs: Vec<f64> = r.particles.row(k).iter().copied().collect();
         let m = posterior_moments(&mut xs, conf);
-        println!(
-            "{:<36} {:>10.4} {:>11.4} {:>11.4} {:>10.4} {:>11.4}",
-            dsge.estimated_names[k],
-            dsge.priors[k].mean,
-            m.mean,
-            m.var.sqrt(),
-            m.hpd.0,
-            m.hpd.1
-        );
         means.push(m.mean);
         table.push(json!({"name": dsge.estimated_names[k], "mean": m.mean, "median": m.median, "sd": m.var.sqrt(),
             "hpd_lower": m.hpd.0, "hpd_upper": m.hpd.1}));
+        stats.push(m);
     }
+    crate::driver::print_smc_posterior_table(mf, dsge, &stats, conf, Some(r.log_marginal_density));
     let csv: String = std::iter::once(dsge.estimated_names.join(","))
         .chain((0..np).map(|j| (0..n).map(|k| format!("{:.17e}", r.particles[(k, j)])).collect::<Vec<_>>().join(",")))
         .collect::<Vec<_>>()
@@ -512,6 +523,6 @@ pub(crate) fn run_dsmh(
         "acceptance": r.acceptance, "posterior": table, "seconds": t.elapsed().as_secs_f64(),
     });
     std::fs::write(&rpath, serde_json::to_string_pretty(&*results)?)?;
-    println!("Results written to {}", rpath.display());
+    crate::progress::note(format!("Results written to {}", rpath.display()));
     Ok(means)
 }

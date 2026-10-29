@@ -1,0 +1,13 @@
+var y c;
+varexo e u;
+parameters a b p_unused;
+a=0.9; b=0.5; p_unused=1;
+model;
+y = a*y(-1) + max(e, 0);
+c = b*c(-1) + u;
+end;
+varobs y;
+osr_params a;
+osr_params b;
+shocks; var e=1; var u=1; end;
+stoch_simul(order=1, irf=0, aim_solver);

@@ -198,7 +198,7 @@ fn forecasts_with_observation_trends_match_detrended_run() {
              conditional_forecast_paths;\nvar x;\nperiods 1:1, 2:2;\nvalues {};\nend;\n\
              conditional_forecast(parameter_set=posterior_mode, controlled_varexo=(ex), periods=5, replic=20) x z w;\n",
             if trend { "observation_trends;\nx (g);\nend;\n" } else { "" },
-            if trend { "0.3+0.015*121, 0.3+0.015*122" } else { "0.3, 0.3" }
+            if trend { "(0.3+0.015*121), (0.3+0.015*122)" } else { "0.3, 0.3" }
         )
     };
     let files = vec![("trended.csv", trended), ("detrended.csv", detrended)];

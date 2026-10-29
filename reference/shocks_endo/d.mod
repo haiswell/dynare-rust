@@ -1,0 +1,28 @@
+// deterministic shocks and mshocks with endogenous / exogenous variables, before and after steady
+var y c;
+varexo e u;
+parameters a;
+a = 0.5;
+model;
+c = 0.4*c(-1) + 1 + u;
+y = a*y(-1) + c + e;
+end;
+initval;
+y = 1;
+c = 2;
+e = 0;
+u = 0.5;
+end;
+shocks;
+var e; periods 1; values (y);
+end;
+steady;
+shocks;
+var e; periods 2:3; values (y/10);
+var u; periods 4; values (c+u);
+end;
+mshocks;
+var u; periods 5; values (1+y/10);
+end;
+perfect_foresight_setup(periods=8);
+perfect_foresight_solver;

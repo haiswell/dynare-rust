@@ -93,34 +93,33 @@ pub fn kalman_options(o: &Options, k: &mut KalmanOptions) {
     // dynare_estimation_init.m:546-550 resets options_.noconstant = 0 in both branches: every
     // estimation / smoother call runs with the constant of the measurement equation
     k.noconstant = false;
+    if let Some(b) = bool_opt(o, "use_univariate_filters_if_singularity_is_detected") {
+        k.use_univariate_filters_if_singularity_is_detected = b; // options_ of estimation/sensitivity/shock_decomposition
+    }
     k.smoother_singularity_error = !bool_opt(o, "use_univariate_smoother_if_singularity_is_detected").unwrap_or(false)
         && !bool_opt(o, "noprint").unwrap_or(false);
 }
 
 /// dynare_estimation_1.m: does the classical (frequentist) smoother run after the mode
-/// finding / MCMC? Dynare runs it unless the Bayesian smoother ran (`smoother` with an
-/// MCMC), when `frequentist_smoother` is true (its default). dynare-rust keeps its own default
-/// (the classical smoother only when `smoother` or `filtered_vars` is requested, plus at the
-/// posterior mean after an MCMC with `smoother`) unless `frequentist_smoother` is given:
-/// `false` skips it (except the `mode_compute = 0` smoother-only run, which Dynare does before
-/// this test), `true` runs it whatever `smoother` says.
+/// finding / MCMC? Dynare skips it only after the Bayesian smoother (`smoother` with an
+/// MCMC; dynare-rust evaluates that one at the posterior mean through the same code, so
+/// it still runs), with `partial_information` or `order > 1`, or when
+/// `frequentist_smoother` is false (default true). The `mode_compute = 0` smoother-only
+/// run is done before this test in Dynare and is not affected by `frequentist_smoother`.
 pub fn classical_smoother(o: &Options, has_mcmc: bool, smoother_only: bool) -> bool {
-    let requested = flag(o, "smoother") || flag(o, "filtered_vars");
     if smoother_only || (has_mcmc && flag(o, "smoother")) {
-        return requested;
+        return true;
     }
-    bool_opt(o, "frequentist_smoother").unwrap_or(requested)
+    if flag(o, "partial_information") || num(o, "order").is_some_and(|n| n > 1.0) {
+        return false;
+    }
+    bool_opt(o, "frequentist_smoother").unwrap_or(true)
 }
 
-/// plot_classical_smoother_results.m runs with the frequentist smoother (Dynare's branch);
-/// dynare-rust's default plots it without an MCMC when `smoother` is set.
+/// plot_classical_smoother_results.m runs with the frequentist smoother (not after the
+/// Bayesian smoother, i.e. `smoother` with an MCMC).
 pub fn plot_classical_smoother(o: &Options, has_mcmc: bool) -> bool {
-    let fs = bool_opt(o, "frequentist_smoother");
-    if has_mcmc {
-        !flag(o, "smoother") && fs == Some(true)
-    } else {
-        fs.unwrap_or(true) && (flag(o, "smoother") || fs == Some(true))
-    }
+    !(has_mcmc && flag(o, "smoother")) && bool_opt(o, "frequentist_smoother").unwrap_or(true)
 }
 
 fn flag(o: &Options, k: &str) -> bool {

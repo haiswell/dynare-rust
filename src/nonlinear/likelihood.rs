@@ -55,8 +55,8 @@ impl NonlinearModel {
         seed: u64,
     ) -> Result<Self> {
         if !(1..=3).contains(&order) {
-            // Dynare 7.2 runs order > 3 through the k-order solver (`use_k_order_solver`); the
-            // k-order rules of dynare-rust stop at order 3
+            // Dynare 7.2 runs order > 3 through `local_state_space_iteration_k`, which
+            // dynare-rust does not port (its particle filters stop at order 3)
             bail!("non_linear_dsge_likelihood: dynare-rust supports order 2 or 3 (got {order})");
         }
         let pp = dsge.varobs.len();

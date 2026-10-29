@@ -393,6 +393,64 @@ fn prior_name(s: PriorShape) -> &'static str {
     }
 }
 
+/// The row names and blocks of the posterior tables (`GetPosteriorParametersStatistics.m`,
+/// `mcmc_diagnostics.m`).
+fn table_spec(mf: &ModFile, est: &[EstimatedParam], names: &[String]) -> crate::driver::TableSpec {
+    let m = &mf.model;
+    let short: Vec<String> = est
+        .iter()
+        .enumerate()
+        .map(|(k, e)| match e.kind {
+            EstimatedKind::Param(_) => names[k].clone(),
+            EstimatedKind::StdErr(i) => m.exo_names[i].clone(),
+            EstimatedKind::Corr(a, b) => format!("{},{}", m.exo_names[a], m.exo_names[b]),
+            EstimatedKind::MeStdErr(i) => m.endo_names[i].clone(),
+            EstimatedKind::MeCorr(a, b) => format!("{},{}", m.endo_names[a], m.endo_names[b]),
+            EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => String::new(),
+        })
+        .collect();
+    let ifac_names: Vec<String> = est
+        .iter()
+        .enumerate()
+        .map(|(k, e)| match e.kind {
+            EstimatedKind::Param(_) => names[k].clone(),
+            EstimatedKind::StdErr(i) => format!("SE_{}", m.exo_names[i]),
+            EstimatedKind::Corr(a, b) => format!("CC_{}_{}", m.exo_names[a], m.exo_names[b]),
+            EstimatedKind::MeStdErr(i) => format!("SE_EOBS_{}", m.endo_names[i]),
+            EstimatedKind::MeCorr(a, b) => format!("CC_EOBS_{}_{}", m.endo_names[a], m.endo_names[b]),
+            EstimatedKind::Skew(_) | EstimatedKind::InitState(_) => String::new(),
+        })
+        .collect();
+    let pick = |f: fn(&EstimatedKind) -> bool| -> Vec<usize> { (0..est.len()).filter(|&k| f(&est[k].kind)).collect() };
+    let mut width = 0usize;
+    if est.iter().any(|e| matches!(e.kind, EstimatedKind::Param(_))) {
+        width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+    }
+    for (k, e) in est.iter().enumerate() {
+        if !matches!(e.kind, EstimatedKind::Param(_)) {
+            width = width.max(match e.kind {
+                EstimatedKind::StdErr(i) => m.exo_names[i].chars().count(),
+                EstimatedKind::MeStdErr(i) => m.endo_names[i].chars().count(),
+                EstimatedKind::Corr(a, b) => m.exo_names[a].chars().count() + m.exo_names[b].chars().count(),
+                EstimatedKind::MeCorr(a, b) => m.endo_names[a].chars().count() + m.endo_names[b].chars().count(),
+                _ => short[k].chars().count(),
+            });
+        }
+    }
+    crate::driver::TableSpec {
+        ifac_names,
+        short,
+        sections: vec![
+            ("parameters", pick(|k| matches!(k, EstimatedKind::Param(_)))),
+            ("standard deviation of shocks", pick(|k| matches!(k, EstimatedKind::StdErr(_)))),
+            ("standard deviation of measurement errors", pick(|k| matches!(k, EstimatedKind::MeStdErr(_)))),
+            ("correlation of shocks", pick(|k| matches!(k, EstimatedKind::Corr(..)))),
+            ("correlation of measurement errors", pick(|k| matches!(k, EstimatedKind::MeCorr(..)))),
+        ],
+        width,
+    }
+}
+
 /// The estimation table of `display_estimation_results_table.m`.
 fn results_table(
     mf: &ModFile,
@@ -816,6 +874,13 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
             penalized = false;
         }
     }
+    if let Some(pr) = &bound_priors {
+        // +mom/run.m: check_prior_stderr_corr_skew
+        let kinds: Vec<_> = est.iter().map(|e| e.kind).collect();
+        for w in crate::estimation::prior::check_prior_stderr_corr_skew(&kinds, pr) {
+            out.p(format!("Warning: {w}\n"));
+        }
+    }
     let explicit: Vec<(f64, f64)> = est
         .iter()
         .map(|e| match e.kind {
@@ -1020,8 +1085,8 @@ pub fn setup(mf: &ModFile, blocks: &Blocks, opts: &Options, ctx: &Context, input
                         "method_of_moments: 'datafile' and mod file are not allowed to have the same name; change the name of the 'datafile'!"
                     );
                 }
-                let table =
-                    crate::data::Table::read_csv(&path).with_context(|| format!("reading {}", path.display()))?;
+                let table = crate::data::Table::read(&path, &Default::default())
+                    .with_context(|| format!("reading {}", path.display()))?;
                 table.sample(&mf.varobs, o.first_obs, o.nobs)?
             }
             (None, Some(_)) => crate::dataset::Dataset::load(mf, &ctx.dir, opts)?.sample(&mf.varobs)?,
@@ -1492,6 +1557,7 @@ fn estimate(
                 seed,
                 0,
                 "method_of_moments",
+                &table_spec(mf, &est, &names),
             )? {
                 let mdir = ctx.dir.join(&ctx.fname).join("method_of_moments");
                 std::fs::create_dir_all(&mdir)?;
@@ -1503,11 +1569,10 @@ fn estimate(
                     "posterior_sd": stats.params.iter().map(|p| p.var.sqrt()).collect::<Vec<_>>(),
                 });
                 std::fs::write(mdir.join(format!("{}_mom_mcmc.json", ctx.fname)), serde_json::to_string_pretty(&j)?)?;
-                // xparam1 = get_posterior_parameters('mean', ...): the final results are at the
-                // posterior mean (with mh_posterior_mode_estimation Dynare stops after the MCMC)
-                if !slice_no_mode {
-                    xparam1 = stats.mean.clone();
-                }
+                // xparam1 = get_posterior_parameters('mean', ...): the final results (and the data /
+                // model IRF comparison) are at the posterior mean, also after a slice run without
+                // mode (check_posterior_sampler_options resets mh_posterior_mode_estimation)
+                xparam1 = stats.mean.clone();
             }
         }
     }

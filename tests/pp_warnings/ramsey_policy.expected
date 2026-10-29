@@ -1,0 +1,2 @@
+WARNING: ramsey_policy.mod: line 11, cols 1-54: The 'ramsey_policy' statement is deprecated. Please use 'ramsey_model', 'stoch_simul', and 'evaluate_planner_objective' instead.
+WARNING: Parameter(s) p_unused optimal_policy_discount_factor  not used in the model

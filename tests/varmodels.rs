@@ -136,3 +136,57 @@ fn errors_like_dynare() {
     let e = bad("var y; varexo e; parameters a; a=0.5;\nmodel;\ny = var_expectation(nope) + e;\nend;");
     assert!(e.contains("unknown var_expectation_model"), "{e}");
 }
+
+/// Dynare 7.2 tests/var-expectations/8: `expression = diff(log(x))` (the auxiliary variable of
+/// the VAR's left-hand side), `var_expectation.initialize('varexp')` without ';' (a native
+/// MATLAB statement ends with its line) and `var_expectation.print('varexp')`.
+#[test]
+fn var_expectation_of_diff_log_and_print() {
+    let r = reference("ve_diff_log");
+    let mut mf = parse_mod_file(&refdir().join("ve_diff_log.mod"), &[]).unwrap();
+    let dir = std::env::temp_dir().join(format!("dynare_rs_ve_print_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut ran = Vec::new();
+    for ci in 0..mf.commands.len() {
+        if let Command::Other(n, mut o) = mf.commands[ci].clone()
+            && dynare::varmodels::handles(&n)
+        {
+            o.push(("dir".into(), dynare::modfile::OptValue::Str(dir.to_string_lossy().into_owned())));
+            o.push(("fname".into(), dynare::modfile::OptValue::Str("example1".into())));
+            dynare::varmodels::run(&mut mf, &n, &o).unwrap();
+            ran.push(n);
+        }
+    }
+    assert_eq!(ran, ["var_expectation.initialize", "var_expectation.update", "var_expectation.print"]);
+    let endo: Vec<String> = flat_names(&r["endo_names"]);
+    assert_eq!(mf.model.endo_names, endo, "endo_names");
+    check_params("ve_diff_log", &mf, &r);
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+    let pars = read("example1/model/var-expectations/varexp-parameters.inc");
+    assert!(pars.contains("\nvar_expectation_model_varexp_AUX_DIFF_60_0 = 0.8823529411764706;\n"), "{pars}");
+    let expr = read("example1/model/var-expectations/varexp-expression.inc");
+    let body: Vec<&str> = expr.lines().skip(1).collect();
+    assert_eq!(
+        body,
+        [
+            "var_expectation_model_varexp_constant + var_expectation_model_varexp_AUX_DIFF_60_0*diff(log(x))",
+            " + var_expectation_model_varexp_AUX_UOP_42_0*log(y)",
+            " + var_expectation_model_varexp_AUX_DIFF_32_0*diff(z)",
+            " + var_expectation_model_varexp_AUX_DIFF_60_1*diff(log(x(-1)))",
+            " + var_expectation_model_varexp_AUX_UOP_42_1*log(y(-1))",
+            " + var_expectation_model_varexp_AUX_DIFF_32_1*diff(z(-1))",
+        ]
+    );
+    let ev = read("+example1/+var_expectations/+varexp/evaluate.m");
+    assert!(
+        ev.contains(
+            "ds.varexp = 0.0000000000000000+0.8823529411764706*dbase.x.log().diff()+0.0000000000000000*dbase.y.log()"
+        ),
+        "{ev}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn flat_names(v: &Value) -> Vec<String> {
+    v.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
+}

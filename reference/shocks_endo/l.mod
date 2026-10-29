@@ -1,0 +1,27 @@
+// shocks(learnt_in) and endval(learnt_in) with endogenous variables, after steady
+var y c;
+varexo e u;
+parameters a;
+a = 0.5;
+model;
+c = 0.4*c(-1) + 1 + u;
+y = a*y(-1) + c + e;
+end;
+initval;
+y = 1;
+c = 2;
+e = 0;
+u = 0.5;
+end;
+steady;
+shocks;
+var e; periods 1; values (y/10);
+end;
+shocks(learnt_in=2);
+var e; periods 3:4; values (y/10+c);
+end;
+endval(learnt_in=3);
+u = c/4;
+end;
+perfect_foresight_with_expectation_errors_setup(periods=8);
+perfect_foresight_with_expectation_errors_solver;

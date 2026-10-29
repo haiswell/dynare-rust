@@ -61,9 +61,6 @@ impl<'a> Parser<'a> {
                 [k, ..] => bail!("{}: unknown option '{}' of var", k.loc, k.raw),
             }
         }
-        if o.log && o.deflator.is_some() {
-            bail!("var: the log option cannot be used together with a deflator");
-        }
         Ok(o)
     }
 
@@ -227,9 +224,10 @@ impl<'a> Parser<'a> {
                         walk(r, &det_names)?;
                     }
                 }
-                ModelItem::Local { ast, .. } | ModelItem::Trend { ast, .. } | ModelItem::Deflator { ast, .. } => {
-                    walk(ast, &det_names)?
-                }
+                ModelItem::Local { ast, .. }
+                | ModelItem::Trend { ast, .. }
+                | ModelItem::Deflator { ast, .. }
+                | ModelItem::Preamble { ast, .. } => walk(ast, &det_names)?,
                 ModelItem::Remove { .. } => {}
             }
         }
@@ -480,7 +478,12 @@ impl<'a> Parser<'a> {
                     bail!("{}: shock_paths: expected learnt_in(PERIOD).VARIABLE", t.loc)
                 };
                 let name = scoped_name(scope, vn);
-                out.push(super::Token { tok: super::Tok::Ident(name.clone()), raw: name, loc: t.loc.clone() });
+                out.push(super::Token {
+                    tok: super::Tok::Ident(name.clone()),
+                    raw: name,
+                    loc: t.loc.clone(),
+                    col: t.col,
+                });
                 k = j + 3;
                 continue;
             }
@@ -501,7 +504,12 @@ impl<'a> Parser<'a> {
                     },
                 };
                 let name = scoped_name(scope, vn);
-                out.push(super::Token { tok: super::Tok::Ident(name.clone()), raw: name, loc: t.loc.clone() });
+                out.push(super::Token {
+                    tok: super::Tok::Ident(name.clone()),
+                    raw: name,
+                    loc: t.loc.clone(),
+                    col: t.col,
+                });
                 k += 3;
                 continue;
             }
@@ -546,8 +554,8 @@ impl<'a> Parser<'a> {
             _ => bail!("{loc}: Shock name {name} doesn't exist"),
         };
         if self.commands.is_empty() {
-            let stmt = super::ShockStmt::Var(super::Tgt::Exo(i), v * v);
-            self.shocks.push(stmt);
+            let stmt = super::ShockStmt::Var(super::Tgt::Exo(i), super::PathValue::Num(v * v));
+            self.shocks.push(stmt.clone());
             let block =
                 super::RawStateBlock::Shocks { overwrite: false, stmts: vec![stmt], reset_det: false, det: Vec::new() };
             self.state_blocks.push((0, block));

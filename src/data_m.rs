@@ -6,7 +6,7 @@
 //! ranges, indexing (`A(:,2)`, `x(2:end)`, `x(k) = v`), and the functions `log`, `exp`,
 //! `sqrt`, `abs`, `diff`, `cumsum`, `cumprod`, `sum`, `mean`, `zeros`, `ones`, `nan`/`NaN`,
 //! `log10`, `round`, `floor`, `ceil`, `length`, `numel`, `size`, `transpose`, `vec`,
-//! `min`/`max` (element-wise with two arguments), `repmat`, `isnan`. `clear`, `clc`, `close`,
+//! `min`/`max` (element-wise with two arguments), `repmat`, `reshape(A,m,n)`, `isnan`. `clear`, `clc`, `close`,
 //! `disp` and `format` statements are ignored.
 
 use std::collections::HashMap;
@@ -858,6 +858,16 @@ fn call_function(name: &str, args: &[M]) -> Result<M> {
             }
             _ => bail!("repmat: expected repmat(A, m, n)"),
         },
+        "reshape" => match args {
+            [m, a, b] => {
+                let (r, c) = (scalar(a)? as usize, scalar(b)? as usize);
+                if r * c != m.v.len() {
+                    bail!("reshape: To RESHAPE the number of elements must not change.");
+                }
+                M { r, c, v: m.v.clone() }
+            }
+            _ => bail!("reshape: expected reshape(A, m, n)"),
+        },
         _ => bail!("unknown variable or function '{name}'"),
     })
 }
@@ -908,5 +918,8 @@ mod tests {
         assert_eq!(v["u"].v, vec![3.0, 8.0]);
         assert_eq!(v["v"].v, vec![0.5, 0.25]);
         assert_eq!(v["c"].v, vec![1.0, 2.0, 3.0]);
+        let v = run_script("d = [1 2 3 4 5 6 ...\n7 8 9 10];\nd = reshape(d,5,2)';\ny = d(:,2);\n").unwrap();
+        assert_eq!(v["d"], M { r: 2, c: 5, v: vec![1.0, 6.0, 2.0, 7.0, 3.0, 8.0, 4.0, 9.0, 5.0, 10.0] });
+        assert_eq!(v["y"].v, vec![2.0, 7.0]);
     }
 }

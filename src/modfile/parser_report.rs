@@ -3,7 +3,7 @@
 //! `r.write();`, `ds = dseries(...)`, `ds = [ds dseries(y_e, 2014q3, 'y')]`, parsed into a
 //! [`Stmt`] kept as a `REPORT_STATEMENT` command and run by the driver.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use super::Parser;
 use super::shk::date_at;
@@ -59,8 +59,16 @@ impl<'a> Parser<'a> {
             None => text.join(" "),
         };
         let loc = toks.first().map(|t| t.loc.to_string()).unwrap_or_default();
+        // the functions the reporting driver evaluates (`surgibbs(dseries(...), ...)` is not one)
+        if let Some(k) = (0..toks.len()).find(|&k| {
+            toks[k].ident().is_some_and(|n| !matches!(n, "dseries" | "report" | "dates"))
+                && toks.get(k + 1).is_some_and(|n| n.is("("))
+                && !(k > 0 && toks[k - 1].is("."))
+        }) {
+            bail!("{loc}: function '{}' is not supported", toks[k].raw);
+        }
         let mut p = RepParser { t: toks, i: 0 };
-        let rhs = p.expr()?;
+        let rhs = p.expr().map_err(|e| anyhow!("{loc}: cannot parse `{text}` ({e})"))?;
         if p.i < toks.len() {
             bail!("{loc}: cannot parse `{text}` (at '{}')", toks[p.i].raw);
         }

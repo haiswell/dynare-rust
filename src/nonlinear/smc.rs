@@ -48,8 +48,15 @@ pub fn initialization(
     n: usize,
     seed: u64,
     tag: u64,
+    sampler: &str,
+    verbose: bool,
 ) -> (Mat, Vec<f64>, Vec<f64>) {
     let npar = priors.len();
+    if verbose {
+        println!("Estimation:{sampler}: Initialization...");
+        println!("Estimation:{sampler}: Searching for initial values...");
+    }
+    let t0 = std::time::Instant::now();
     let init: Vec<(Vec<f64>, f64, f64)> = (0..n)
         .into_par_iter()
         .map(|j| {
@@ -65,6 +72,10 @@ pub fn initialization(
             }
         })
         .collect();
+    if verbose {
+        println!("Estimation:{sampler}: Initial values found ({:.2}s)", t0.elapsed().as_secs_f64());
+        println!();
+    }
     (Mat::from_fn(npar, n, |i, j| init[j].0[i]), init.iter().map(|v| v.1).collect(), init.iter().map(|v| v.2).collect())
 }
 
@@ -132,18 +143,16 @@ pub fn hssmc(obj: &dyn Objective, priors: &[Prior], bounds: &Bounds, o: &HssmcOp
     let mut scl = vec![0.0; o.steps];
     let mut ess = vec![0.0; o.steps];
     let mut acpt = vec![0.0; o.steps];
-    if o.verbose {
-        println!("Estimation:hssmc: Initialization...");
-    }
     let t0 = std::time::Instant::now();
-    let (mut particles, mut tlogpost, mut loglik) = initialization(obj, priors, bounds, np, o.seed, HSSMC_TAG);
+    let (mut particles, mut tlogpost, mut loglik) =
+        initialization(obj, priors, bounds, np, o.seed, HSSMC_TAG, "hssmc", o.verbose);
     if o.verbose {
         println!("#Iter.       lambda        ESS          Acceptance rate   scale   resample   seconds");
         println!(
-            "{:3}          {:5.4}     {:9.5E}         {:5.4}        {:4.3}     {:>3}       {:5.2}",
+            "{:3}          {:5.4}     {}         {:5.4}        {:4.3}     {:>3}       {:5.2}",
             1,
             0.0,
-            0.0,
+            crate::analysis::table::fmt_e(0.0, 9, 5).to_uppercase(),
             0.0,
             0.0,
             "no",
@@ -228,10 +237,10 @@ pub fn hssmc(obj: &dyn Objective, priors: &[Prior], bounds: &Bounds, o: &HssmcOp
         acpt[i] = acc_rate;
         if o.verbose {
             println!(
-                "{:3}          {:5.4}     {:9.5E}         {:5.4}        {:4.3}     {:>3}       {:5.2}",
+                "{:3}          {:5.4}     {}         {:5.4}        {:4.3}     {:>3}       {:5.2}",
                 i + 1,
                 phi[i],
-                ess[i],
+                crate::analysis::table::fmt_e(ess[i], 9, 5).to_uppercase(),
                 acpt[i],
                 scl[i],
                 if resampled { "yes" } else { "no" },
@@ -418,7 +427,7 @@ pub fn dime(obj: &dyn Objective, priors: &[Prior], bounds: &Bounds, o: &DimeOpti
     let dft = o.df_proposal_dist;
     let b = dime_bounds(priors, bounds);
     let t0 = std::time::Instant::now();
-    let (p0, _tl, ll) = initialization(obj, priors, bounds, nchain, o.seed, DIME_TAG);
+    let (p0, _tl, ll) = initialization(obj, priors, bounds, nchain, o.seed, DIME_TAG, "dime", o.verbose);
     let mut x: Vec<Vec<f64>> = (0..nchain)
         .map(|j| {
             let mut v: Vec<f64> = (0..ndim).map(|i| p0[(i, j)]).collect();
@@ -534,15 +543,19 @@ pub fn dime(obj: &dyn Objective, priors: &[Prior], bounds: &Bounds, o: &DimeOpti
             prop_mean[d] = wa * prop_mean[d] + wb * nmean[d];
         }
         cumlweight = newcum + o.rho.ln();
-        if o.verbose && (iter == 0 || (iter + 1) % 15 == 0 || iter + 1 == o.niter) {
+        if o.verbose {
+            if iter == 0 || (iter + 1) % 15 == 0 {
+                println!("     #iter.      post.mode     post.std    %accept     lapsed");
+                println!("     ------      ---------     --------    -------     ------");
+            }
             let mx = lprob.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let m = lprob.iter().sum::<f64>() / nchain as f64;
             let sd = (lprob.iter().map(|l| (l - m) * (l - m)).sum::<f64>() / (nchain - 1) as f64).sqrt();
             println!(
-                "{:>11}     {:10.3}     {:.2e}     {:5.2}%     {:5.2}s",
+                "{:>11}     {:10.3}     {}     {:5.2}%     {:5.2}s",
                 format!("{}/{}", iter + 1, o.niter),
                 mx,
-                sd,
+                crate::analysis::table::fmt_e(sd, 1, 2),
                 100.0 * naccepted as f64 / nchain as f64,
                 t0.elapsed().as_secs_f64()
             );

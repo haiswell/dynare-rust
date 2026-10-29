@@ -14,9 +14,12 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
 use super::{ProposalDist, SamplerOptions, Stepper, chol_se, randperm, strictly_inside};
-use crate::estimation::optim::minimize::{initial_inverse_hessian, key_values, kv_num, numgrad_algorithm};
+use crate::estimation::optim::minimize::{
+    gradient_options, initial_inverse_hessian, key_values, kv_num, numgrad_algorithm,
+};
 use crate::estimation::{Bounds, CsminwelOptions, Evaluation, NewratOptions, Objective, csminwel, hessian, newrat};
 use crate::linalg::{Mat, chol_upper, solve};
+use crate::modfile::OptValue;
 
 /// `TaRB_optimizer_wrapper.m`: the objective as a function of one block.
 struct BlockObjective<'a> {
@@ -61,7 +64,12 @@ fn block_minimize(
     let kv = key_values(so.tarb.optim.as_ref(), "tarb optim")?;
     match so.tarb.mode_compute {
         4 => {
-            let mut o = CsminwelOptions { verbose: false, parallel: true, seed, ..Default::default() };
+            let mut o = CsminwelOptions { verbose: false, parallel: true, seed: Some(seed), ..Default::default() };
+            let grad = gradient_options();
+            if let Some(m) = numgrad_algorithm("gradient_method", &OptValue::Num(grad.method), o.analytic)? {
+                o.gradient_method = m;
+            }
+            o.gradient_epsilon = grad.epsilon;
             for (k, v) in &kv {
                 match k.as_str() {
                     "MaxIter" => o.nit = kv_num(k, v)? as usize,
@@ -80,7 +88,12 @@ fn block_minimize(
             Ok(csminwel(obj, x0, &o).x)
         }
         5 => {
-            let mut o = NewratOptions { verbose: false, parallel: true, ..Default::default() };
+            let mut o = NewratOptions {
+                verbose: false,
+                parallel: true,
+                gradient_epsilon: gradient_options().epsilon,
+                ..Default::default()
+            };
             for (k, v) in &kv {
                 match k.as_str() {
                     "MaxIter" => o.nit = kv_num(k, v)? as usize,

@@ -73,6 +73,8 @@ sensitivity(morris=1, namendo=(y,pi), namlagendo=(i,g,u), namexo=(e_g,e_u,e_i), 
 sensitivity(datafile='nk_gsa_data.csv', rmse=1, Nsam=512, nodisplay, graph_format=none);
 @#elseif STAGE == 6
 sensitivity(datafile='nk_gsa_data.csv', rmse=1, lik_only=1, Nsam=512, nodisplay, graph_format=none);
+@#elseif STAGE == 8
+sensitivity(datafile='nk_gsa_data.csv', rmse=1, Nsam=512, prefilter=1, conf_sig=0.8, use_univariate_smoother_if_singularity_is_detected, use_univariate_filters_if_singularity_is_detected=0, nodisplay, graph_format=none);
 @#elseif STAGE == 7
 sensitivity(redform=1, namendo=(y,pi), namlagendo=(i), namexo=(e_i), nodisplay, graph_format=none);
 @#endif

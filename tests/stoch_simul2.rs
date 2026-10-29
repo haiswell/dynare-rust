@@ -215,8 +215,13 @@ fn printout_matches_dynare_logs() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let lines: Vec<&str> = stdout.lines().collect();
             let i = lines.iter().position(|l| l.starts_with("Preprocessing:")).unwrap();
-            let rust: Vec<&str> =
-                lines[i + 1..].iter().copied().filter(|l| !l.starts_with("Total computing time")).collect();
+            let rust: Vec<&str> = lines[i + 1..]
+                .iter()
+                .copied()
+                .filter(|l| {
+                    !l.starts_with("Total computing time") && !(l.starts_with("Note: ") && l.contains("warning(s)"))
+                })
+                .collect();
             let log = std::fs::read_to_string(refdir().join(format!("{model}_c{case}_matlab.log"))).unwrap();
             let ml: Vec<&str> = log.lines().collect();
             let j = ml.iter().position(|l| l.starts_with("Preprocessing time")).unwrap();

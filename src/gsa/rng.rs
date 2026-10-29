@@ -70,6 +70,23 @@ impl MatlabRng {
     }
 }
 
+thread_local! {
+    /// MATLAB's global stream (`RandStream.getGlobalStream`), for the `rand` draws Dynare
+    /// takes from it across commands (csminwel's cliff perturbations).
+    static GLOBAL: std::cell::RefCell<MatlabRng> = std::cell::RefCell::new(MatlabRng::new(0));
+}
+
+/// `set_dynare_seed(seed)`: a fresh global `mt19937ar` stream (`'default'` is seed 0, what
+/// `global_initialization.m` installs at the start of every run).
+pub fn reset_global(seed: u32) {
+    GLOBAL.with(|g| *g.borrow_mut() = MatlabRng::new(seed));
+}
+
+/// Draws from the global stream.
+pub fn with_global<R>(f: impl FnOnce(&mut MatlabRng) -> R) -> R {
+    GLOBAL.with(|g| f(&mut g.borrow_mut()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

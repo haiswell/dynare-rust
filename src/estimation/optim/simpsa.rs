@@ -164,7 +164,14 @@ pub fn simpsa(obj: &dyn Objective, x0: &[f64], lb: &[f64], ub: &[f64], opts: &Si
         }
     };
     let dprint = |it: usize, nf: usize, ymin: f64, yb: f64, t: f64, step: &str| {
-        println!("{it:5}      {nf:5}       {ymin:12.6}     {yb:15.6}      {t:12.6}       {step}");
+        // dprintf('%5.0f      %5.0f       %12.6g     %15.6g      %12.6g       %s', ...)
+        use crate::analysis::table::fmt_g;
+        println!(
+            "{it:5}      {nf:5}       {}     {}      {}       {step}",
+            fmt_g(ymin, 12, 6),
+            fmt_g(yb, 15, 6),
+            fmt_g(t, 12, 6)
+        );
     };
     loop {
         if exitflag != -2 {

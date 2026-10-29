@@ -291,3 +291,54 @@ fn cross_restrictions_fail_as_in_dynare() {
     assert!(e.to_string().contains("cross_restrictions"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `ms_estimation(datafile=<xlsx>, xls_sheet, xls_range)`: the sample read from a sheet/range of
+/// a spreadsheet equals the one from the csv (the spreadsheet reader itself is checked against
+/// Dynare in tests/datafiles.rs).
+#[test]
+fn ms_estimation_reads_xls_sheet_and_range() {
+    let d = tmp("xls");
+    let csv = std::fs::read_to_string(d.join("d2.csv")).unwrap();
+    let mut wb = rust_xlsxwriter::Workbook::new();
+    let junk = wb.add_worksheet();
+    junk.set_name("junk").unwrap();
+    junk.write_string(0, 0, "not the data").unwrap();
+    let ws = wb.add_worksheet();
+    ws.set_name("obs").unwrap();
+    ws.write_string(0, 0, "a title above the range").unwrap();
+    let mut nrow = 0;
+    for (i, line) in csv.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        for (j, cell) in line.split(',').enumerate() {
+            let (r, c) = (2 + i as u32, 1 + j as u16); // from B3
+            match cell.trim().parse::<f64>() {
+                Ok(v) => ws.write_number(r, c, v).unwrap(),
+                Err(_) => ws.write_string(r, c, cell.trim()).unwrap(),
+            };
+        }
+        nrow = i + 1;
+    }
+    // a stray column right of the range
+    ws.write_number(2, 3, 99.0).unwrap();
+    wb.save(d.join("d2x.xlsx")).unwrap();
+
+    let src = std::fs::read_to_string(dir().join("est_default.mod")).unwrap();
+    let sample = |datafile: &str| {
+        let f = d.join("m.mod");
+        std::fs::write(&f, src.replace("datafile=d2,", datafile)).unwrap();
+        let mf = parse_mod_file(&f, &[]).unwrap();
+        let Some(Command::Other(_, o)) =
+            mf.commands.iter().find(|c| matches!(c, Command::Other(n, _) if n == "ms_estimation"))
+        else {
+            panic!("no ms_estimation")
+        };
+        prepare_sample(&mf, o, &d).map(|p| p.z)
+    };
+    let a = sample("datafile=d2,").unwrap();
+    let range = format!("B3:C{}", 2 + nrow);
+    let b = sample(&format!("datafile='d2x.xlsx', xls_sheet=obs, xls_range={range},")).unwrap();
+    assert_eq!((a.nrows(), a.ncols()), (b.nrows(), b.ncols()));
+    assert!(a.iter().zip(b.iter()).all(|(x, y)| x == y));
+    // the default sheet (the first) has no data
+    assert!(sample("datafile='d2x.xlsx',").is_err());
+    let _ = std::fs::remove_dir_all(&d);
+}

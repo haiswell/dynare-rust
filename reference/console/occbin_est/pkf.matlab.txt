@@ -1,0 +1,35 @@
+Starting Dynare (version 7.2).
+Calling Dynare with arguments: nograph
+Starting preprocessing of the model file ...
+Found 6 equation(s).
+Evaluating expressions...
+Computing static model derivatives (order 1).
+Normalizing the static model...
+Finding the optimal block decomposition of the static model...
+3 block(s) found:
+  2 recursive block(s) and 1 simultaneous block(s).
+  the largest simultaneous block has 4 equation(s)
+                                 and 4 feedback variable(s).
+Computing dynamic model derivatives (order 2).
+Normalizing the dynamic model...
+Finding the optimal block decomposition of the dynamic model...
+2 block(s) found:
+  1 recursive block(s) and 1 simultaneous block(s).
+  the largest simultaneous block has 4 equation(s)
+                                 and 4 feedback variable(s).
+Preprocessing completed.
+Preprocessing time: 0h00m00s.
+
+STEADY-STATE RESULTS:
+
+y     		 0
+pi    		 0
+i     		 0.010101
+inot  		 0.010101
+r_nat 		 0
+u_s   		 0
+Initial value of the log posterior (or likelihood): 1393.5176
+OccBin: linear smoother done.
+OccBin smoother iteration 1.
+occbin.DSGE_smoother: smoother converged.
+Total computing time : 0h00m06s

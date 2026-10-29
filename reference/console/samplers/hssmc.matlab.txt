@@ -1,0 +1,36 @@
+Prior distribution for parameter rho has unbounded density!
+Initial value of the log posterior (or likelihood): 983.0463
+Estimation:hssmc: Initialization...
+Estimation:hssmc: Searching for initial values...
+Estimation:hssmc: Initial values found (2.31s)
+
+#Iter.       lambda        ESS          Acceptance rate   scale   resample   seconds
+  1          0.0000     0.00000E+00         0.0000        0.000      no       26.48
+  2          0.0400     2.76848E+00         0.4367        0.525     yes       17.73
+  3          0.1600     1.30655E+02         0.7667        0.549     yes        0.89
+  4          0.3600     1.37134E+02         0.6567        0.576     yes        1.82
+  5          0.6400     1.10556E+02         0.6100        0.605     yes        2.42
+  6          1.0000     1.99290E+02         0.5833        0.635      no        0.93
+
+
+ESTIMATION RESULTS
+
+Log data density is 1292.660504.
+
+parameters
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+alp               0.356       0.3385      0.3324      0.3483     beta       0.0200
+bet               0.993       0.9914      0.9908      0.9922     beta       0.0020
+gam               0.009       0.0046      0.0040      0.0052     norm       0.0030
+logmst            0.000       0.0132      0.0121      0.0143     norm       0.0070
+rho               0.129       0.7851      0.7338      0.8423     beta       0.2230
+phi               0.650       0.6496      0.6218      0.6794     beta       0.0500
+del               0.010       0.0085      0.0070      0.0100     beta       0.0050
+
+standard deviation of shocks
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+e_a               0.035       0.0130      0.0121      0.0141     invg          Inf
+e_m               0.009       0.0036      0.0034      0.0039     invg          Inf
+Total computing time : 0h00m51s

@@ -428,6 +428,8 @@ pub fn option(o: &crate::modfile::Options, key: &str) -> Result<Option<DateOrInd
     Ok(match crate::modfile::opt(o, key) {
         None => None,
         Some(OptValue::Num(v)) => Some(DateOrIndex::Index(*v as i64)),
+        // first_obs = [8]: a one-element vector is the scalar
+        Some(OptValue::Vec(v)) if v.len() == 1 => Some(DateOrIndex::Index(v[0] as i64)),
         Some(OptValue::Str(s)) => Some(DateOrIndex::Date(
             Date::parse_mod(s).ok_or_else(|| anyhow!("option {key} = {s}: not an integer or a date"))?,
         )),

@@ -4,45 +4,48 @@
 //!
 //! As the preprocessor does, the PAC equation (the one that contains `pac_expectation`) is
 //! decomposed into its error correction term `ec*(target(-1) - lhs(-1))` and autoregressive terms
-//! `ar_k*diff(lhs(-k))`; the operators are replaced by auxiliary endogenous variables whose
-//! defining equations are added at the end of the `model` block: the PAC expectation
-//! is a linear combination of the companion state of the auxiliary model (parameters
-//! `h_<pac>_*`), or, without auxiliary model, the recursion of the MCE case (`mce_Z1_<pac>`).
+//! `ar_k*diff(lhs(-k))`; the operators are replaced by auxiliary endogenous variables: the PAC
+//! expectation is a linear combination of the companion state of the auxiliary model
+//! (parameters `h_<pac>_*`), or, without auxiliary model, the recursion of the MCE case
+//! (`mce_Z1_<pac>`). The parser declares the parameters and describes the models
+//! ([`PacSpec`]); the variables and their equations are created in the preprocessor's transform
+//! pass (`model::dtree::pac`), after the auxiliary variables of the diff operators.
 
-use super::{Ast, Cursor, Parser, slice_expr, split_commas};
+use super::{Ast, Cursor, Parser, slice_expr_nums, split_commas};
 use crate::model::SymbolKind;
-use crate::model::dtree::ModelItem;
+use crate::model::dtree::pac::{CompSpec, PacKind, PacSpec};
 use crate::model::expr::{BinaryOp, UnaryOp};
 use crate::modfile::lexer::{Loc, Tok, Token};
 use crate::modfile::{Command, OptValue, SpecialOp};
-use crate::varmodels::pac::{PacComponent, PacModel};
+use crate::varmodels::pac::{PacBgp, PacBgpTerm, PacComponent, PacModel};
 use crate::varmodels::{self as vm, Discount};
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashMap;
 
-pub const PE: &str = "\u{1}pac_expectation:";
-pub const PNS: &str = "\u{1}pac_target_nonstationary:";
+pub use crate::model::dtree::pac::{PE, PNS};
 
 struct PacDecl {
     name: String,
     aux: Option<String>,
     discount: Discount,
-    growth: Option<Ast>,
+    /// The expression and its rank among the preamble expressions of the model's tree.
+    growth: Option<(Ast, usize)>,
     kind: String,
     auxname: Option<String>,
     loc: String,
 }
 
 struct CompDecl {
-    name: String,
+    expr: Ast,
+    pre: usize,
     kind: String,
     auxname: Option<String>,
-    growth: Option<Ast>,
+    growth: Option<(Ast, usize)>,
 }
 
 #[derive(Default)]
 struct InfoDecl {
-    target: String,
+    target: Option<(Ast, usize)>,
     auxname_ns: Option<String>,
     comps: Vec<CompDecl>,
 }
@@ -52,8 +55,10 @@ struct InfoDecl {
 pub(super) struct PacParse {
     decls: Vec<PacDecl>,
     infos: HashMap<String, InfoDecl>,
-    /// Every equation of the model blocks seen in the prepasses (tag, lhs, rhs).
+    /// Every equation of the model blocks seen in the prepasses (tag, lhs, rhs), and the
+    /// text of its numerical constants.
     eqs: Vec<(Option<String>, Ast, Ast)>,
+    eq_nums: Vec<Vec<String>>,
     /// Replacement of the operators: placeholder name -> expression.
     subst: HashMap<String, Ast>,
     /// `eparams.name = value;` structures of the estimation statements, in assignment order.
@@ -62,8 +67,6 @@ pub(super) struct PacParse {
     vars: HashMap<String, Vec<Token>>,
     /// `edata.ez = dseries(NaN, ...);`: series of a dseries variable set to NaN (the residual).
     nan_fields: HashMap<String, Vec<String>>,
-    /// Auxiliary equations to add at the end of the model block.
-    extra: Vec<(Ast, Ast)>,
     models: Vec<PacModel>,
     /// dseries computed when the commands run (`X = simul_backward_model(...)`, `Y = X;`).
     runtime: std::collections::HashSet<String>,
@@ -120,6 +123,8 @@ pub(super) fn placeholder(c: &mut Cursor, loc: &Loc, prefix: &str) -> Result<Ast
 #[allow(dead_code)]
 enum Atom {
     Level(String, i32),
+    /// A unary function of a variable (`log(x(-1))`): its key, lag and expression at `t`.
+    Expr(String, i32, Ast),
     Diff(String, i32),
     Pe(String),
     Pns(String),
@@ -156,6 +161,11 @@ fn lin(a: &Ast, coef: &Ast, kind: KindFn, out: &mut Vec<(Ast, Atom)>) {
             }
         }
         Ast::Un(UnaryOp::Neg, x) => lin(x, &mulc(coef, &num(-1.0)), kind, out),
+        Ast::Un(..) => {
+            if let Ok(Some((e, key, lag))) = vm::key_of(a, kind) {
+                out.push((coef.clone(), Atom::Expr(key, -(lag as i32), e)));
+            }
+        }
         Ast::Bin(BinaryOp::Add, x, y) => {
             lin(x, coef, kind, out);
             lin(y, coef, kind, out);
@@ -174,11 +184,16 @@ fn lin(a: &Ast, coef: &Ast, kind: KindFn, out: &mut Vec<(Ast, Atom)>) {
         Ast::Bin(BinaryOp::Div, x, y) if is_const(y, kind) => {
             lin(x, &bin(BinaryOp::Div, coef.clone(), (**y).clone()), kind, out)
         }
-        Ast::Op(SpecialOp::Diff, args) => {
-            if let Some(Ast::Var { name, lag, .. }) = args.first() {
-                out.push((coef.clone(), Atom::Diff(name.clone(), *lag)));
+        Ast::Op(SpecialOp::Diff, args) => match args.first() {
+            Some(Ast::Var { name, lag, .. }) => out.push((coef.clone(), Atom::Diff(name.clone(), *lag))),
+            // diff(log(x(-1))): the auxiliary variable of the unary function
+            Some(x @ Ast::Un(..)) => {
+                if let Ok(Some((_, key, lag))) = vm::key_of(x, kind) {
+                    out.push((coef.clone(), Atom::Diff(key, -(lag as i32))));
+                }
             }
-        }
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -209,6 +224,138 @@ fn contains_var(a: &Ast, pred: &dyn Fn(&str) -> bool) -> bool {
         Ast::Bin(_, x, y) => contains_var(x, pred) || contains_var(y, pred),
         Ast::Op(_, v) => v.iter().any(|x| contains_var(x, pred)),
     }
+}
+
+/// `decomposeAdditiveTerms`: the additive terms of `a` with their signs.
+fn additive_terms(a: &Ast, sign: f64, out: &mut Vec<(Ast, f64)>) {
+    match a {
+        Ast::Bin(BinaryOp::Add, x, y) => {
+            additive_terms(x, sign, out);
+            additive_terms(y, sign, out);
+        }
+        Ast::Bin(BinaryOp::Sub, x, y) => {
+            additive_terms(x, sign, out);
+            additive_terms(y, -sign, out);
+        }
+        Ast::Un(UnaryOp::Neg, x) => additive_terms(x, -sign, out),
+        _ => out.push((a.clone(), sign)),
+    }
+}
+
+/// Decomposition of a PAC equation with rule of thumb agents (the preprocessor's
+/// `getPacOptimizingShareAndExprNodes`): `rhs = share*(optim) + (1-share)*(non_optim) + ...`.
+struct ShareSplit {
+    share: String,
+    optim: Ast,
+    non_optim: Ast,
+}
+
+fn split_share(rhs: &Ast, kind: KindFn) -> Option<ShareSplit> {
+    let mut terms = Vec::new();
+    additive_terms(rhs, 1.0, &mut terms);
+    let is_pe = |n: &str| n.starts_with(PE);
+    // pac_expectation is additive in the expression: no optimizing share
+    if terms.iter().any(|(t, _)| matches!(t, Ast::Var { name, .. } if is_pe(name))) {
+        return None;
+    }
+    let param = |a: &Ast| match a {
+        Ast::Var { name, .. } if kind(name) == Some(SymbolKind::Param) => Some(name.clone()),
+        _ => None,
+    };
+    let (i, share, optim) = terms.iter().enumerate().find_map(|(i, (t, _))| match t {
+        Ast::Bin(BinaryOp::Mul, x, y) => {
+            if let Some(p) = param(x)
+                && contains_var(y, &is_pe)
+            {
+                Some((i, p, (**y).clone()))
+            } else if let Some(p) = param(y)
+                && contains_var(x, &is_pe)
+            {
+                Some((i, p, (**x).clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })?;
+    terms.remove(i);
+    let one_minus = |a: &Ast| matches!(a, Ast::Bin(BinaryOp::Sub, o, p) if matches!(**o, Ast::Num(v) if v == 1.0) && param(p).as_deref() == Some(share.as_str()));
+    // the remaining terms are the additive part
+    let non_optim = terms.iter().find_map(|(t, _)| match t {
+        Ast::Bin(BinaryOp::Mul, x, y) if one_minus(x) => Some((**y).clone()),
+        Ast::Bin(BinaryOp::Mul, x, y) if one_minus(y) => Some((**x).clone()),
+        _ => None,
+    })?;
+    Some(ShareSplit { share, optim, non_optim })
+}
+
+/// A term `scaling_factor*param*variable` (`param` optional): `(param, variable, factor)`.
+fn scaled_term(a: &Ast, kind: KindFn) -> Option<(Option<String>, String, f64)> {
+    fn walk(a: &Ast, kind: KindFn, p: &mut Option<String>, v: &mut Option<String>, s: &mut f64) -> bool {
+        match a {
+            Ast::Num(x) => {
+                *s *= x;
+                true
+            }
+            Ast::Var { name, .. } if kind(name) == Some(SymbolKind::Param) => p.replace(name.clone()).is_none(),
+            Ast::Var { name, .. } => {
+                !name.starts_with(PE) && !name.starts_with(PNS) && v.replace(name.clone()).is_none()
+            }
+            Ast::Un(UnaryOp::Neg, x) => {
+                *s = -*s;
+                walk(x, kind, p, v, s)
+            }
+            Ast::Bin(BinaryOp::Mul, x, y) => walk(x, kind, p, v, s) && walk(y, kind, p, v, s),
+            Ast::Bin(BinaryOp::Div, x, y) => match **y {
+                Ast::Num(d) => {
+                    *s /= d;
+                    walk(x, kind, p, v, s)
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    let (mut p, mut v, mut s) = (None, None, 1.0);
+    if walk(a, kind, &mut p, &mut v, &mut s) { v.map(|v| (p, v, s)) } else { None }
+}
+
+/// The exogenous terms of a PAC equation (`M_.pac.<m>.optim_additive` in the optimizing
+/// part `share*(...)`, `non_optimizing_behaviour` in `(1-share)*(...)`, `additive` outside),
+/// with the default `bgp` (false) that `pac.initialize` gives them.
+fn bgp_terms(rhs: &Ast, split: Option<&ShareSplit>, skip: &[&String], kind: KindFn) -> Vec<PacBgpTerm> {
+    let mut out = Vec::new();
+    let mut push = |group: &'static str, a: &Ast| {
+        let mut terms = Vec::new();
+        additive_terms(a, 1.0, &mut terms);
+        for (t, sign) in terms {
+            if contains_var(&t, &|n| skip.iter().any(|s| *s == n)) {
+                continue;
+            }
+            if let Some((param, var, s)) = scaled_term(&t, kind) {
+                out.push(PacBgpTerm { group, var, param, scaling: sign * s, bgp: PacBgp::Bool(false) });
+            }
+        }
+    };
+    match split {
+        Some(sp) => {
+            push("optim_additive", &sp.optim);
+            push("non_optimizing_behaviour", &sp.non_optim);
+            let mut terms = Vec::new();
+            additive_terms(rhs, 1.0, &mut terms);
+            let is_share = |a: &Ast| matches!(a, Ast::Var { name, .. } if *name == sp.share);
+            let one_minus = |a: &Ast| matches!(a, Ast::Bin(BinaryOp::Sub, o, p) if matches!(**o, Ast::Num(v) if v == 1.0) && is_share(p));
+            for (t, sign) in terms {
+                let part = matches!(&t, Ast::Bin(BinaryOp::Mul, x, y) if is_share(x) || is_share(y) || one_minus(x) || one_minus(y));
+                if !part {
+                    let t = if sign < 0.0 { Ast::Un(UnaryOp::Neg, Box::new(t)) } else { t };
+                    push("additive", &t);
+                }
+            }
+        }
+        None => push("additive", rhs),
+    }
+    out
 }
 
 fn tex(n: &str) -> String {
@@ -356,6 +503,8 @@ impl<'a> Parser<'a> {
         let args = split_commas(inner);
         let v = match args.first() {
             Some([t]) if t.ident().is_some_and(|n| n.eq_ignore_ascii_case("nan")) => f64::NAN,
+            // NaN(n, 1): a column of NaN
+            Some([t, p, ..]) if t.ident().is_some_and(|n| n.eq_ignore_ascii_case("nan")) && p.is("(") => f64::NAN,
             Some(a) => self.eval_tokens(a)?,
             None => bail!("{loc}: {var}.{field} = dseries(...): expected a value"),
         };
@@ -523,9 +672,10 @@ impl<'a> Parser<'a> {
         !self.pac.decls.is_empty()
     }
 
-    pub(super) fn pac_collect(&mut self, tag: Option<String>, lhs: &Ast, rhs: &Ast) {
+    pub(super) fn pac_collect(&mut self, tag: Option<String>, lhs: &Ast, rhs: &Ast, nums: Vec<String>) {
         if self.pac_pending() {
             self.pac.eqs.push((tag, lhs.clone(), rhs.clone()));
+            self.pac.eq_nums.push(nums);
         }
     }
 
@@ -544,6 +694,74 @@ impl<'a> Parser<'a> {
                 let toks = self.c.statement()?;
                 if vm::PAC_ESTIMATE.contains(&name.as_str()) {
                     return self.pac_estimate_command(name, toks);
+                }
+                if name == vm::PAC_PRINT {
+                    // pac.print(pacname, eqname[, withcalibration])
+                    let args = if toks.len() >= 2 && toks[0].is("(") && toks[toks.len() - 1].is(")") {
+                        split_commas(&toks[1..toks.len() - 1])
+                    } else {
+                        Vec::new()
+                    };
+                    let word = |a: &[Token]| match a {
+                        [t] => match &t.tok {
+                            Tok::Str(s) => Some(s.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let (Some(pac), Some(eq)) = (args.first().and_then(|a| word(a)), args.get(1).and_then(|a| word(a)))
+                    else {
+                        bail!("{loc}: pac.print: expected ('PAC model name', 'equation name'[, withcalibration])")
+                    };
+                    let mut o = vec![(pac, OptValue::Flag), ("eq".into(), OptValue::Str(eq))];
+                    if let Some(a) = args.get(2) {
+                        let v = match a {
+                            [t] if t.is_ident("true") => 1.0,
+                            [t] if t.is_ident("false") => 0.0,
+                            _ => self.eval_tokens(a)?,
+                        };
+                        o.push(("withcalibration".into(), OptValue::Num(v)));
+                    }
+                    self.commands.push(Command::Other(name, o));
+                    return Ok(());
+                }
+                if name == vm::PAC_BGP_SET {
+                    // pac.bgp.set(pacmodel, paceq, variable, nonzeromean)
+                    let args = if toks.len() >= 2 && toks[0].is("(") && toks[toks.len() - 1].is(")") {
+                        split_commas(&toks[1..toks.len() - 1])
+                    } else {
+                        Vec::new()
+                    };
+                    let word = |a: &[Token]| match a {
+                        [t] => match &t.tok {
+                            Tok::Str(s) => Some(s.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let (Some(pac), Some(eq), Some(var), Some(val), 4) = (
+                        args.first().and_then(|a| word(a)),
+                        args.get(1).and_then(|a| word(a)),
+                        args.get(2).and_then(|a| word(a)),
+                        args.get(3),
+                        args.len(),
+                    ) else {
+                        bail!("{loc}: pac.bgp.set: expected ('PAC model name', 'equation name', 'variable', value)")
+                    };
+                    // MATLAB's true/false are logical, any other value is numeric
+                    let v = match &val[..] {
+                        [t] if t.is_ident("true") => ("logical".to_string(), OptValue::Num(1.0)),
+                        [t] if t.is_ident("false") => ("logical".to_string(), OptValue::Num(0.0)),
+                        a => ("value".to_string(), OptValue::Num(self.eval_tokens(a)?)),
+                    };
+                    let o = vec![
+                        (pac, OptValue::Flag),
+                        ("eq".into(), OptValue::Str(eq)),
+                        ("var".into(), OptValue::Str(var)),
+                        v,
+                    ];
+                    self.commands.push(Command::Other(name, o));
+                    return Ok(());
                 }
                 if !matches!(name.as_str(), vm::PAC_INITIALIZE | vm::PAC_UPDATE | vm::PAC_MCE) {
                     bail!("{loc}: {name} is not supported");
@@ -591,7 +809,11 @@ impl<'a> Parser<'a> {
                     Some(t) => Discount::Value(self.eval_tokens(t)?),
                 };
                 let growth = match get("growth") {
-                    Some(t) => Some(slice_expr(t)?),
+                    Some(t) => {
+                        let (a, nums) = slice_expr_nums(t)?;
+                        let pre = self.preamble(a.clone(), nums);
+                        Some((a, pre))
+                    }
                     None => None,
                 };
                 let kind = match get("kind") {
@@ -636,32 +858,37 @@ impl<'a> Parser<'a> {
                             _ => bail!("{loc}: pac_target_info: expected a name"),
                         }
                     };
+                    // the expressions are parsed into the model's tree at their place
+                    let expr = |p: &mut Self| -> Result<(Ast, usize)> {
+                        let (a, nums) = slice_expr_nums(rest)?;
+                        let pre = p.preamble(a.clone(), nums);
+                        Ok((a, pre))
+                    };
                     match k.to_ascii_lowercase().as_str() {
-                        "target" => info.target = word(rest)?,
+                        "target" => info.target = Some(expr(self)?),
                         "auxname_target_nonstationary" => info.auxname_ns = Some(word(rest)?),
-                        "component" => info.comps.push(CompDecl {
-                            name: word(rest)?,
-                            kind: String::new(),
-                            auxname: None,
-                            growth: None,
-                        }),
+                        "component" => {
+                            let (a, pre) = expr(self)?;
+                            info.comps.push(CompDecl { expr: a, pre, kind: String::new(), auxname: None, growth: None })
+                        }
                         "kind" | "auxname" | "growth" => {
-                            let c = info
-                                .comps
-                                .last_mut()
-                                .ok_or_else(|| anyhow!("{loc}: pac_target_info: '{k}' before the first component"))?;
+                            if info.comps.is_empty() {
+                                bail!("{loc}: pac_target_info: '{k}' before the first component");
+                            }
+                            let g = if k.eq_ignore_ascii_case("growth") { Some(expr(self)?) } else { None };
+                            let c = info.comps.last_mut().unwrap();
                             match k.to_ascii_lowercase().as_str() {
                                 "kind" => c.kind = word(rest)?.to_ascii_lowercase(),
                                 "auxname" => c.auxname = Some(word(rest)?),
-                                _ => c.growth = Some(slice_expr(rest)?),
+                                _ => c.growth = g,
                             }
                         }
                         other => bail!("{loc}: pac_target_info: unknown statement '{other}'"),
                     }
                 }
                 self.c.i += 2; // end ;
-                if info.target.is_empty() {
-                    bail!("{loc}: pac_target_info({name}): the target is missing");
+                if info.target.is_none() {
+                    bail!("{loc}: the block 'pac_target_info({name})' is missing the 'target' statement");
                 }
                 self.pac.infos.insert(name, info);
                 Ok(())
@@ -669,17 +896,13 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The parameters the preprocessor creates in its transform pass (their symbol ids come
+    /// after the auxiliary variables of the diff operators).
     fn pac_declare_params(&mut self, names: &[String], loc: &str) -> Result<()> {
         for n in names {
-            self.b.declare(n, SymbolKind::Param).map_err(|e| anyhow!("{loc}: {e}"))?;
+            self.b.declare_late_param(n).map_err(|e| anyhow!("{loc}: {e}"))?;
             self.labels.push(SymbolKind::Param, tex(n), n.clone());
         }
-        Ok(())
-    }
-
-    fn pac_declare_endo(&mut self, n: &str, loc: &str) -> Result<()> {
-        self.b.declare(n, SymbolKind::Endo).map_err(|e| anyhow!("{loc}: {e}"))?;
-        self.labels.push(SymbolKind::Endo, tex(n), n.to_string());
         Ok(())
     }
 
@@ -709,19 +932,28 @@ impl<'a> Parser<'a> {
         let name = d.name.clone();
         let sk = |n: &str| self.b.symbol(n).map(|s| s.kind);
         // ---- decomposition of the PAC equation
-        let lhs_var = match &lhs {
+        // diff(x), or diff(f(x)) of a unary function: the auxiliary variable that stands for it
+        // (`substituteUnaryOps` runs on the PAC equation before its analysis)
+        let (lhs_var, lhs_expr) = match &lhs {
             Ast::Op(SpecialOp::Diff, a) => match a.first() {
-                Some(Ast::Var { name, lag: 0, .. }) => name.clone(),
+                Some(Ast::Var { name, lag: 0, .. }) => (name.clone(), None),
+                Some(x @ Ast::Un(..)) => match vm::key_of(x, &sk) {
+                    Ok(Some((e, key, 0))) => (key, Some(e)),
+                    _ => bail!("{loc}: PAC equation of {name}: the left hand side must be diff(variable)"),
+                },
                 _ => bail!("{loc}: PAC equation of {name}: the left hand side must be diff(variable)"),
             },
             _ => bail!("{loc}: PAC equation of {name}: the left hand side must be diff(variable)"),
         };
+        // rule of thumb agents: the error correction and autoregressive terms are in the
+        // optimizing part
+        let split = split_share(&rhs, &sk);
         let mut atoms = Vec::new();
-        lin(&rhs, &num(1.0), &sk, &mut atoms);
-        let mut ec: Option<(String, String)> = None; // (param, target)
+        lin(split.as_ref().map_or(&rhs, |s| &s.optim), &num(1.0), &sk, &mut atoms);
+        let mut ec: Option<(String, String, Option<Ast>)> = None; // (param, target, its expression)
         {
             let zp = atoms.iter().find_map(|(c, a)| match a {
-                Atom::Level(n, -1) if *n == lhs_var => param_sign(c, &sk),
+                Atom::Level(n, -1) | Atom::Expr(n, -1, _) if *n == lhs_var => param_sign(c, &sk),
                 _ => None,
             });
             let Some((Some(p), s)) = zp else {
@@ -735,22 +967,29 @@ impl<'a> Parser<'a> {
                 );
             }
             for (c, a) in &atoms {
-                let t = match a {
-                    Atom::Level(n, -1) if *n != lhs_var => n.clone(),
-                    Atom::Pns(m) if *m == name => format!("{PNS}{m}"),
+                let (t, e) = match a {
+                    Atom::Level(n, -1) if *n != lhs_var => (n.clone(), None),
+                    // a unary function of a variable: the auxiliary variable that stands for it
+                    Atom::Expr(k, -1, e) if *k != lhs_var => (k.clone(), Some(e.clone())),
+                    Atom::Pns(m) if *m == name => (format!("{PNS}{m}"), None),
                     _ => continue,
                 };
                 if let Some((Some(q), 1.0)) = param_sign(c, &sk)
                     && q == p
                 {
-                    ec = Some((p.clone(), t));
+                    ec = Some((p.clone(), t, e));
                     break;
                 }
             }
         }
-        let Some((ec_param, mut target)) = ec else {
+        let Some((ec_param, mut target, target_expr)) = ec else {
             bail!("{loc}: PAC equation of {name}: cannot find the target in the error correction term")
         };
+        if target_expr.is_some() && d.aux.is_none() {
+            bail!(
+                "{loc}: PAC model {name}: a target that is a function of a variable is not supported with model consistent expectations"
+            );
+        }
         let mut ar: Vec<Option<String>> = Vec::new();
         for (c, a) in &atoms {
             if let Atom::Diff(n, lag) = a
@@ -776,10 +1015,15 @@ impl<'a> Parser<'a> {
                 })
             })
             .collect::<Result<_>>()?;
-        // ---- auxiliary model
+        let bgp = {
+            let mut skip: Vec<&String> = vec![&ec_param];
+            skip.extend(&ar_params);
+            bgp_terms(&rhs, split.as_ref(), &skip, &sk)
+        };
+        // ---- auxiliary model: its companion variables (keys and expressions at t)
         struct Aux {
             kind: &'static str,
-            vars: Vec<(String, bool)>,
+            vars: Vec<(String, Ast)>,
             lags: usize,
         }
         let aux = match &d.aux {
@@ -789,51 +1033,55 @@ impl<'a> Parser<'a> {
                 match vms.auxiliary_kind(a) {
                     Some("var") => {
                         let m = vms.var(a).unwrap();
-                        Some(Aux {
-                            kind: "var",
-                            vars: m.eqs.iter().map(|e| (e.lhs.clone(), e.lhs_diff)).collect(),
-                            lags: m.max_lag(),
-                        })
+                        Some(Aux { kind: "var", vars: m.companion_exprs(), lags: m.max_lag() })
                     }
                     Some(_) => {
                         let m = vms.trend(a).unwrap();
-                        Some(Aux {
-                            kind: "trend_component",
-                            vars: m.eqs.iter().map(|e| (e.lhs.clone(), false)).collect(),
-                            lags: m.max_lag() + 1,
-                        })
+                        Some(Aux { kind: "trend_component", vars: m.companion_exprs(), lags: m.max_lag() + 1 })
                     }
                     None => bail!("{loc}: PAC model {name}: unknown auxiliary model '{a}'"),
                 }
             }
         };
+        let aux_keys: Vec<usize> = match &aux {
+            Some(a) => a.vars.iter().map(|(k, e)| self.vm_key(k, e)).collect(),
+            None => Vec::new(),
+        };
+        if let Some(e) = &target_expr {
+            self.vm_key(&target, e);
+        }
+        if let Some(e) = &lhs_expr {
+            self.vm_key(&lhs_var, e);
+        }
         let info = self.pac.infos.remove(&name);
         let uses_pns = contains_var(&rhs, &|n| n == format!("{PNS}{name}"));
         if uses_pns && info.is_none() {
             bail!("{loc}: PAC model {name}: pac_target_nonstationary requires a pac_target_info block");
         }
-        // names of the h parameters for a (prefix); layout: (variable, diff, lag) or the constant
-        let layout_of = |aux: &Aux| -> Vec<Option<(String, bool, usize)>> {
+        // what the h parameters multiply: the constant (None) or (expression at t, key, lag)
+        type Lay = Vec<Option<(Ast, String, usize)>>;
+        let layout_of = |aux: &Aux| -> Lay {
             let mut v = Vec::new();
             if aux.kind == "var" {
                 v.push(None);
             }
             for k in 1..=aux.lags {
-                for (n, df) in &aux.vars {
-                    v.push(Some((n.clone(), *df, k)));
+                for (key, e) in &aux.vars {
+                    v.push(Some((e.clone(), key.clone(), k)));
                 }
             }
             v
         };
-        let hnames = |prefix: &str, lay: &[Option<(String, bool, usize)>]| -> Vec<String> {
+        // named after the keys, renamed after the auxiliary variables once the model is built
+        let hnames = |prefix: &str, lay: &Lay| -> Vec<String> {
             lay.iter()
                 .map(|e| match e {
                     None => format!("{prefix}_constant"),
-                    Some((n, df, k)) => format!("{prefix}_var_{}{n}_lag_{k}", if *df { "diff_" } else { "" }),
+                    Some((_, key, k)) => format!("{prefix}_var_{key}_lag_{k}"),
                 })
                 .collect()
         };
-        let expectation = |hp: &[String], lay: &[Option<(String, bool, usize)>], growth: Option<(&Ast, &str)>| -> Ast {
+        let expectation = |hp: &[String], lay: &Lay, growth: Option<(&Ast, &str)>| -> Ast {
             let mut acc: Option<Ast> = None;
             if let Some((g, gp)) = growth {
                 acc = add(acc, bin(BinaryOp::Mul, g.clone(), var(gp, 0, &l0)));
@@ -842,32 +1090,60 @@ impl<'a> Parser<'a> {
                 let pv = var(p, 0, &l0);
                 let term = match e {
                     None => pv,
-                    Some((n, df, k)) => {
-                        let x = var(n, -(*k as i32), &l0);
-                        let x = if *df { Ast::Op(SpecialOp::Diff, vec![x]) } else { x };
-                        bin(BinaryOp::Mul, pv, x)
-                    }
+                    Some((x, _, k)) => bin(BinaryOp::Mul, pv, vm::lagged(x, *k)),
                 };
                 acc = add(acc, term);
             }
             acc.unwrap_or(num(0.0))
         };
+        // `rewrite_aux_variable`: the variable and its transformations, innermost first
+        fn rewrite(a: &Ast) -> (String, Vec<String>) {
+            match a {
+                Ast::Op(SpecialOp::Diff, v) => {
+                    let (n, mut t) = rewrite(&v[0]);
+                    t.push("diff".into());
+                    (n, t)
+                }
+                Ast::Un(op, x) => {
+                    let (n, mut t) = rewrite(x);
+                    t.push(op.name().into());
+                    (n, t)
+                }
+                Ast::Var { name, .. } => (name.clone(), Vec::new()),
+                _ => (String::new(), Vec::new()),
+            }
+        }
+        let lay = aux.as_ref().map(layout_of).unwrap_or_default();
         let mut model = PacModel {
             name: name.clone(),
             eq_name: tag.clone().unwrap_or_default(),
             aux_model: d.aux.clone(),
             aux_type: aux.as_ref().map(|a| a.kind.to_string()).unwrap_or_default(),
             discount: d.discount.clone(),
-            growth: d.growth.clone(),
+            growth: d.growth.as_ref().map(|g| g.0.clone()),
             kind: d.kind.clone(),
             lhs_var: lhs_var.clone(),
+            lhs_expr,
             ec_param,
             ar_params,
+            share: split.as_ref().map(|s| s.share.clone()),
+            non_optimizing: split.as_ref().map(|s| s.non_optim.clone()),
             target: target.clone(),
+            target_expr: target_expr.clone(),
             target_var: String::new(),
             components: Vec::new(),
             aux_var: String::new(),
             h_params: Vec::new(),
+            h_layout: lay
+                .iter()
+                .map(|e| {
+                    e.as_ref().map(|(x, _, k)| {
+                        let (n, t) = rewrite(x);
+                        (n, t, *k)
+                    })
+                })
+                .collect(),
+            h_keys: lay.iter().map(|e| e.as_ref().map(|(_, key, _)| key.clone())).collect(),
             growth_param: None,
             mce_alpha: Vec::new(),
             mce_z: String::new(),
@@ -875,10 +1151,13 @@ impl<'a> Parser<'a> {
             eq_lhs: num(0.0),
             eq_rhs: num(0.0),
             defs: Vec::new(),
+            bgp,
             initialized: false,
         };
+        let gname = format!("{name}_pac_growth_neutrality_correction");
+        let spec_growth = d.growth.as_ref().map(|g| (g.1, gname.clone()));
         let mut pe_subst: Ast;
-        match (&aux, &info) {
+        let kind = match (&aux, &info) {
             // ---- model consistent expectations
             (None, _) => {
                 if info.is_some() {
@@ -888,14 +1167,12 @@ impl<'a> Parser<'a> {
                 }
                 let m = model.ar_params.len() + 1;
                 let alpha: Vec<String> = (1..=m).map(|i| format!("mce_alpha_{name}_{i}")).collect();
-                let zname = format!("mce_Z1_{name}");
-                let gname = format!("{name}_pac_growth_neutrality_correction");
+                let zname = d.auxname.clone().unwrap_or_else(|| format!("mce_Z1_{name}"));
                 let mut newp = alpha.clone();
                 if d.growth.is_some() {
                     newp.insert(0, gname.clone());
                 }
                 self.pac_declare_params(&newp, &loc)?;
-                self.pac_declare_endo(&zname, &loc)?;
                 let beta = match &d.discount {
                     Discount::Param(p) => var(p, 0, &l0),
                     Discount::Value(v) => num(*v),
@@ -922,135 +1199,210 @@ impl<'a> Parser<'a> {
                         add(tail, bin(BinaryOp::Mul, bin(BinaryOp::Mul, al(j), powb(j)), var(&zname, j as i32, &l0)));
                 }
                 let z_rhs = bin(BinaryOp::Sub, bin(BinaryOp::Mul, sum_a, inner), tail.unwrap());
-                self.pac.extra.push((var(&zname, 0, &l0), z_rhs.clone()));
                 model.defs.push((zname.clone(), z_rhs));
-                model.mce_alpha = alpha;
+                model.mce_alpha = alpha.clone();
                 model.mce_z = zname.clone();
                 pe_subst = var(&zname, 0, &l0);
-                if let Some(g) = &d.growth {
+                if let Some((g, _)) = &d.growth {
                     model.growth_param = Some(gname.clone());
                     pe_subst = bin(BinaryOp::Add, bin(BinaryOp::Mul, g.clone(), var(&gname, 0, &l0)), pe_subst);
                 }
+                let discount = match &d.discount {
+                    Discount::Param(p) => p.clone(),
+                    Discount::Value(v) => format!("{v}"),
+                };
+                PacKind::Mce { target: target.clone(), max_lag: m - 1, alpha, discount, auxname: zname }
             }
             // ---- simple target
             (Some(a), None) => {
-                let lay = layout_of(a);
                 let hp = hnames(&format!("h_{name}"), &lay);
                 let auxv = d.auxname.clone().unwrap_or_else(|| format!("pac_expectation_{name}"));
-                let gname = format!("{name}_pac_growth_neutrality_correction");
                 let mut newp = hp.clone();
                 if d.growth.is_some() {
                     newp.insert(0, gname.clone());
                 }
                 self.pac_declare_params(&newp, &loc)?;
-                self.pac_declare_endo(&auxv, &loc)?;
-                let def = expectation(&hp, &lay, d.growth.as_ref().map(|g| (g, gname.as_str())));
-                self.pac.extra.push((var(&auxv, 0, &l0), def.clone()));
+                let def = expectation(&hp, &lay, d.growth.as_ref().map(|g| (&g.0, gname.as_str())));
                 model.defs.push((auxv.clone(), def));
-                model.h_params = hp;
+                model.h_params = hp.clone();
                 model.aux_var = auxv.clone();
                 if d.growth.is_some() {
-                    model.growth_param = Some(gname);
+                    model.growth_param = Some(gname.clone());
                 }
                 pe_subst = var(&auxv, 0, &l0);
+                PacKind::Backward {
+                    is_var: a.kind == "var",
+                    lhs: aux_keys.clone(),
+                    max_lag: a.lags,
+                    h: hp,
+                    auxname: auxv,
+                }
             }
             // ---- composite target
             (Some(a), Some(info)) => {
                 if a.kind != "var" {
                     bail!("{loc}: PAC model {name}: a composite target is not allowed with a trend component model");
                 }
+                if d.growth.is_some() {
+                    bail!(
+                        "{loc}: for PAC model '{name}', it is not possible to declare a 'growth' option in the 'pac_model' command when there is also a 'pac_target_info' block"
+                    );
+                }
                 if info.comps.is_empty() {
                     bail!("{loc}: pac_target_info({name}): no component");
                 }
+                let vns = info.auxname_ns.clone().ok_or_else(|| {
+                    anyhow!("{loc}: the block 'pac_target_info({name})' is missing the 'auxname_target_nonstationary' statement")
+                })?;
+                let sk2 = |n: &str| self.b.symbol(n).map(|s| s.kind);
+                let (target_ast, target_pre) = info.target.clone().unwrap();
+                let tkey = vm::key_of(&target_ast, &sk2).ok().flatten().map(|x| x.1).unwrap_or_default();
                 // the equation of the target
-                let key = info.target.clone();
-                let teq = self
+                let tpos = self
                     .pac
                     .eqs
                     .iter()
-                    .find(|(_, l, _)| matches!(l, Ast::Var { name: n, lag: 0, .. } if *n == key))
-                    .cloned()
-                    .ok_or_else(|| anyhow!("{loc}: pac_target_info({name}): no equation defines the target {key}"))?;
-                let sk2 = |n: &str| self.b.symbol(n).map(|s| s.kind);
-                let spec = vm::eq_spec("target", &teq.1, &teq.2, &sk2, false)
-                    .map_err(|e| anyhow!("{loc}: pac_target_info({name}): {e}"))?;
-                let lay = layout_of(a);
+                    .position(|(_, l, _)| vm::key_of(l, &sk2).ok().flatten().is_some_and(|x| x.1 == tkey && x.2 == 0))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "{loc}: there is no equation whose LHS is equal to the 'target' of 'pac_target_info({name})'"
+                        )
+                    })?;
+                let teq = self.pac.eqs[tpos].clone();
+                // the numbers as written (`coeff_str` prints `.5`)
+                let mut num_texts = Vec::new();
+                fn leaves(a: &Ast, out: &mut Vec<f64>) {
+                    match a {
+                        Ast::Num(v) => out.push(*v),
+                        Ast::Var { .. } => {}
+                        Ast::Un(_, x) => leaves(x, out),
+                        Ast::Bin(_, x, y) => {
+                            leaves(x, out);
+                            leaves(y, out);
+                        }
+                        Ast::Op(_, v) => v.iter().for_each(|x| leaves(x, out)),
+                    }
+                }
+                let mut vals = Vec::new();
+                leaves(&teq.1, &mut vals);
+                leaves(&teq.2, &mut vals);
+                if let Some(texts) = self.pac.eq_nums.get(tpos).filter(|t| t.len() == vals.len()) {
+                    num_texts = vals.into_iter().zip(texts.iter().cloned()).collect();
+                }
+                let spec = vm::eq_spec("target", &teq.1, &teq.2, &sk2, true).map_err(|_| {
+                    anyhow!(
+                        "{loc}: the model equation defining the 'target' of 'pac_target_info({name})' is not of the right form (should be a linear combination of endogenous variables)"
+                    )
+                })?;
+                let ckeys: Vec<(String, Ast)> = info
+                    .comps
+                    .iter()
+                    .map(|c| {
+                        vm::key_of(&c.expr, &sk2)
+                            .ok()
+                            .flatten()
+                            .filter(|x| x.2 == 0)
+                            .map(|x| (x.1, x.0))
+                            .ok_or_else(|| anyhow!("{loc}: pac_target_info({name}): a component must be a variable"))
+                    })
+                    .collect::<Result<_>>()?;
+                if let Some(t) = spec.terms.iter().find(|t| t.lag != 0 || !ckeys.iter().any(|(k, _)| *k == t.var)) {
+                    bail!(
+                        "{loc}: the model equation defining the 'target' of 'pac_target_info({name})' contains a variable ({}) that is not declared as a 'component'",
+                        t.var
+                    );
+                }
                 let mut comps = Vec::new();
+                let mut cspecs = Vec::new();
                 let mut pe_sum: Option<Ast> = None;
                 let mut ns_sum: Option<Ast> = None;
                 let mut newp = Vec::new();
-                let mut newe = Vec::new();
-                let mut extra = Vec::new();
                 for (i, c) in info.comps.iter().enumerate() {
+                    let (ckey, cexpr) = &ckeys[i];
                     let mut coef: Option<Ast> = None;
-                    for t in spec.terms.iter().filter(|t| t.var == c.name && t.lag == 0) {
+                    for t in spec.terms.iter().filter(|t| t.var == *ckey) {
                         coef = add(coef, t.coef.clone());
                     }
                     let coef = coef.ok_or_else(|| {
-                        anyhow!("{loc}: pac_target_info({name}): component {} is not in the equation of {key}", c.name)
+                        anyhow!(
+                            "{loc}: a 'component' of 'pac_target_info({name})' does not appear in the model equation defining the 'target'"
+                        )
                     })?;
-                    if !a.vars.iter().any(|(v, _)| *v == c.name) {
+                    if c.auxname.is_none() {
                         bail!(
-                            "{loc}: pac_target_info({name}): component {} is not a variable of the auxiliary model",
-                            c.name
+                            "{loc}: the block 'pac_target_info({name})' is missing the 'auxname' statement in some 'component'"
                         );
                     }
                     if !matches!(c.kind.as_str(), "ll" | "dd" | "dl") {
                         bail!(
-                            "{loc}: pac_target_info({name}): kind declaration is mandatory for each component (ll, dd or dl)"
+                            "{loc}: the block 'pac_target_info({name})' is missing the 'kind' statement in some 'component'"
                         );
                     }
+                    if c.kind == "ll" && c.growth.is_some() {
+                        bail!(
+                            "{loc}: in the block 'pac_target_info({name})', a component of 'kind ll' (i.e. stationary) has a 'growth' option. This is not permitted."
+                        );
+                    }
+                    self.vm_key(ckey, cexpr);
                     let hp = hnames(&format!("h_{name}_component{}", i + 1), &lay);
-                    let auxv =
-                        c.auxname.clone().unwrap_or_else(|| format!("pac_expectation_{name}_component{}", i + 1));
+                    let auxv = c.auxname.clone().unwrap();
                     let gname = format!("{name}_component{}_pac_growth_neutrality_correction", i + 1);
                     newp.extend(hp.iter().cloned());
                     if c.growth.is_some() {
                         newp.push(gname.clone());
                     }
-                    newe.push(auxv.clone());
-                    let def = expectation(&hp, &lay, c.growth.as_ref().map(|g| (g, gname.as_str())));
-                    extra.push((auxv.clone(), def.clone()));
+                    let def = expectation(&hp, &lay, c.growth.as_ref().map(|g| (&g.0, gname.as_str())));
                     model.defs.push((auxv.clone(), def));
                     pe_sum = add(pe_sum, bin(BinaryOp::Mul, coef.clone(), var(&auxv, 0, &l0)));
                     if c.kind != "ll" {
-                        ns_sum = add(ns_sum, bin(BinaryOp::Mul, coef.clone(), var(&c.name, 0, &l0)));
+                        ns_sum = add(ns_sum, bin(BinaryOp::Mul, coef.clone(), cexpr.clone()));
                     }
+                    cspecs.push(CompSpec {
+                        expr: c.pre,
+                        ll: c.kind == "ll",
+                        h: hp.clone(),
+                        growth: c.growth.as_ref().map(|g| (g.1, gname.clone())),
+                        auxname: auxv.clone(),
+                    });
                     comps.push(PacComponent {
-                        endo: c.name.clone(),
+                        endo: ckey.clone(),
+                        endo_key: ckey.clone(),
+                        num_texts: num_texts.clone(),
                         kind: c.kind.clone(),
                         coef,
-                        growth: c.growth.clone(),
+                        growth: c.growth.as_ref().map(|g| g.0.clone()),
                         auxname: auxv,
                         h_params: hp,
                         growth_param: c.growth.as_ref().map(|_| gname),
                     });
                 }
+                if info.comps.iter().all(|c| c.kind == "ll") {
+                    bail!(
+                        "{loc}: the block 'pac_target_info({name})' must contain at least one nonstationary component (i.e. of 'kind' equal to either 'dd' or 'dl')."
+                    );
+                }
+                model.defs.push((vns.clone(), ns_sum.unwrap_or(num(0.0))));
+                model.vns = vns.clone();
                 if uses_pns {
-                    let v = info.auxname_ns.clone().ok_or_else(|| {
-                        anyhow!("{loc}: pac_target_info({name}): auxname_target_nonstationary is missing")
-                    })?;
-                    newe.push(v.clone());
-                    let def = ns_sum.clone().unwrap_or(num(0.0));
-                    extra.push((v.clone(), def.clone()));
-                    model.defs.push((v.clone(), def));
-                    model.vns = v.clone();
-                    self.pac.subst.insert(format!("{PNS}{name}"), var(&v, -1, &l0));
-                    target = v;
+                    self.pac.subst.insert(format!("{PNS}{name}"), var(&vns, -1, &l0));
+                    target = vns.clone();
                 }
                 self.pac_declare_params(&newp, &loc)?;
-                for e in &newe {
-                    self.pac_declare_endo(e, &loc)?;
-                }
-                for (n, def) in extra {
-                    self.pac.extra.push((var(&n, 0, &l0), def));
-                }
                 model.target = target.clone();
-                model.target_var = key;
+                model.target_var = tkey;
                 model.components = comps;
                 pe_subst = pe_sum.unwrap();
+                PacKind::Composite {
+                    is_var: true,
+                    lhs: aux_keys.clone(),
+                    max_lag: a.lags,
+                    target: target_pre,
+                    vns,
+                    comps: cspecs,
+                }
             }
-        }
+        };
+        self.b.pac.models.push(PacSpec { name: name.clone(), growth: spec_growth, kind });
         if model.vns.is_empty() {
             self.pac.subst.remove(&format!("{PNS}{name}"));
         }
@@ -1081,22 +1433,6 @@ impl<'a> Parser<'a> {
             Ast::Op(o, v) => Ast::Op(o, v.into_iter().map(|x| self.pac_expand(x)).collect::<Result<_>>()?),
             other => other,
         })
-    }
-
-    /// End of a model block: the equations of the auxiliary variables.
-    pub(super) fn pac_flush(&mut self) -> Result<()> {
-        for (lhs, rhs) in std::mem::take(&mut self.pac.extra) {
-            self.b.items.push(ModelItem::Equation {
-                lhs: lhs.clone(),
-                rhs: Some(rhs.clone()),
-                nums: Vec::new(),
-                tags: Vec::new(),
-                line: 0,
-            });
-            let (l, r) = (self.resolve_ast(&lhs)?, self.resolve_ast(&rhs)?);
-            self.b.add_equation(l, r, Vec::new());
-        }
-        Ok(())
     }
 
     pub(super) fn pac_finish(&mut self) -> Result<Vec<PacModel>> {

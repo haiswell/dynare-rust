@@ -630,14 +630,30 @@ fn compute_phi_tilde_e(ind: &[i32], w: &[f64], dims: &[usize], mu: &Mat, n_sp: u
 
 /// `display_steady_state` (aggregate values and the moments of the states).
 pub fn display_steady_state(model: &Model, h: &HetModel, s: &LoadedSteadyState) {
-    println!("\nSTEADY STATE");
+    print!("{}", steady_state_text(model, h, s));
+}
+
+/// The text `display_steady_state` prints.
+pub fn steady_state_text(model: &Model, h: &HetModel, s: &LoadedSteadyState) -> String {
+    use std::fmt::Write as _;
+    let mut o = String::new();
+    writeln!(o, "\nSTEADY STATE").unwrap();
     if model.orig_endo_nbr > 0 {
-        println!("\nAggregate variables:");
+        writeln!(o, "\nAggregate variables:").unwrap();
+        // char(M_.endo_names) pads every name to the longest one (auxiliary variables included)
+        let w = model.endo_names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
         for i in 0..model.orig_endo_nbr {
-            println!("{} \t\t {}", model.endo_names[i], fmt_g(s.steady_state.agg(&model.endo_names[i]).unwrap()));
+            writeln!(
+                o,
+                "{:<w$} \t\t {}",
+                model.endo_names[i],
+                fmt_g(s.steady_state.agg(&model.endo_names[i]).unwrap())
+            )
+            .unwrap();
         }
     }
-    println!("\nHeterogeneous state variables (unconditional moments):");
+    let mut var_names = Vec::new();
+    let mut moments: Vec<(f64, f64)> = Vec::new();
     if let Some(hist) = &s.steady_state.d_hist {
         let order = &s.steady_state.d_order;
         for (i, name) in order.iter().enumerate() {
@@ -653,49 +669,64 @@ pub fn display_steady_state(model: &Model, h: &HetModel, s: &LoadedSteadyState) 
             let g = s.steady_state.d_grid(name);
             let mean: f64 = marg.iter().zip(g).map(|(m, x)| m * x).sum();
             let sd = marg.iter().zip(g).map(|(m, x)| m * (x - mean).powi(2)).sum::<f64>().sqrt();
-            println!("{name:>12} {mean:>10.4} {sd:>10.4}");
+            var_names.push(name.clone());
+            moments.push((mean, sd));
         }
     }
+    let vals = crate::linalg::Mat::from_fn(moments.len(), 2, |i, j| if j == 0 { moments[i].0 } else { moments[i].1 });
+    let headers = ["".to_string(), "Mean".to_string(), "Std. dev.".to_string()];
+    o += &crate::analysis::table::dyntable(
+        "Heterogeneous state variables (unconditional moments):",
+        &headers,
+        &var_names,
+        &vals,
+        0,
+        0,
+        4,
+    );
+    o
 }
 
 /// `display_residuals`.
 pub fn display_residuals(model: &Model, h: &HetModel, s: &LoadedSteadyState) {
-    println!("\nRESIDUALS (at the steady state)\n");
+    print!("{}", residuals_text(model, h, s));
+}
+
+/// The text `display_residuals` prints.
+pub fn residuals_text(model: &Model, h: &HetModel, s: &LoadedSteadyState) -> String {
+    use std::fmt::Write as _;
+    let mut o = String::new();
+    writeln!(o, "\n\nRESIDUALS (at the steady state)\n").unwrap();
     let tag = |tags: &[Vec<(String, String)>], i: usize| {
         tags.get(i)
             .and_then(|t| t.iter().find(|(k, _)| k == "name"))
             .map(|(_, v)| format!(" ({v})"))
             .unwrap_or_default()
     };
+    // `char(headers)` pads the headers to the longest one
+    let headers = |n: usize, tags: &[Vec<(String, String)>]| -> Vec<String> {
+        let hs: Vec<String> = (0..n).map(|i| format!("Equation {}{}", i + 1, tag(tags, i))).collect();
+        let w = hs.iter().map(|x| x.chars().count()).max().unwrap_or(0);
+        hs.into_iter().map(|x| format!("{x:<w$}")).collect()
+    };
     if model.orig_endo_nbr > 0 {
-        println!("Aggregate equations:");
-        for i in 0..model.orig_endo_nbr {
-            println!("Equation {}{}\t{}", i + 1, tag(&model.equation_tags, i), fmt_g(s.mat.g[i]));
+        writeln!(o, "Aggregate equations:").unwrap();
+        for (i, hd) in headers(model.orig_endo_nbr, &model.equation_tags).iter().enumerate() {
+            writeln!(o, "{hd}\t{}", fmt_g(s.mat.g[i])).unwrap();
         }
-        println!();
+        writeln!(o).unwrap();
     }
-    println!("Heterogenous equations (infinite-norm over the grid):");
+    writeln!(o, "Heterogeneous equations (infinity norm over the grid):").unwrap();
     if let Some(f) = &s.mat.f {
-        for i in 0..h.orig_endo_nbr {
+        for (i, hd) in headers(h.orig_endo_nbr, &h.equations_tags).iter().enumerate() {
             let m = (0..f.ncols()).fold(0.0f64, |a, p| a.max(f[(i, p)].abs()));
-            println!("Equation {}{}\t{}", i + 1, tag(&h.equations_tags, i), fmt_g(m));
+            writeln!(o, "{hd}\t{}", fmt_g(m)).unwrap();
         }
     }
+    o
 }
 
 /// C `%g` (6 significant digits).
 pub fn fmt_g(x: f64) -> String {
-    if x == 0.0 || !x.is_finite() {
-        return if x == 0.0 { "0".into() } else { format!("{x}") };
-    }
-    let e = x.abs().log10().floor() as i32;
-    if !(-5..6).contains(&e) {
-        let s = format!("{:.5e}", x);
-        let (m, ex) = s.split_once('e').unwrap();
-        let m = if m.contains('.') { m.trim_end_matches('0').trim_end_matches('.') } else { m };
-        let ex: i32 = ex.parse().unwrap();
-        return format!("{m}e{}{:02}", if ex < 0 { '-' } else { '+' }, ex.abs());
-    }
-    let s = format!("{:.*}", (5 - e).max(0) as usize, x);
-    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    crate::analysis::table::fmt_g(x, 0, 6)
 }

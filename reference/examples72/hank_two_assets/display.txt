@@ -1,0 +1,58 @@
+STEADY STATE
+
+Aggregate variables:
+piw             		 0
+psiw            		 0
+rb              		 0.0075
+ra              		 0.0125
+tax             		 0.356061
+i               		 0.0125
+psip            		 0
+I               		 0.2
+Q               		 1
+w               		 0.66
+N               		 1
+K               		 10
+div             		 0.14
+p               		 11.2
+pi              		 0
+mc              		 0.985
+r               		 0.0125
+Y               		 1
+
+
+Heterogeneous state variables (unconditional moments):
+          Mean  Std. dev.
+b       1.0400     2.0842
+a      12.9600    12.7682
+
+
+RESIDUALS (at the steady state)
+
+Aggregate equations:
+Equation 1 (New Keynesian Phillips curve) 	-1.11022e-17
+Equation 2 (Equity pricing)               	1.77636e-15
+Equation 3 (Production function)          	0
+Equation 4 (Labor demand)                 	0
+Equation 5 (Tobin Q)                      	0
+Equation 6 (Valuation equation)           	0
+Equation 7 (Price adjustment cost)        	0
+Equation 8 (Capital accumulation)         	-7.21645e-16
+Equation 9 (Resource constraint)          	0
+Equation 10 (Taylor rule)                 	0
+Equation 11 (Government budget constraint)	0
+Equation 12 (Return on liquid assets)     	0
+Equation 13 (Return on illiquid assets)   	-4.51028e-17
+Equation 14 (Fisher equation)             	0
+Equation 15 (Wage inflation)              	0
+Equation 16 (Wage adjustment cost)        	-0
+Equation 17 (Wage Phillips curve)         	-4.85501e-13
+Equation 18 (Asset market clearing)       	2.30475e-10
+
+Heterogeneous equations (infinity norm over the grid):
+Equation 1 (Euler equation for liquid assets)       	0.655037
+Equation 2 (Euler equation for illiquid assets)     	0.590711
+Equation 3 (Budget constraint with adjustment costs)	6.68798e-13
+Equation 4 (Effective labor)                        	3.55271e-15
+Equation 5 (Envelope condition for illiquid assets) 	2.84217e-14
+Equation 6 (Envelope condition for liquid assets)   	1.42109e-14

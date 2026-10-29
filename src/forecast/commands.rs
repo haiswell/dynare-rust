@@ -41,6 +41,10 @@ pub struct EstimationState {
     /// prior_posterior_statistics); read by `shock_decomposition(forecast_type=unconditional)`
     /// for the Bayesian parameter sets.
     pub mean_forecast: Option<super::Forecast>,
+    /// `oo_.PointForecast` (posterior forecasts with shocks, after an MCMC with `forecast`).
+    pub point_forecast: Option<super::Forecast>,
+    /// `oo_.forecast` (forecasts at the mode, estimation without MCMC with `forecast`).
+    pub forecast: Option<super::Forecast>,
     /// `oo_.SmoothedVariables.Mean`, `oo_.SmoothedShocks.Mean` (posterior mean of the smoothed
     /// draws, nobs x orig_endo and nobs x n_exo): what smoother2histval reads after an MCMC.
     pub smoothed_mean: Option<(Mat, Mat)>,
@@ -116,16 +120,16 @@ pub fn forecast_at_mode(
     conf_sig: f64,
     out_dir: &Path,
     fname: &str,
-) -> Result<()> {
+) -> Result<super::Forecast> {
     let f = smoother_forecast(mf, st, x, horizon, conf_sig)?;
     let nobs = st.data.y.ncols();
     let dates = extend_dates(st.dates.as_deref(), st.first_obs - 1 + nobs, horizon);
     let path = out_dir.join(format!("{fname}_forecast.csv"));
     write_forecast_csv(&path, &f, &dates)?;
-    print_forecast(&f, &dates);
-    println!("Forecasts ({:.0}% bands) written to {}", 100.0 * conf_sig, path.display());
+    // (Dynare prints nothing here: the forecasts are in oo_.forecast and the csv)
+    crate::progress::note(format!("Forecasts ({:.0}% bands) written to {}", 100.0 * conf_sig, path.display()));
     save_figures(&forecast_figures(&f), fname, &st.graphs);
-    Ok(())
+    Ok(f)
 }
 
 /// Port of `forecasts.run(var_list_, M_, options_, oo_, 'smoother', dataset_info)` (order 1,
@@ -245,7 +249,7 @@ pub fn posterior_objects(
     seed: u64,
     out_dir: &Path,
     fname: &str,
-) -> Result<(Option<super::Forecast>, Option<(Mat, Mat)>)> {
+) -> Result<PosteriorForecasts> {
     let t = std::time::Instant::now();
     let b = number_of_subdraws(num(o, "sub_draws").map(|v| v as usize), nkeep, chains.len())?;
     let draws = posterior_subsample(chains, first, nkeep, b, seed);
@@ -264,7 +268,9 @@ pub fn posterior_objects(
         state_uncertainty: flag(o, "smoothed_state_uncertainty"),
         filter_covariance: flag(o, "filter_covariance"),
     };
-    println!("\nposterior distributions of smoothed objects and forecasts: {b} draws (sub_draws) ...");
+    crate::progress::note(format!(
+        "posterior distributions of smoothed objects and forecasts: {b} draws (sub_draws) ..."
+    ));
     let p = prior_posterior_statistics(&st.dsge, &st.data, &draws, &po)?;
     let nobs = st.data.y.ncols();
     let sample_dates: Vec<String> = st.dates.clone().unwrap_or_else(|| (1..=nobs).map(|t| t.to_string()).collect());
@@ -288,7 +294,7 @@ pub fn posterior_objects(
             )?;
         }
     }
-    let mean_forecast = p.mean_forecast.as_ref().map(|s| super::Forecast {
+    let as_forecast = |s: &crate::estimation::prior_posterior::PosteriorSummary| super::Forecast {
         vars: (0..n).collect(),
         names: s.names.clone(),
         mean: s.mean.clone(),
@@ -297,7 +303,9 @@ pub fn posterior_objects(
         conf_sig: po.mh_conf_sig,
         lower_me: None,
         upper_me: None,
-    });
+    };
+    let mean_forecast = p.mean_forecast.as_ref().map(as_forecast);
+    let point_forecast = p.point_forecast.as_ref().map(as_forecast);
     for s in p.all() {
         let file = match s.name.as_str() {
             "SmoothedVariables" => "smoothed_variables",
@@ -323,19 +331,29 @@ pub fn posterior_objects(
         }
         // ---- end estimation completion
     }
-    println!(
+    crate::progress::note(format!(
         "Posterior smoothed objects{} ({} draws, {:.1}s) written to {}/{fname}_posterior_*.csv",
         if horizon > 0 { " and forecasts" } else { "" },
         p.draws,
         t.elapsed().as_secs_f64(),
         out_dir.display()
-    );
+    ));
     // oo_.SmoothedVariables.Mean / oo_.SmoothedShocks.Mean (smoother2histval after an MCMC)
     let smoothed_mean = match (&p.smoothed_variables, &p.smoothed_shocks) {
         (Some(v), Some(s)) => Some((v.mean.clone(), s.mean.clone())),
         _ => None,
     };
-    Ok((mean_forecast, smoothed_mean))
+    Ok(PosteriorForecasts { mean_forecast, point_forecast, smoothed_mean })
+}
+
+/// What [`posterior_objects`] leaves in `oo_`.
+pub struct PosteriorForecasts {
+    /// `oo_.MeanForecast`.
+    pub mean_forecast: Option<super::Forecast>,
+    /// `oo_.PointForecast`.
+    pub point_forecast: Option<super::Forecast>,
+    /// `oo_.SmoothedVariables.Mean`, `oo_.SmoothedShocks.Mean`.
+    pub smoothed_mean: Option<(Mat, Mat)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +423,7 @@ pub fn load_data(mf: &ModFile, dir: &Path, o: &Options) -> Result<(LikelihoodDat
         }
     }
     crate::estimation::q3::kalman_options(o, &mut k); // lyapunov, rescale_prediction_error_covariance
+    crate::estimation::est_completion::kalman_options(o, &mut k); // use_univariate_*_if_singularity_is_detected
     let nobs = sample.nrows();
     let dates = table.dates.map(|d| d[first_obs - 1..first_obs - 1 + nobs].to_vec());
     let mut sample = sample;
@@ -413,7 +432,7 @@ pub fn load_data(mf: &ModFile, dir: &Path, o: &Options) -> Result<(LikelihoodDat
     }
     let mut data = LikelihoodData::new(&sample, k);
     data.first_obs = first_obs; // observation_trends
-    crate::estimation::q3::attach(mf, o, &mut data, first_obs)?; // heteroskedastic_filter
+    crate::estimation::q3::attach(mf, o, &mut data, first_obs, ds.init)?; // heteroskedastic_filter
     if num(o, "prefilter").unwrap_or(0.0) == 1.0 {
         data.prefilter(); // makedataset.m: isequal(options_.prefilter, 1)
     }
@@ -705,10 +724,35 @@ pub(crate) fn smoother_inputs<'a>(
     st: Option<&'a EstimationState>,
     o: &Options,
     dir: &Path,
-    own: &'a mut Option<(DsgeModel, LikelihoodData)>,
+    own: &'a mut Option<(Option<DsgeModel>, LikelihoodData)>,
 ) -> Result<(&'a DsgeModel, &'a LikelihoodData, Option<Vec<String>>)> {
     match st {
-        Some(s) if opt(o, "datafile").is_none() => Ok((&s.dsge, &s.data, s.dates.clone())),
+        Some(s) if opt(o, "datafile").is_none() => {
+            // command-level prefilter / use_univariate_*: evaluate_smoother.m re-runs
+            // dynare_estimation_init with the command's options_
+            let set = [
+                "prefilter",
+                "use_univariate_smoother_if_singularity_is_detected",
+                "use_univariate_filters_if_singularity_is_detected",
+            ]
+            .iter()
+            .any(|k| opt(o, k).is_some());
+            if !set {
+                return Ok((&s.dsge, &s.data, s.dates.clone()));
+            }
+            let mut data = s.data.clone();
+            if num(o, "prefilter").unwrap_or(0.0) == 1.0 && data.prefilter_mean.is_none() {
+                data.prefilter();
+                if s.dsge.varobs.iter().any(|&v| s.dsge.level_constant(v, &s.dsge.ys_guess).abs() >= 1e-9) {
+                    bail!(
+                        "The option \"prefilter\" is inconsistent with the non-zero mean measurement equations in the model."
+                    );
+                }
+            }
+            crate::estimation::est_completion::kalman_options(o, &mut data.kalman);
+            *own = Some((None, data));
+            Ok((&s.dsge, &own.as_ref().unwrap().1, s.dates.clone()))
+        }
         _ => {
             let (data, dates, _) = load_data(mf, dir, o).context("no estimation before this command")?;
             let mut dsge = DsgeModel::new(mf, None)?;
@@ -723,9 +767,9 @@ pub(crate) fn smoother_inputs<'a>(
                     "The option \"prefilter\" is inconsistent with the non-zero mean measurement equations in the model."
                 );
             }
-            *own = Some((dsge, data));
+            *own = Some((Some(dsge), data));
             let (d, l) = own.as_ref().unwrap();
-            Ok((d, l, dates))
+            Ok((d.as_ref().unwrap(), l, dates))
         }
     }
 }

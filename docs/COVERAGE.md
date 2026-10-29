@@ -51,9 +51,9 @@ Missing options of ported commands (highlights):
 | `write_latex_dynamic_model` | command | done |  |
 | `write_latex_static_model` | command | done |  |
 | `write_latex_steady_state_model` | command | done |  |
-| `initval` | block | done | `all_values_required` is not checked |
-| `endval` | block | done | `all_values_required` is not checked |
-| `histval` | block | done | `all_values_required` is not checked |
+| `initval` | block | done | `all_values_required` (preprocessor error texts: endogenous / exogenous variables not set; histval says "endval" for exogenous variables as in 7.2; tests/all_values_required.rs) |
+| `endval` | block | done | `all_values_required` (preprocessor error texts: endogenous / exogenous variables not set; histval says "endval" for exogenous variables as in 7.2; tests/all_values_required.rs) |
+| `histval` | block | done | `all_values_required` (preprocessor error texts: endogenous / exogenous variables not set; histval says "endval" for exogenous variables as in 7.2; tests/all_values_required.rs) |
 | `resid` | command | done | `display_static_residuals.m` output, incl. auto equation names; `non_zero` |
 | `initval_file` | command | done | DATE values of `first_obs`/`last_obs`/`first_simulation_period`/`last_simulation_period` (positions in the datafile's dates, as `histvalf_initvalf.m`), checked against Dynare; `histval_file` takes no `nobs`/`last_simulation_period` and reads `M_.orig_maximum_lag` observations (as Dynare 7.2) |
 | `histval_file` | command | done | DATE values of `first_obs`/`last_obs`/`first_simulation_period`/`last_simulation_period` (positions in the datafile's dates, as `histvalf_initvalf.m`), checked against Dynare; `histval_file` takes no `nobs`/`last_simulation_period` and reads `M_.orig_maximum_lag` observations (as Dynare 7.2) |
@@ -78,7 +78,7 @@ Missing options of ported commands (highlights):
 | `perfect_foresight_solver` | command | done | `stack_solve_algo` 1/6 (sim1_lbj), 2/3 (GMRES/BiCGStab with first_iter_lu / block_diagonal_lu / incomplete_lu preconditioners; ILU = complete LU), 7 (stacked dynare_solve, `lmmcp`), 8/9 (ParU/Pardiso: sparse LU), 10 (LU then CGS), `robust_lin_solve`, `check_jacobian_singularity`, `homotopy_marginal_linearization_fallback`, purely backward/forward/static models, all checked against MATLAB; `minimal_solving_periods` is unused in Dynare 7.2 |
 | `simul` | command | done | legacy alias of setup + solver |
 | `shocks` | block | done | stderr/var/cov/corr as expressions (correlations evaluated at the end of their block, as the generated code), measurement errors, `overwrite` (resets `Sigma_e`/`H`/det shocks, not `Skew_e`); deterministic `periods` with integers, ranges, lists and dates (`first_simulation_period`/`last_simulation_period`), `values` with expressions and MATLAB workspace vectors `(xx)`; `learnt_in = INTEGER / DATE` with `values`/`add`/`multiply`; `surprise` (OccBin); `skew`: pruned skewed Kalman filter and, in `stoch_simul`, the `check_model.m` bound, the COSKEWNESS table and closed-skew-normal draws for `periods > 0` (`rand_multivariate_csn.m`; Dynare uses `Skew_e` nowhere else: theoretical moments, IRFs/GIRFs and decision rules ignore it); all checked against Dynare 7.2 (reference/shocks). `shocks(heterogeneity=NAME)`: `M_.heterogeneity(1).Sigma_e` of the heterogeneous shocks (see `heterogeneity_dimension`) |
-| `endval` | block | done | `all_values_required` is not checked |
+| `endval` | block | done | `all_values_required` (preprocessor error texts: endogenous / exogenous variables not set; histval says "endval" for exogenous variables as in 7.2; tests/all_values_required.rs) |
 | `mshocks` | block | done | `relative_to_initval`, `overwrite`, `learnt_in = INTEGER / DATE`, dates in `periods`; options separated by spaces as in the 7.2 grammar (commas also accepted) |
 | `perfect_foresight_with_expectation_errors_setup` | command | done | (`learnt_in` shocks/endval); integer or date `learnt_in`, `first_simulation_period`/`last_simulation_period`, `shock_paths(learnt_in=...)` information sets |
 | `perfect_foresight_with_expectation_errors_solver` | command | done | (`learnt_in` shocks/endval); integer or date `learnt_in`, `first_simulation_period`/`last_simulation_period`, `shock_paths(learnt_in=...)` information sets |
@@ -114,14 +114,14 @@ Missing options of ported commands (highlights):
 | `estimated_params_bounds` | block | done | (checked against Dynare's bounds) |
 | `method_of_moments` | command | done | (GMM, SMM, IRF matching), analytic_standard_errors / analytic_jacobian (order 1 analytic, order 2-3 Richardson differences), MCMC after Bayesian IRF matching (`mh_replic > 0`); `hp_filter`, `one_sided_hp_filter`, `bandpass_filter` (SMM only, as Dynare; get_filtered_time_series.m, filters shared with stoch_simul, no MATLAB reference run for the last two because SMM draws differ); `use_pct` (Parallel Computing Toolbox) is n/a |
 | `model_comparison` | command | done |  |
-| `shock_decomposition` | command | done | `with_epilogue` (epilogue_shock_decomposition.m, checked against Dynare) and `colormap` (MATLAB colormaps by name) |
+| `shock_decomposition` | command | done | `prefilter` and `use_univariate_filters_if_singularity_is_detected` (tests/smoother_cmd_options.rs), `with_epilogue` (epilogue_shock_decomposition.m, checked against Dynare) and `colormap` (MATLAB colormaps by name) |
 | `shock_groups` | block | done |  |
 | `realtime_shock_decomposition` | command | done | `colormap` through plot_shock_decomposition; `with_epilogue` inside the realtime recursion (vintages, pools, conditional / forecast / realtime conditional; tests/realtime_epilogue.rs) |
 | `plot_shock_decomposition` | command | done | `init2shocks`, epilogue variables (`with_epilogue`), `steadystate` (zero line of the levels and the xls column; the y-tick relabelling is not reproduced), `write_xls` (WriteShockDecomp2Excel.m as a real .xlsx), `colormap`, `screen_shocks`, `fig_name` (`SCREEN`, `init2shocks`, `...initval` detail labels); `interactive` (MATLAB uimenus) accepted with a note |
 | `init2shocks` | block | done | (`M_.init2shocks.NAME`, used by plot_shock_decomposition(init2shocks), checked against Dynare) |
-| `initial_condition_decomposition` | command | done |  |
-| `squeeze_shock_decomposition` | command | done |  |
-| `calib_smoother` | command | done | `filter_step_ahead`, `filter_decomposition`, `filter_covariance`, `smoother_redux`, `heteroskedastic_filter` |
+| `initial_condition_decomposition` | command | done | `colormap`, `steadystate` (oo_.dr.ys) and `write_xls` (WriteShockDecomp2Excel workbook, SCREEN grouping) of initial_condition_decomposition as in plot_shock_decomposition (tests/conditional_forecast_sw07.rs) |
+| `squeeze_shock_decomposition` | command | done | `colormap`, `steadystate` (oo_.dr.ys) and `write_xls` (WriteShockDecomp2Excel workbook, SCREEN grouping) of initial_condition_decomposition as in plot_shock_decomposition (tests/conditional_forecast_sw07.rs) |
+| `calib_smoother` | command | done | `filter_step_ahead`, `filter_decomposition`, `filter_covariance`, `smoother_redux`, `heteroskedastic_filter`, `prefilter`, `use_univariate_smoother_if_singularity_is_detected` (also on an existing estimation: the command re-prepares the data; checked against Dynare, tests/smoother_cmd_options.rs) |
 | `forecast` | command | done | (the `forecast` command starts from `M_.endo_histval` with `histval`, runs at `options_.order` 1-3 with simulated bands at order > 1, and takes its horizon from `options_.periods`; `conditional_forecast(parameter_set=calibration)` starts from `M_.endo_histval` with `histval`, e.g. after `smoother2histval`, `tests/conditional_forecast_histval.rs`); `varexo_det` paths in `forecast` (orders 1-2, `tests/exo_det.rs`) |
 | `conditional_forecast` | command | done | (the `forecast` command starts from `M_.endo_histval` with `histval`, runs at `options_.order` 1-3 with simulated bands at order > 1, and takes its horizon from `options_.periods`; `conditional_forecast(parameter_set=calibration)` starts from `M_.endo_histval` with `histval`, e.g. after `smoother2histval`, `tests/conditional_forecast_histval.rs`); `varexo_det` paths in `forecast` (orders 1-2, `tests/exo_det.rs`) |
 | `conditional_forecast_paths` | block | done | (the `forecast` command starts from `M_.endo_histval` with `histval`, runs at `options_.order` 1-3 with simulated bands at order > 1, and takes its horizon from `options_.periods`; `conditional_forecast(parameter_set=calibration)` starts from `M_.endo_histval` with `histval`, e.g. after `smoother2histval`, `tests/conditional_forecast_histval.rs`); `varexo_det` paths in `forecast` (orders 1-2, `tests/exo_det.rs`) |
@@ -138,7 +138,7 @@ Missing options of ported commands (highlights):
 | `osr_params` | command | done | (order-2 welfare, Ramsey with steady_state_model, bounded/order-2 OSR); order >= 3 welfare (k_order_welfare tensors, k_order_mean simulated unconditional welfare with `periods`/`drop`; shocks from ChaCha8 seeded with `--seed`, not MATLAB's randn; tests/policy.rs ramsey_order3_simulated_welfare feeds MATLAB's draws); Ramsey FOCs are built in the preprocessor DataTree emulation, so `AUX_ENDO_LEAD_*` names, equation order and incidence match Dynare |
 | `optim_weights` | block | done | (order-2 welfare, Ramsey with steady_state_model, bounded/order-2 OSR); order >= 3 welfare (k_order_welfare tensors, k_order_mean simulated unconditional welfare with `periods`/`drop`; shocks from ChaCha8 seeded with `--seed`, not MATLAB's randn; tests/policy.rs ramsey_order3_simulated_welfare feeds MATLAB's draws); Ramsey FOCs are built in the preprocessor DataTree emulation, so `AUX_ENDO_LEAD_*` names, equation order and incidence match Dynare |
 | `osr_params_bounds` | block | done | (order-2 welfare, Ramsey with steady_state_model, bounded/order-2 OSR); order >= 3 welfare (k_order_welfare tensors, k_order_mean simulated unconditional welfare with `periods`/`drop`; shocks from ChaCha8 seeded with `--seed`, not MATLAB's randn; tests/policy.rs ramsey_order3_simulated_welfare feeds MATLAB's draws); Ramsey FOCs are built in the preprocessor DataTree emulation, so `AUX_ENDO_LEAD_*` names, equation order and incidence match Dynare |
-| `sensitivity` | command | done | stability, redform, Morris, RMSE; `ppost` (posterior subsample of the MCMC files, also with `rmse`), `load_stab`/`load_redform`/`load_rmse`/`load_ident_files`, `glue` (also as `sensitivity(glue=1)`, which Dynare 7.2's preprocessor rejects), `identification` (map_identification: Morris screening, `morris=2`), the irf/moment calibration mapping |
+| `sensitivity` | command | done | stability, redform, Morris, RMSE; `prefilter`, `loglinear`, `use_univariate_*_if_singularity_is_detected` (data and filter of the rmse/glue smoother; prefilter checked against Dynare, tests/gsa_nk.rs stage 8; loglinear not checked, the NK reference is linear), `nodisplay` (graphs are never displayed), `conf_sig` (accepted; unused by +gsa in Dynare 7.2), `ppost` (posterior subsample of the MCMC files, also with `rmse`), `load_stab`/`load_redform`/`load_rmse`/`load_ident_files`, `glue` (also as `sensitivity(glue=1)`, which Dynare 7.2's preprocessor rejects), `identification` (map_identification: Morris screening, `morris=2`), the irf/moment calibration mapping |
 | `irf_calibration` | block | done | mapped by `sensitivity` (map_calibration.m) and applied by `prior moments(distribution)`/`irfs(distribution)` (endogenous_prior_restrictions.m); applied wherever Dynare 7.2 reads `options_.endogenous_prior_restrictions`: dsge_likelihood.m (and the conditional-likelihood, OccBin and skewed-Kalman branches; info 49, `info(4)` = the summed squared distances, so the mode finders, mode_check, the MCMC and its initialization see them), prior_sampler.m (`prior simulate`: Endogenous prior violation share), `prior moments` (info 49 at the prior mode), stability_mapping.m (infox 49, `irestriction`, the `prior_calib` filtering, `x0`), `method_of_moments` (dropped with Dynare's warning); not used by non_linear_dsge_likelihood.m, DSGE-VAR or identification, as in Dynare (tests/calib_est.rs, reference/calib_est) |
 | `moment_calibration` | block | done | mapped by `sensitivity` (map_calibration.m) and applied by `prior moments(distribution)`/`irfs(distribution)` (endogenous_prior_restrictions.m); applied wherever Dynare 7.2 reads `options_.endogenous_prior_restrictions`: dsge_likelihood.m (and the conditional-likelihood, OccBin and skewed-Kalman branches; info 49, `info(4)` = the summed squared distances, so the mode finders, mode_check, the MCMC and its initialization see them), prior_sampler.m (`prior simulate`: Endogenous prior violation share), `prior moments` (info 49 at the prior mode), stability_mapping.m (infox 49, `irestriction`, the `prior_calib` filtering, `x0`), `method_of_moments` (dropped with Dynare's warning); not used by non_linear_dsge_likelihood.m, DSGE-VAR or identification, as in Dynare (tests/calib_est.rs, reference/calib_est) |
 | `identification` | command | done | `order` 2/3 (pruned state space, Jacobians by finite differences as `analytic_derivation_mode=-1`, 1e-6 from Dynare's analytic ones), `checks_via_subsets`, `gsa_sample_file`, `parameter_set=posterior_*`, `load_ident_files` (the point analysis; Dynare 7.2 itself fails without a saved Monte Carlo) |
@@ -162,7 +162,7 @@ Missing options of ported commands (highlights):
 | `heterogeneity_compute_steady_state` | command | done | port of `compute_steady_state.m` and of the `compute_steady_state_tensor` MEX (time iteration with Fischer-Burmeister complementarity and the trust-region solver of `block_trust_region`, forward iteration of the distribution, aggregation, Broyden calibration of free parameters), same iteration path as MATLAB (policies and distribution to 1e-11, calibrated parameters to 1e-12; Krusell-Smith and HANK one asset, reference/heterogeneity). Same MAT-file input rule as `heterogeneity_load_steady_state` |
 | `rouwenhorst` | matcomm | done | `rouwenhorst(rho, sigma, N, tol, maxiter)` (`mex/sources/heterogeneity/rouwenhorst.f08`), identical to Dynare to 1e-14 (src/heterogeneity/rouwenhorst.rs) |
 | `heterogeneity_solve` | command | done | port of `+heterogeneity/solve.m` (sequence-space Jacobian method: policy impulse responses, `curlyDs`, `curlyYs`, expectation vectors, fake-news matrices `F`, heterogeneous Jacobians `J_ha`, general-equilibrium Jacobians `G`, the aggregate Jacobian `dr.J`) and of the MEX `compute_expected_dx`, `compute_curlyDs`, `compute_expected_y`, `compute_transition_matrices` (sources not distributed; semantics pinned against MATLAB). `dr.G`, `F`, `J_ha`, `curlyYs`, `curlyDs`, `J` and the policy impulse responses match Dynare 7.2 to 1e-12 (Krusell-Smith, HANK one asset; reference/heterogeneity/dump_solve.m, tests/heterogeneity.rs). Result in `HetSession::dr` |
-| `heterogeneity_simulate` | command | done | port of `+heterogeneity/simulate.m`, `simulate_irfs.m`, `simulate_stochastic_shocks.m`, `simulate_news_shocks.m`: IRFs (one-standard-deviation or `relative_irf` unit shocks, `irf_shocks`, variable list, `irf` horizon check), stochastic simulation (`periods`) and news-shock sequences (`shocks` block with `periods`/`values`, `make_ex_` rules, option-compatibility error); IRFs, the convolution given the draws and news paths match Dynare 7.2 to 1e-12. Deviations: no graphs (`plot_irfs.m`/`plot_simulation.m`: `<fname>_IRF_<shock>[k]`, `<fname>_simulation[k]`, `<fname>_det_simulation[k]` via the stoch_simul IRF figures, honouring `nograph`/`graph_format`; no TeX eps-loader file), stochastic draws come from dynare-rust's ChaCha8 stream (MATLAB's `randn` stream is not reproduced); results kept in `HetSession::sim`, not written to files |
+| `heterogeneity_simulate` | command | done | port of `+heterogeneity/simulate.m`, `simulate_irfs.m`, `simulate_stochastic_shocks.m`, `simulate_news_shocks.m`: IRFs (one-standard-deviation or `relative_irf` unit shocks, `irf_shocks`, variable list, `irf` horizon check), stochastic simulation (`periods`) and news-shock sequences (`shocks` block with `periods`/`values`, `make_ex_` rules, option-compatibility error); IRFs, the convolution given the draws and news paths match Dynare 7.2 to 1e-12. Deviations: no graphs (`plot_irfs.m`/`plot_simulation.m`: `<fname>_IRF_<shock>[k]`, `<fname>_simulation[k]`, `<fname>_det_simulation[k]` via the stoch_simul IRF figures, honouring `nograph`/`graph_format`; TeX eps-loader files `<fname>_IRF.tex`, `<fname>_simulation.tex`, `<fname>_det_simulation.tex` with `tex` and `graph_format=eps` identical to Dynare 7.2 (tests/heterogeneity_tex.rs); `print`/`noprint` have no effect, as in Dynare), stochastic draws come from dynare-rust's ChaCha8 stream (MATLAB's `randn` stream is not reproduced); results kept in `HetSession::sim`, not written to files |
 | `var_model` | command | done | VAR family (src/varmodels, parser_vm.rs): AR/A0/constants of the tagged equations (`varmatrices.m`, `trend_component_ar_a0.m`), companion matrices, `var_expectation_model_<m>_*` parameters and the `var_expectation(m)` operator (also `model_name = m`), `time_shift`, `horizon = n / a:b / a:Inf`, `structural`; checked against MATLAB to 1e-12 (`reference/varmodels`, `tests/varmodels.rs`). Dynare 7.2 quirk reproduced: `update_parameters.m` puts the *index* of a parameter in `expression` into alpha |
 | `trend_component_model` | command | done | VAR family (src/varmodels, parser_vm.rs): AR/A0/constants of the tagged equations (`varmatrices.m`, `trend_component_ar_a0.m`), companion matrices, `var_expectation_model_<m>_*` parameters and the `var_expectation(m)` operator (also `model_name = m`), `time_shift`, `horizon = n / a:b / a:Inf`, `structural`; checked against MATLAB to 1e-12 (`reference/varmodels`, `tests/varmodels.rs`). Dynare 7.2 quirk reproduced: `update_parameters.m` puts the *index* of a parameter in `expression` into alpha |
 | `var_expectation_model` | command | done | VAR family (src/varmodels, parser_vm.rs): AR/A0/constants of the tagged equations (`varmatrices.m`, `trend_component_ar_a0.m`), companion matrices, `var_expectation_model_<m>_*` parameters and the `var_expectation(m)` operator (also `model_name = m`), `time_shift`, `horizon = n / a:b / a:Inf`, `structural`; checked against MATLAB to 1e-12 (`reference/varmodels`, `tests/varmodels.rs`). Dynare 7.2 quirk reproduced: `update_parameters.m` puts the *index* of a parameter in `expression` into alpha |
@@ -203,7 +203,7 @@ Missing options of ported commands (highlights):
 | `posterior_function` | command | n/a | run a user MATLAB function on prior/posterior draws: no Rust counterpart (would need a plug-in mechanism) |
 | `generate_trace_plots` | matcomm | done | `trace_plot(options_, M_, estim_params_, TYPE, BLOCK, NAME)` too |
 | `internals` | matcomm | n/a | MATLAB workspace / development helpers; accepted with a note |
-| `prior` | matcomm | done | `table` (checked against Dynare's printout), `plot`, `simulate` (prior mass and BK shares on dynare-rust's draws), `moments` (theoretical moments at the prior mode); `moments(distribution)`, `irfs(distribution)` (dynare-rust's draws, same printout and .mat file), `optimize` |
+| `prior` | matcomm | done | `table` (checked against Dynare's printout), `plot`, `simulate` (prior mass and BK shares on dynare-rust's draws), `moments` (theoretical moments at the prior mode); `moments(distribution)`, `irfs(distribution)` (dynare-rust's draws, same printout and .mat file; tests/q2_prior.rs), `optimize` |
 | `search` | matcomm | n/a | MATLAB workspace / development helpers; accepted with a note |
 | `dplot` | matcomm | n/a | MATLAB workspace / development helpers; accepted with a note |
 | `set_dynare_threads` | matcomm | n/a | MATLAB workspace / development helpers; accepted with a note |
@@ -274,19 +274,19 @@ Missing options of ported commands (highlights):
 
 | option | status |
 |---|---|
-| `all_values_required` | missing |
+| `all_values_required` | done |
 
 ### `endval` (done)
 
 | option | status |
 |---|---|
-| `all_values_required` | missing |
+| `all_values_required` | done |
 
 ### `histval` (done)
 
 | option | status |
 |---|---|
-| `all_values_required` | missing |
+| `all_values_required` | done |
 
 ### `resid` (done)
 
@@ -524,14 +524,14 @@ Missing options of ported commands (highlights):
 | `smoother_periods = INTEGER` | done |
 | `smoother_maxit = INTEGER` | done |
 | `smoother_check_ahead_periods = INTEGER` | done |
-| `smoother_max_check_ahead_periods = INTEGER` | missing |
+| `smoother_max_check_ahead_periods = INTEGER` | done (no effect, as in Dynare 7.2: occbin.setup does not forward it; tests/occbin_est.rs, ref_occbin_setup_opts.json) |
 | `smoother_curb_retrench` | done |
 | `smoother_periodic_solution` | done |
 | `smoother_inversion_filter` | done |
 | `smoother_piecewise_kalman_filter` | done |
-| `smoother_plot` | missing |
-| `smoother_first_period_occbin_update = INTEGER` | missing |
-| `smoother_max_number_of_iterations = INTEGER` | missing |
+| `smoother_plot` | done (no effect, as in Dynare 7.2: occbin.setup does not forward it; tests/occbin_est.rs, ref_occbin_setup_opts.json) |
+| `smoother_first_period_occbin_update = INTEGER` | done (no effect, as in Dynare 7.2: occbin.setup does not forward it; tests/occbin_est.rs, ref_occbin_setup_opts.json) |
+| `smoother_max_number_of_iterations = INTEGER` | done (no effect, as in Dynare 7.2: occbin.setup does not forward it; tests/occbin_est.rs, ref_occbin_setup_opts.json) |
 | `likelihood_periods = INTEGER` | done |
 | `likelihood_maxit = INTEGER` | done |
 | `likelihood_check_ahead_periods = INTEGER` | done |
@@ -541,27 +541,27 @@ Missing options of ported commands (highlights):
 | `likelihood_piecewise_kalman_filter` | done |
 | `likelihood_max_kalman_iterations` | done |
 | `filter_use_relaxation` | done |
-| `filter_particle_draw_states_from_empirical_density` | missing |
-| `filter_particle_state_importance_sampling_pkf_init` | missing |
-| `filter_particle_state_importance_sampling_logpost_crit_threshold = DOUBLE` | missing |
-| `filter_particle_state_importance_sampling_slice_override_iteration = INTEGER` | missing |
-| `filter_particle_state_importance_sampling_slice_burnin = INTEGER` | missing |
-| `filter_particle_initial_state_ergodic_simul` | missing |
-| `filter_particle_diagnostics` | missing |
-| `filter_particle_diagnostics_graph_periods = INTEGER_VECTOR` | missing |
-| `filter_particle_diagnostics_nograph` | missing |
-| `filter_particle_number_of_particles  = INTEGER` | missing |
-| `filter_particle_number_of_shocks_per_particle = INTEGER` | missing |
-| `filter_particle_state_draws   = NUMERICAL_VECTOR` | missing |
-| `particle_filtering` | missing |
-| `filter_particle_use_pkf_updated_state_threshold = INTEGER` | missing |
-| `filter_init_periods_using_particles` | missing |
-| `posterior_importance_sampling` | missing |
-| `posterior_importance_sampling_filter = QUOTED_STRING` | missing |
-| `posterior_importance_sampling_orig_filter = QUOTED_STRING` | missing |
-| `posterior_importance_sampling_sub_draws = INTEGER` | missing |
-| `posterior_importance_sampling_orig_dname = FILENAME` | missing |
-| `posterior_importance_sampling_orig_fname = FILENAME` | missing |
+| `filter_particle_draw_states_from_empirical_density` | done (see particle_filtering) |
+| `filter_particle_state_importance_sampling_pkf_init` | done (see particle_filtering) |
+| `filter_particle_state_importance_sampling_logpost_crit_threshold = DOUBLE` | done (see particle_filtering) |
+| `filter_particle_state_importance_sampling_slice_override_iteration = INTEGER` | done (see particle_filtering) |
+| `filter_particle_state_importance_sampling_slice_burnin = INTEGER` | done (see particle_filtering) |
+| `filter_particle_initial_state_ergodic_simul` | done (see particle_filtering) |
+| `filter_particle_diagnostics` | done (see particle_filtering) |
+| `filter_particle_diagnostics_graph_periods = INTEGER_VECTOR` | done (see particle_filtering) |
+| `filter_particle_diagnostics_nograph` | done (see particle_filtering) |
+| `filter_particle_number_of_particles  = INTEGER` | done (see particle_filtering) |
+| `filter_particle_number_of_shocks_per_particle = INTEGER` | done (see particle_filtering) |
+| `filter_particle_state_draws   = NUMERICAL_VECTOR` | done (see particle_filtering) |
+| `particle_filtering` | done (not forwarded by Dynare 7.2's occbin.setup (options_.occbin.filter keeps its defaults, the ppf particle path is never entered): accepted and ignored with a warning; checked against Dynare (options and PKF likelihood, tests/occbin_particle_options.rs)) |
+| `filter_particle_use_pkf_updated_state_threshold = INTEGER` | done (see particle_filtering) |
+| `filter_init_periods_using_particles` | done (see particle_filtering) |
+| `posterior_importance_sampling` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
+| `posterior_importance_sampling_filter = QUOTED_STRING` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
+| `posterior_importance_sampling_orig_filter = QUOTED_STRING` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
+| `posterior_importance_sampling_sub_draws = INTEGER` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
+| `posterior_importance_sampling_orig_dname = FILENAME` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
+| `posterior_importance_sampling_orig_fname = FILENAME` | done (no effect, as in Dynare 7.2: not forwarded by occbin.setup; occbin.posterior_importance_sampling is never called) |
 
 ### `occbin_solver` (done)
 
@@ -672,7 +672,7 @@ Missing options of ported commands (highlights):
 | `no_posterior_kernel_density` | done (posterior_moments.m densities of pm3 objects and posterior moments, checked against Dynare) |
 | `conditional_variance_decomposition = INTEGER` | done |
 | `filtered_vars` | done |
-| `frequentist_smoother = BOOLEAN` | done (explicit true/false as Dynare; without the option the classical smoother runs only with smoother/filtered_vars) |
+| `frequentist_smoother = BOOLEAN` | done (default true: the classical smoother runs after mode-only/ML estimation and after an MCMC without the Bayesian smoother, as dynare_estimation_1.m) |
 | `smoother` | done |
 | `smoother_redux` | done (same results, computed on the full state space) |
 | `smoothed_state_uncertainty` | done |
@@ -866,13 +866,13 @@ Missing options of ported commands (highlights):
 | `datafile = FILENAME` | done |
 | `first_obs = INTEGER` | done |
 | `nobs = INTEGER` | done |
-| `prefilter = INTEGER` | missing |
+| `prefilter = INTEGER` | done |
 | `loglinear` | done |
 | `diffuse_kalman_tol = DOUBLE` | done |
 | `diffuse_filter` | done |
 | `kalman_algo = INTEGER` | done |
 | `kalman_tol = DOUBLE` | done |
-| `use_univariate_filters_if_singularity_is_detected` | missing |
+| `use_univariate_filters_if_singularity_is_detected` | done |
 | `xls_sheet = QUOTED_STRING` | done |
 | `xls_range = RANGE` | done |
 | `use_shock_groups [= NAME]` | done |
@@ -943,14 +943,14 @@ Missing options of ported commands (highlights):
 
 | option | status |
 |---|---|
-| `colormap = VARIABLE_NAME` | missing |
+| `colormap = VARIABLE_NAME` | done |
 | `nodisplay` | done |
 | `graph_format = FORMAT` | done |
 | `detail_plot` | done |
-| `steadystate` | missing |
+| `steadystate` | done (oo_.dr.ys) |
 | `type = qoq \| yoy \| aoa` | done |
 | `fig_name = STRING` | done |
-| `write_xls` | missing |
+| `write_xls` | done (WriteShockDecomp2Excel workbook) |
 | `plot_init_date = DATE` | done |
 | `plot_end_date = DATE` | done |
 | `diff` | done |
@@ -973,7 +973,7 @@ Missing options of ported commands (highlights):
 | `kalman_algo = INTEGER` | done |
 | `diffuse_filter = INTEGER` | done |
 | `diffuse_kalman_tol = DOUBLE` | done |
-| `use_univariate_smoother_if_singularity_is_detected` | missing |
+| `use_univariate_smoother_if_singularity_is_detected` | done |
 | `xls_sheet = QUOTED_STRING` | done |
 | `xls_range = RANGE` | done |
 | `heteroskedastic_filter` | done |
@@ -1051,10 +1051,10 @@ Missing options of ported commands (highlights):
 | `optim = (NAME, VALUE, ...)` | done |
 | `maxit = INTEGER` | done |
 | `tolf = DOUBLE` | done |
-| `analytic_derivation` | missing |
-| `analytic_derivation_mode = INTEGER` | missing |
+| `analytic_derivation` | done (osr: analytic gradient of the optim_weights loss, +osr/objective.m: W*(Var_y + E_y E_y') from pruned_state_space_system.m with get_perturbation_params_derivs.m, handed to csminwel/fminunc/fmincon/solvopt; loss, gradient and csminwel optimum equal Dynare 7.2's to 1e-9, tests/policy_osr_ad.rs. Dynare 7.2 itself needs an order-2 command in the file (otherwise undefined <fname>.dynamic_g2); planner_objective rejected as in Dynare) |
+| `analytic_derivation_mode = INTEGER` | done (osr: 0 and 1 (same derivatives); -1/-2 fail with Dynare 7.2's error, get_perturbation_params_derivs.m reading the missing estim_params_.param_vals) |
 | `silent_optimizer` | done |
-| `huge_number = DOUBLE` | missing |
+| `huge_number = DOUBLE` | done (osr: the finite bounds of opt_algo=2 without osr_params_bounds, checked against Dynare 7.2) |
 
 ### `sensitivity` (done)
 
@@ -1094,13 +1094,13 @@ Missing options of ported commands (highlights):
 | `datafile = FILENAME` | done |
 | `nobs = INTEGER` | done |
 | `first_obs = INTEGER` | done |
-| `prefilter = INTEGER` | missing |
+| `prefilter = INTEGER` | done |
 | `presample = INTEGER` | done |
 | `nograph` | done |
-| `nodisplay` | missing |
+| `nodisplay` | done (graphs are never displayed) |
 | `graph_format = FORMAT` | done |
-| `conf_sig = DOUBLE` | missing |
-| `loglinear` | missing |
+| `conf_sig = DOUBLE` | done (accepted; unused by +gsa in Dynare 7.2) |
+| `loglinear` | done |
 | `mode_file = FILENAME` | done |
 | `kalman_algo = INTEGER` | done |
 | `identification = INTEGER` | done |
@@ -1110,7 +1110,7 @@ Missing options of ported commands (highlights):
 | `diffuse_filter = INTEGER` | done |
 | `kalman_tol = DOUBLE` | done |
 | `diffuse_kalman_tol = DOUBLE` | done |
-| `use_univariate_smoother_if_singularity_is_detected` | missing |
+| `use_univariate_smoother_if_singularity_is_detected` | done |
 
 ### `irf_calibration` (done)
 
@@ -1193,8 +1193,8 @@ Missing options of ported commands (highlights):
 | `final_year = INTEGER` | done |
 | `final_subperiod = INTEGER` | done |
 | `datafile = FILENAME` | done |
-| `xls_sheet = QUOTED_STRING` | missing |
-| `xls_range = RANGE` | missing |
+| `xls_sheet = QUOTED_STRING` | done (read_variables; tests/msbvar_ms_est.rs reads a sheet/range equal to the csv sample) |
+| `xls_range = RANGE` | done (see xls_sheet) |
 | `nlags = INTEGER` | done |
 | `cross_restrictions` | done |
 | `contemp_reduced_form` | done |
@@ -1241,8 +1241,8 @@ Missing options of ported commands (highlights):
 | `proposal_type = INTEGER` | done |
 | `proposal_lower_bound = DOUBLE` | done |
 | `proposal_upper_bound = DOUBLE` | done |
-| `mdd_proposal_draws = INTEGER` | missing |
-| `mdd_use_mean_center` | missing |
+| `mdd_proposal_draws = INTEGER` | done (also spelled proposal_draws, the only spelling Dynare 7.2's preprocessor accepts) |
+| `mdd_use_mean_center` | done (also spelled use_mean_center, the only spelling Dynare 7.2's preprocessor accepts; no effect, as in Dynare 7.2: ms_compute_mdd.m passes -use_mean, which the MEX ignores (it knows -mean); same seed with and without it gives identical mdd files) |
 
 ### `ms_compute_probabilities` (done)
 
@@ -1360,9 +1360,9 @@ Missing options of ported commands (highlights):
 | `nograph` | partial |
 | `nodisplay` | done |
 | `graph_format = FORMAT` | done |
-| `tex` | missing |
+| `tex` | done |
 | `irf_plot_threshold = DOUBLE` | done |
-| `print` | missing |
+| `print` | done |
 | `noprint` | done |
 
 ### `var_model` (done)
@@ -1434,7 +1434,7 @@ Missing options of ported commands (highlights):
 | `table` | done |
 | `moments` | done |
 | `moments(distribution)` | done |
-| `irfs(distribution)` | missing |
+| `irfs(distribution)` | done (tests/q2_prior.rs) |
 | `optimize` | done |
 | `simulate` | done |
 | `plot` | done |

@@ -4,7 +4,7 @@
 //! block (`M_.filter_initial_state`), `skew` entries of `shocks` blocks (`M_.Skew_e`) and
 //! `dsge_prior_weight` in `estimated_params` (declared as a parameter by the preprocessor).
 
-use super::{Parser, parse_period_list, split_commas, split_value_items};
+use super::{Parser, split_commas, split_value_items};
 use crate::model::SymbolKind;
 use crate::modfile::lexer::Tok;
 use anyhow::{Result, anyhow, bail};
@@ -15,6 +15,8 @@ pub struct HeteroShock {
     pub exo: usize,
     /// Integer periods of the original dataset (1-based), one entry per value.
     pub periods: Vec<i64>,
+    /// Or dates (`periods 2000Y:2020Y;`), placed on the estimation sample's dates.
+    pub dates: Vec<crate::dates::Date>,
     /// `values` (standard deviations) when true, `scales` otherwise.
     pub is_value: bool,
     pub value: f64,
@@ -25,8 +27,9 @@ pub struct HeteroShock {
 pub struct Q3Decl {
     /// `heteroskedastic_shocks` entries, file order (`overwrite` clears the earlier ones).
     pub heteroskedastic_shocks: Vec<HeteroShock>,
-    /// `filter_initial_state`: (endogenous index, lag <= 0, value).
-    pub filter_initial_state: Vec<(usize, i32, f64)>,
+    /// `filter_initial_state`: (endogenous index, lag <= 0, value at the calibration, expression
+    /// as written: Dynare evaluates it with the current parameters at every filter run).
+    pub filter_initial_state: Vec<(usize, i32, f64, String)>,
     /// `M_.Skew_e`: (i, j, k, value), exogenous indices sorted.
     pub skew_e: Vec<(usize, usize, usize, f64)>,
 }
@@ -60,7 +63,7 @@ impl<'a> Parser<'a> {
             self.q3.heteroskedastic_shocks.clear();
         }
         let mut exo: Option<usize> = None;
-        let mut periods: Vec<Vec<i64>> = Vec::new();
+        let mut periods: Vec<(Vec<i64>, Vec<crate::dates::Date>)> = Vec::new();
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
@@ -81,8 +84,11 @@ impl<'a> Parser<'a> {
                     periods.clear();
                 }
                 "periods" => {
-                    periods = parse_period_list(toks)
-                        .map_err(|e| anyhow!("{loc}: heteroskedastic_shocks: {e} (date periods are not supported)"))?;
+                    periods = super::shk::sim_period_list(toks)
+                        .map_err(|e| anyhow!("{loc}: heteroskedastic_shocks: {e}"))?
+                        .iter()
+                        .map(|g| g.split())
+                        .collect();
                 }
                 "values" | "scales" => {
                     let e = exo.ok_or_else(|| anyhow!("{loc}: '{kw}' before 'var'"))?;
@@ -91,10 +97,11 @@ impl<'a> Parser<'a> {
                     if vals.len() != periods.len() {
                         bail!("{loc}: heteroskedastic_shocks: {} period groups but {} {kw}", periods.len(), vals.len());
                     }
-                    for (p, v) in periods.iter().zip(vals) {
+                    for ((p, d), v) in periods.iter().zip(vals) {
                         self.q3.heteroskedastic_shocks.push(HeteroShock {
                             exo: e,
                             periods: p.clone(),
+                            dates: d.clone(),
                             is_value: kw == "values",
                             value: v,
                         });
@@ -143,9 +150,18 @@ impl<'a> Parser<'a> {
             if s.kind != SymbolKind::Endo {
                 bail!("{loc}: filter_initial_state: '{name}' is not an endogenous variable");
             }
+            // ParsingDriver::filter_initial_state_element: x(lag) is the state of x(lag-1)
+            if self.b.min_lag(name) > lag - 1 {
+                bail!(
+                    "{}: filter_initial_state: variable {name} does not appear in the model with the lag {} (see the reference manual for the timing convention in 'filter_initial_state')",
+                    super::span_text(&toks[0], &self.c.t[self.c.i - 1]),
+                    lag - 1
+                );
+            }
             let idx = s.index;
             let v = self.eval_tokens(&toks[eq + 1..])?;
-            self.q3.filter_initial_state.push((idx, lag, v));
+            let src = toks[eq + 1..].iter().map(|t| t.raw.as_str()).collect::<String>();
+            self.q3.filter_initial_state.push((idx, lag, v, src));
         }
     }
 

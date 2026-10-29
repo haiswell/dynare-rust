@@ -455,8 +455,68 @@ pub fn keep_all_draws(npar: usize, replic: usize, nblocks: usize) -> bool {
     true
 }
 
-/// After the MCMC: `mcmc_diagnostics.m` (Geweke tables, `udiag<k>`, `mdiag`) when
-/// `diagnostics`, and `PlotPosteriorDistributions.m` (`PriorsAndPosteriors<k>`).
+/// `mcmc_diagnostics.m` (after the inefficiency factors): the Geweke tables, the Raftery-Lewis
+/// tables and the Brooks-Gelman diagnostics (`udiag<k>`, `mdiag` figures with graphs).
+pub fn mcmc_diagnostics(
+    chains: &[super::mcmc::Chain],
+    names: &[String],
+    mh_drop: f64,
+    fname: &str,
+    gopts: &crate::graphics::GraphOptions,
+    conv: &super::convergence::ConvergenceOptions, // options_.convergence
+) -> anyhow::Result<()> {
+    use super::diagnostics::{brooks_gelman_multivariate, geweke, print_geweke};
+    let dyn_names: Vec<String> = names.iter().map(|s| dynare_param_name(s)).collect();
+    if chains.is_empty() {
+        return Ok(());
+    }
+    let ndraws = chains[0].total_draws;
+    // mcmc_diagnostics.m:110: the 2000-draw cutoff does not apply to the slice sampler
+    if !conv.slice && ndraws <= 2000 {
+        // a MATLAB warning (stderr)
+        eprintln!(
+            "Warning: MCMC convergence diagnostics are not computed because the total number of iterations is not bigger than 2000!"
+        );
+    } else if chains.iter().any(|c| c.first_stored != 0) {
+        crate::progress::note("MCMC convergence diagnostics skipped: the burn-in draws were not kept.");
+    } else {
+        let gw = &conv.geweke; // taper_steps, geweke_interval
+        if let Some(g) = geweke(chains, mh_drop, gw) {
+            print_geweke(&g, &dyn_names, gw);
+        }
+        if conv.raftery_lewis {
+            super::convergence::raftery_lewis_chains(chains, &dyn_names, conv);
+        }
+        if chains.len() > 1 {
+            println!("Univariate convergence diagnostic, Brooks and Gelman (1998):");
+            let t = std::time::Instant::now();
+            let mut k = 0;
+            if let Some(bg) = super::posterior::brooks_gelman(chains, mh_drop, conv.slice) {
+                for j in 1..=names.len() {
+                    println!("    Parameter {j}...  Done! ");
+                }
+                println!();
+                if gopts.enabled {
+                    k += save_figures(&udiag_figures_rows(&bg, names, conv.brooks_gelman_plotrows), fname, gopts)?;
+                }
+            }
+            if let Some((it, md)) = brooks_gelman_multivariate(chains, mh_drop, conv.slice)
+                && gopts.enabled
+            {
+                k += save_figures(&[mdiag_figure(&it, &md)], fname, gopts)?;
+            }
+            crate::progress::note(format!(
+                "mcmc_diagnostics: {k} figures ({fname}_udiag*, {fname}_mdiag) written to {} ({:.1}s).",
+                gopts.dir.display(),
+                t.elapsed().as_secs_f64()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// After the MCMC: `mcmc_diagnostics.m` when `diagnostics`, and `PlotPosteriorDistributions.m`
+/// (`PriorsAndPosteriors<k>`).
 #[allow(clippy::too_many_arguments)]
 pub fn mcmc_figures(
     chains: &[super::mcmc::Chain],
@@ -470,48 +530,18 @@ pub fn mcmc_figures(
     conv: &super::convergence::ConvergenceOptions, // options_.convergence
     xmode: Option<&[f64]>, // oo_.posterior_mode.parameters (None: smc or mh_posterior_mode_estimation)
 ) -> anyhow::Result<()> {
-    use super::diagnostics::{brooks_gelman_multivariate, geweke, posterior_densities, print_geweke};
-    let dyn_names: Vec<String> = names.iter().map(|s| dynare_param_name(s)).collect();
-    if diagnostics && !chains.is_empty() {
-        let ndraws = chains[0].total_draws;
-        // mcmc_diagnostics.m:110: the 2000-draw cutoff does not apply to the slice sampler
-        if !conv.slice && ndraws <= 2000 {
-            println!(
-                "\nWARNING: MCMC convergence diagnostics are not computed because the total number of iterations is not bigger than 2000!"
-            );
-        } else if chains.iter().any(|c| c.first_stored != 0) {
-            println!("\nWARNING: MCMC convergence diagnostics skipped: the burn-in draws were not kept.");
-        } else {
-            let gw = &conv.geweke; // taper_steps, geweke_interval
-            if let Some(g) = geweke(chains, mh_drop, gw) {
-                print_geweke(&g, &dyn_names, gw);
-            }
-            if conv.raftery_lewis {
-                super::convergence::raftery_lewis_chains(chains, &dyn_names, conv);
-            }
-            if chains.len() > 1 && gopts.enabled {
-                println!("Univariate convergence diagnostic, Brooks and Gelman (1998):");
-                let t = std::time::Instant::now();
-                let mut k = 0;
-                if let Some(bg) = super::posterior::brooks_gelman(chains, mh_drop, conv.slice) {
-                    k += save_figures(&udiag_figures_rows(&bg, names, conv.brooks_gelman_plotrows), fname, gopts)?;
-                }
-                if let Some((it, md)) = brooks_gelman_multivariate(chains, mh_drop, conv.slice) {
-                    k += save_figures(&[mdiag_figure(&it, &md)], fname, gopts)?;
-                }
-                println!(
-                    "mcmc_diagnostics: {k} figures ({fname}_udiag*, {fname}_mdiag) written to {} ({:.1}s).",
-                    gopts.dir.display(),
-                    t.elapsed().as_secs_f64()
-                );
-            }
-        }
+    use super::diagnostics::posterior_densities;
+    if diagnostics {
+        mcmc_diagnostics(chains, names, mh_drop, fname, gopts, conv)?;
     }
     if gopts.enabled && !chains.is_empty() {
         let dens = posterior_densities(chains, stats.first_draw);
         let figs = priors_and_posteriors_figures(priors, names, &dens, xmode);
         let k = save_figures(&figs, fname, gopts)?;
-        println!("{k} figures ({fname}_PriorsAndPosteriors*) written to {}.", gopts.dir.display());
+        crate::progress::note(format!(
+            "{k} figures ({fname}_PriorsAndPosteriors*) written to {}.",
+            gopts.dir.display()
+        ));
     }
     Ok(())
 }

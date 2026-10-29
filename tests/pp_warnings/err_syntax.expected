@@ -1,0 +1,1 @@
+WARNING: err_syntax.mod: line 7, cols 1-18: The 'simul' statement is deprecated. Please use 'perfect_foresight_setup' and 'perfect_foresight_solver' instead.

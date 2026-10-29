@@ -273,11 +273,10 @@ pub(crate) fn csminit1(
                 dfhat = dot(&dx, g);
                 dxnorm = norm(&dx);
                 if verbose {
-                    println!("Correct for low angle: {a}");
+                    println!("Correct for low angle: {}", crate::analysis::table::fmt_g(a, 0, 6));
                 }
             }
         }
-        let _ = dxnorm;
         if verbose {
             println!("Predicted improvement: {:18.9}", -dfhat / 2.0);
         }
@@ -295,7 +294,7 @@ pub(crate) fn csminit1(
             }
             let f = pen(obj, &dxtest, penalty);
             if verbose {
-                println!("lambda = {lambda:10.5e}; f = {f:20.7}");
+                println!("lambda = {}; f = {f:20.7}", crate::analysis::table::fmt_g(lambda, 10, 5));
             }
             if f < fhat {
                 fhat = f;
@@ -353,6 +352,9 @@ pub(crate) fn csminit1(
                 done = true;
                 rc = if factor < 1.2 { 7 } else { 0 };
             }
+        }
+        if verbose {
+            println!("Norm of dx {}", crate::analysis::table::fmt_g(dxnorm, 10, 5));
         }
         rc
     };

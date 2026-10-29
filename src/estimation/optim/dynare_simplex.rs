@@ -164,7 +164,7 @@ pub fn dynare_simplex(obj: &dyn Objective, x0: &[f64], opts: &SimplexOptions) ->
     let mut func_count = n + 1;
     let mut iter_count = 1usize;
     if verbose {
-        println!("Done!\n\nObjective function value: {}\n", fv[0]);
+        println!("Done!\n\nObjective function value: {}\n", crate::gsa::stats::num2str(fv[0]));
     }
     let header = "#Iter.      #FnCalls.   Best Value      Worst Value     Norm(f)        Norm(x)        Move";
     let mut no_improvements = 0usize;
@@ -292,20 +292,40 @@ pub fn dynare_simplex(obj: &dyn Objective, x0: &[f64], opts: &SimplexOptions) ->
             if simplex_iterations.is_multiple_of(50) {
                 println!("\n{header}");
             }
+            // `%12.7E` of C (two-digit exponent with sign), as `dprintf` in the MATLAB routine
+            let e = |x: f64| crate::analysis::table::fmt_e(x, 12, 7).replace('e', "E");
             if fv[n].is_finite() && fv[0].is_finite() {
+                // the field separators depend on the signs of the best and worst values
+                let (s1, s2) = if fv[n] < 0.0 {
+                    ("  ", "  ")
+                } else if fv[0] > 0.0 {
+                    (" ", " ")
+                } else {
+                    ("  ", " ")
+                };
                 println!(
-                    "{:<10}  {:<10}  {:12.7E}  {:12.7E}  {:12.7E}  {:12.7E}  {mv}",
-                    simplex_iterations, func_count, fv[0], fv[n], crit_f, crit_x
+                    "{:<10}  {:<10}{s1}{}{s2}{}  {}  {}  {mv}",
+                    simplex_iterations,
+                    func_count,
+                    e(fv[0]),
+                    e(fv[n]),
+                    e(crit_f),
+                    e(crit_x)
                 );
             } else if fv[0].is_finite() {
                 println!(
-                    "{:<10}  {:<10}  {:12.7E}                                 {:12.7E}  {mv}",
-                    simplex_iterations, func_count, fv[0], crit_x
+                    "{:<10}  {:<10}  {}                                 {}  {mv}",
+                    simplex_iterations,
+                    func_count,
+                    e(fv[0]),
+                    e(crit_x)
                 );
             } else {
                 println!(
-                    "{:<10}  {:<10}                                         {:12.7E}  {mv}",
-                    simplex_iterations, func_count, crit_x
+                    "{:<10}  {:<10}                                         {}  {mv}",
+                    simplex_iterations,
+                    func_count,
+                    e(crit_x)
                 );
             }
         }

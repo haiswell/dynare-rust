@@ -10,7 +10,9 @@ __pycache__/
 *.pyc
 # Logs at the top level (the MATLAB diaries under reference/ are test inputs and stay tracked)
 /*.log
-# Dynare work folders created when references are regenerated
+# Dynare work folders created when references are regenerated or a model is run at the top level
+/+*/
+/t/
 reference/**/+*/
 
 # Per-area regeneration scratch

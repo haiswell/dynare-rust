@@ -67,8 +67,6 @@ the README. Indices in the JSON files are MATLAB's (1-based).
   a value, falls back to the univariate filter or fails with info 46 can differ. `check` may
   print numerically defective multiple roots at different rounding-level values (the counts and
   the Blanchard-Kahn verdict agree).
-- **Smoother after mode-only or ML estimation.** Without the `frequentist_smoother` option the
-  classical smoother runs only with `smoother`/`filtered_vars` (Dynare runs it always).
 - **`analytic_derivation`.** newrat follows a slightly different path (the final value agrees to
   ~5e-7, the Hessian at the mode is exact); a steady-state model that changes parameters is not
   supported by the estimation. The skewed filter's `mvncdf` above 3 dimensions uses a fixed seed.

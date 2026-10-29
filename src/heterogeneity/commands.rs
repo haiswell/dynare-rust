@@ -463,7 +463,12 @@ pub fn sim_options(opts: &Options, prev: &super::simulate::SimOptions) -> Result
             "relative_irf" => o.relative_irf = Some(num(v, k)? != 0.0),
             "irf_plot_threshold" => o.irf_plot_threshold = Some(num(v, k)?),
             "add_tiny_number_to_cholesky" => o.add_tiny = Some(num(v, k)?),
-            "nograph" | "nodisplay" | "graph_format" | "noprint" => {}
+            // `print` / `noprint` only set options_.print / noprint: the +heterogeneity code
+            // prints nothing (checked: no output differs); `tex` is read at plot time
+            "nograph" | "nodisplay" | "graph_format" | "noprint" | "print" | "tex" => {}
+            // sets options_.drop, which simulate_stochastic_shocks.m does not read (its check
+            // against periods is commented out)
+            "drop" => {}
             k if k == crate::modfile::RAW_ARGS_KEY => o.var_list = names(v),
             _ => bail!("heterogeneity_simulate: unknown option {k}"),
         }
@@ -551,6 +556,18 @@ pub fn run_command(
             let gopts = crate::graphics::GraphOptions::from_options(opts, dir, fname);
             if gopts.enabled {
                 super::simulate::plot_irfs(&mf.model, &res.irfs, &o, &gopts, fname)?;
+                let tex = crate::modfile::opt(opts, "tex").is_some_and(|v| !matches!(v, OptValue::Num(x) if *x == 0.0))
+                    && gopts.formats.contains(&crate::graphics::GraphFormat::Eps);
+                if tex {
+                    let stex: Vec<String> = (0..mf.model.n_exo()).map(|k| crate::latex::exo_tex(mf, k)).collect();
+                    if mf.det_shocks.is_empty() {
+                        super::tex::write_irf_tex(&mf.model, &stex, &res.irfs, &o, dir, fname)?;
+                    }
+                    if res.endo_simul.is_some() {
+                        let news = !mf.det_shocks.is_empty();
+                        super::tex::write_simulation_tex(&mf.model, &o.var_list, news, dir, fname)?;
+                    }
+                }
                 if let Some(d) = res.endo_simul.as_ref() {
                     super::simulate::plot_simulation(
                         &mf.model,

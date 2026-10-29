@@ -584,7 +584,7 @@ fn estimation_flag(mf: &ModFile, name: &str) -> bool {
 
 /// Is `name` set in `options_.steady*` by the `steady` commands run so far (without the
 /// driver: by any `steady` command of the file)?
-fn steady_flag(mf: &ModFile, name: &str) -> bool {
+pub(crate) fn steady_flag(mf: &ModFile, name: &str) -> bool {
     let set = |o: &crate::modfile::Options| match opt(o, name) {
         Some(OptValue::Flag) => true,
         Some(OptValue::Num(v)) => *v != 0.0,
@@ -593,7 +593,13 @@ fn steady_flag(mf: &ModFile, name: &str) -> bool {
     if mf.options.active {
         return set(&mf.options.steady);
     }
-    mf.commands.iter().any(|c| matches!(c, Command::Steady(o) if set(o)))
+    mf.commands.iter().any(|c| match c {
+        Command::Steady(o) => set(o),
+        // check(nocheck), estimation(diffuse_filter): options_.steadystate.nocheck
+        Command::Check(o) => name == "nocheck" && set(o),
+        Command::Estimation(o, _) => name == "nocheck" && opt(o, "diffuse_filter").is_some(),
+        _ => false,
+    })
 }
 
 /// Rows of `M_.H` (positions in varobs) of a measurement-error entry.
@@ -711,6 +717,12 @@ pub fn solve_steady_at(
         // steadystate_flag = 2: closed form (+ residual check)
         return crate::deterministic::evaluate_steady_state(model, Some(ssm), guess, x_ss, params, opts, check);
     }
+    if (matches!(opts.solve_algo, 10 | 11) && !opts.linear || model.bytecode && opts.solve_algo == 5)
+        && model.planner().is_none()
+    {
+        // the mixed complementarity problem (lmmcp on static_mcp_problem), the bytecode Newton
+        return crate::deterministic::evaluate_steady_state(model, None, guess, x_ss, params, opts, check);
+    }
     let n = model.n_endo();
     let f = |y: &[f64]| {
         let mut r = vec![0.0; n];
@@ -731,7 +743,7 @@ pub fn solve_steady_at(
 
 /// `options_.prior_trunc` as the estimation sees it (Dynare default 0); without the driver,
 /// from the file's last estimation command.
-fn prior_trunc(mf: &ModFile) -> f64 {
+pub(crate) fn prior_trunc(mf: &ModFile) -> f64 {
     if mf.options.active {
         return mf.options.prior_trunc.unwrap_or(0.0);
     }
@@ -740,7 +752,10 @@ fn prior_trunc(mf: &ModFile) -> f64 {
         .rev()
         .find_map(|c| match c {
             Command::Estimation(o, _) => match opt(o, "prior_trunc") {
+                // dynare_estimation_init.m: slice requires bounded support
+                Some(OptValue::Num(v)) if *v == 0.0 && crate::modfile::is_slice(o) => Some(1e-10),
                 Some(OptValue::Num(v)) => Some(*v),
+                _ if crate::modfile::is_slice(o) => Some(1e-10),
                 _ => None,
             },
             _ => None,
@@ -809,8 +824,11 @@ pub struct LikelihoodData {
     pub first_obs: usize,
     /// `heteroskedastic_filter`: `M_.heteroskedastic_shocks` for this sample.
     pub hetero: Option<crate::kalman::hetero::HeteroSpec>,
-    /// `filter_initial_state` (`M_.filter_initial_state`): (endogenous index, value).
+    /// `filter_initial_state` (`M_.filter_initial_state`): (endogenous index, value at the
+    /// calibration); see [`LikelihoodData::filter_initial_state_at`].
     pub filter_initial_state: Vec<(usize, f64)>,
+    /// The expressions of `filter_initial_state` (same order), evaluated with the parameters.
+    pub filter_initial_state_expr: Vec<Option<crate::model::CompiledExpr>>,
     // ---- calibration restrictions ----
     /// `options_.endogenous_prior_restrictions` (`irf_calibration` / `moment_calibration`),
     /// checked after `dynare_resolve` (info 49); `None` without the blocks.
@@ -836,9 +854,23 @@ impl LikelihoodData {
             first_obs: 1,
             hetero: None,
             filter_initial_state: Vec::new(),
+            filter_initial_state_expr: Vec::new(),
             calib_restrictions: None,
             skewed: None,
         }
+    }
+
+    /// `M_.filter_initial_state` evaluated at the parameters `p` (set_Kalman_starting_values.m:
+    /// `eval(M_.filter_initial_state{i,2})` with the current `M_.params`).
+    pub fn filter_initial_state_at(&self, p: &[f64]) -> Vec<(usize, f64)> {
+        self.filter_initial_state
+            .iter()
+            .enumerate()
+            .map(|(k, &(e, v))| match self.filter_initial_state_expr.get(k) {
+                Some(Some(x)) => (e, x.eval(&[], &[], p)),
+                _ => (e, v),
+            })
+            .collect()
     }
 
     /// `prefilter=1` (makedataset.m: `dataset_.detrend()`): removes the mean of each
@@ -993,7 +1025,8 @@ impl DsgePosterior<'_> {
             };
             ws.set_heteroskedastic(self.data.hetero.as_ref().map(|hs| hs.qvec(&res.q, y.ncols())));
             ws.set_initial_state((!self.data.filter_initial_state.is_empty()).then(|| {
-                crate::estimation::q3::kalman_a0(self.dsge, &res, &self.dsge.ss_index, &self.data.filter_initial_state)
+                let fis = self.data.filter_initial_state_at(&res.params);
+                crate::estimation::q3::kalman_a0(self.dsge, &res, &self.dsge.ss_index, &fis)
             }));
             if let Some(is) = &init_states {
                 ws.set_initial_state(Some(is.a_tm1.clone())); // ---- estimation completion

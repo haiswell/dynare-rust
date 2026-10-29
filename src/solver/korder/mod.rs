@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Higher-order (2nd and 3rd) perturbation solution (stream K).
+//! Higher-order (2nd, 3rd and, through [`general`], any) perturbation solution (stream K).
 //!
 //! Computes what Dynare 7.2 stores in `oo_.dr` at `order = 2` (`dyn_second_order_solver.m`:
 //! `ghxx`, `ghxu`, `ghuu`, `ghs2`) and at `order = 3` (`k_order_pert.m` / the dynare++ k-order
@@ -23,7 +23,11 @@
 //! a generalized Sylvester equation for the pure-state block (`gensylv`) followed by linear
 //! solves with `A` for the blocks involving `u` (as `dyn_second_order_solver.m` does for
 //! `ghxx`, `ghxu`, `ghuu`, `ghs2`).
+//!
+//! Orders 4 and above go through [`general`] (the same unknowns, with the derivatives of `h`
+//! taken column by column from the general Faà di Bruno formula).
 
+pub mod general;
 pub mod pruned;
 pub mod simulate;
 pub mod stoch_simul;
@@ -37,7 +41,7 @@ use crate::solver::{DecisionRule, FirstOrderSolver, SolverOptions};
 use anyhow::{Result, anyhow, bail};
 use tensor::{add_sym2, add_sym3_first, add_sym6, col_of, kron_apply, kron_power_apply, tuple_of};
 
-/// Higher-order decision rule (`oo_.dr` at order 2 or 3). Rows in DR order (`order_var`);
+/// Higher-order decision rule (`oo_.dr` at order >= 2; the `gh*` blocks up to order 3). Rows in DR order (`order_var`);
 /// columns of the unfolded tensors in MATLAB `kron` order over the states (`state_var`,
 /// `nspred`) and shocks (`n_exo`).
 #[derive(Debug, Clone)]
@@ -551,8 +555,13 @@ pub fn solve_model_at(
     let x = x.to_vec();
     let g1 = model.dynamic_jacobian(ys, &x, params);
     let fo = FirstOrderSolver::new(&model.lead_lag_incidence, model.n_exo(), opts);
-    let dr1 = fo.solve(&g1, ys).map_err(|e| anyhow!("{e}"))?;
+    let dr1 = fo.solve(&g1, ys)?; // the SolveError stays typed (stoch_simul noprint)
     model.check_external_order(order, "k_order_solver")?;
+    if order >= 4 {
+        let deriv = model.dynamic_derivatives_k(order);
+        let vals = deriv.eval(ys, &x, params);
+        return general::solve(&dr1, &model.lead_lag_incidence, &g1, &deriv, &vals, sigma_e, order);
+    }
     let deriv = model.dynamic_derivatives(order);
     let vals = deriv.eval(ys, &x, params);
     solve(&dr1, &model.lead_lag_incidence, &g1, &deriv, &vals, sigma_e, order)

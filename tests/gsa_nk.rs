@@ -307,3 +307,28 @@ fn stage5_rmse() {
     cmp(&flat(&res.rmse_mc), &flat(&mat(&r["rmse_MC"])), "rmse_MC", 1e-5);
     cmp(&flat(&res.r2_mc), &flat(&mat(&r["r2_MC"])), "r2_MC", 1e-5);
 }
+
+/// `sensitivity(rmse=1, prefilter=1, conf_sig, use_univariate_*_if_singularity_is_detected)`
+/// (reference/gsa/ref_gsa_stage8.json): the prefiltered data change the RMSE / likelihood.
+#[test]
+fn stage8_rmse_prefilter() {
+    let r = load("ref_gsa_stage8.json").expect("reference unavailable");
+    let flat = |m: &[Vec<f64>]| m.iter().flatten().copied().collect::<Vec<f64>>();
+    let mut res = None;
+    run_stage_with(8, |out, mf, dir| {
+        let stab = gsa::stability::classify_sample(&out.dsge, mat(&r["lpmat0"]), mat(&r["lpmat"]), false);
+        res = Some(gsa::rmse::run(&out.ctx, mf, dir, &out.dsge, &out.options, &out.options.raw, &stab).unwrap());
+    });
+    let ex = res.unwrap();
+    for (a, b, what) in [
+        (ex.logpo2.clone(), vec1(&r["logpo2"]), "logpo2"),
+        (ex.likelihood.clone(), vec1(&r["likelihood"]), "likelihood"),
+        (flat(&ex.rmse_mc), flat(&mat(&r["rmse_MC"])), "rmse_MC"),
+        (flat(&ex.r2_mc), flat(&mat(&r["r2_MC"])), "r2_MC"),
+    ] {
+        assert_eq!(a.len(), b.len(), "{what} length");
+        for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+            assert!(rel(*x, *y) < 1e-6, "{what}[{k}]: {x} vs {y}");
+        }
+    }
+}

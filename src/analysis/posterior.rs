@@ -416,6 +416,7 @@ pub fn run(
     fname: &str,
     out_dir: &Path,
     seed: u64,
+    bvar_dsge_irfs: bool,
 ) -> Result<()> {
     if !o.bayesian_irf && !o.moments_varendo {
         return Ok(());
@@ -439,6 +440,10 @@ pub fn run(
     if o.bayesian_irf {
         let t = std::time::Instant::now();
         println!("Estimation::mcmc: Posterior (dsge) IRFs...");
+        if bvar_dsge_irfs {
+            // PosteriorIRF.m prints this before the DSGE-VAR IRFs, which are computed afterwards here
+            println!("Estimation::mcmc: Posterior (bvar-dsge) IRFs...");
+        }
         let pirf = posterior_irf(dsge, &draws, &ivar, o)?;
         let mut gopts = o.graph_options(dir, fname);
         gopts.dir = out_dir.to_path_buf(); // PosteriorIRF_core2 saves to Output/
@@ -457,13 +462,14 @@ pub fn run(
                 }
             }
         }
-        println!(
-            "Estimation::mcmc: Posterior IRFs, done! ({} draws, {:.1}s; {}_Bayesian_IRF_<shock>.csv in {})",
+        println!("Estimation::mcmc: Posterior IRFs, done!");
+        crate::progress::note(format!(
+            "Posterior IRFs: {} draws, {:.1}s; {}_Bayesian_IRF_<shock>.csv in {}",
             b,
             t.elapsed().as_secs_f64(),
             fname,
             out_dir.display()
-        );
+        ));
     }
     if o.moments_varendo {
         let t = std::time::Instant::now();
@@ -605,11 +611,12 @@ pub fn run(
             std::fs::write(out_dir.join(format!("{fname}_posterior_moments_density.csv")), d)?;
         }
         // ---- end estimation completion
-        println!(
+        println!("Done!\n");
+        crate::progress::note(format!(
             "Estimation::compute_moments_varendo: done ({:.1}s; {}_posterior_moments.csv).",
             t.elapsed().as_secs_f64(),
             fname
-        );
+        ));
     }
     Ok(())
 }

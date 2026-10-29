@@ -13,10 +13,11 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow, bail};
 
-use super::{Parser, ShockStmt, Tgt, Tok, Token, split_commas};
+use super::{Parser, PathValue, ShockStmt, Tgt, Tok, Token, split_commas};
 use crate::dates::Date;
 use crate::deterministic::workspace::WsValue;
 use crate::linalg::Mat;
+use crate::model::SymbolKind;
 use crate::modfile::{OptValue, Options, opt};
 
 /// One entry of a `periods` statement: integer periods or dates.
@@ -141,7 +142,7 @@ pub(super) fn split_space_separated_options(inner: &[Token]) -> Vec<Token> {
         let t = &inner[k];
         let starts_option = KEYS.iter().any(|kw| t.is_ident(kw)) && k > 0 && !inner[k - 1].is(",");
         if starts_option {
-            out.push(Token { tok: Tok::Punct(","), raw: ",".into(), loc: t.loc.clone() });
+            out.push(Token { tok: Tok::Punct(","), raw: ",".into(), loc: t.loc.clone(), col: t.col });
         }
         out.push(t.clone());
         k += 1;
@@ -184,21 +185,34 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
+    /// [`Self::shocks_values`] where an item may be an expression with endogenous variables.
+    pub(super) fn shocks_values_x(&self, toks: &[Token]) -> Result<Vec<Vec<PathValue>>> {
+        let mut out = Vec::new();
+        for item in super::split_value_items(toks) {
+            if let Some(e) = self.steady_expr(item)? {
+                out.push(vec![PathValue::Steady(e)]);
+            } else {
+                out.extend(self.shocks_values(item)?.into_iter().map(|v| v.into_iter().map(PathValue::Num).collect()));
+            }
+        }
+        Ok(out)
+    }
+
     /// Pairs the `periods` groups with the values (a vector value gives one entry per period
     /// of its range, as the MATLAB assignment `oo_.exo_simul(k, ivar) = v`).
-    pub(super) fn shocks_pair(
+    pub(super) fn shocks_pair<T: Clone>(
         &self,
         periods: Vec<PGroup>,
-        values: Vec<Vec<f64>>,
+        values: Vec<Vec<T>>,
         what: &str,
-    ) -> Result<Vec<(PGroup, f64)>> {
+    ) -> Result<Vec<(PGroup, T)>> {
         if periods.len() != values.len() {
             bail!("{what}: {} period ranges but {} values", periods.len(), values.len());
         }
         let mut out = Vec::new();
         for (g, v) in periods.into_iter().zip(values) {
             if v.len() == 1 {
-                out.push((g, v[0]));
+                out.push((g, v[0].clone()));
             } else if v.len() == g.len() {
                 for (k, x) in v.into_iter().enumerate() {
                     out.push((g.nth(k), x));
@@ -231,18 +245,19 @@ impl<'a> Parser<'a> {
             let mut v = 0.0;
             for s in stmts {
                 match *s {
-                    ShockStmt::Var(a, x) if a == t => v = x,
-                    ShockStmt::Std(a, x) if a == t => v = x * x,
+                    ShockStmt::Var(a, ref x) if a == t => v = x.num(),
+                    ShockStmt::Std(a, ref x) if a == t => v = x.num() * x.num(),
                     _ => {}
                 }
             }
             v
         };
         for k in st..self.shocks.len() {
-            if let ShockStmt::Corr(a, b, r) = self.shocks[k] {
+            if let ShockStmt::Corr(a, b, r) = self.shocks[k].clone() {
+                let r = r.num();
                 self.q1.shock_corrs.push((a, b, r));
                 let c = r * (var_of(&self.shocks, a) * var_of(&self.shocks, b)).sqrt();
-                self.shocks[k] = ShockStmt::Cov(a, b, c);
+                self.shocks[k] = ShockStmt::Cov(a, b, PathValue::Num(c));
             }
         }
         self.q1.shocks_block_start = self.shocks.len();
@@ -295,15 +310,110 @@ impl<'a> Parser<'a> {
                 self.q1.workspace.vars.insert(name.to_string(), v);
             }
             // reporting: dseries of the stoch_simul IRFs, report objects (run by the driver)
-            Err(_) if super::rep::is_report_rhs(toks) => return self.rep_push(Some(name), toks),
-            Err(e) => {
-                let text: Vec<&str> = toks.iter().map(|t| t.raw.as_str()).collect();
-                let loc = toks.first().map(|t| t.loc.to_string()).unwrap_or_default();
-                println!(
-                    "WARNING: {loc}: MATLAB statement `{name} = {};` is not supported by dynare-rust ({e}); skipped.",
-                    text.join(" ")
-                );
+            Err(e) if super::rep::is_report_rhs(toks) => {
+                // a statement that is neither a workspace value nor a report one is skipped
+                let mark = self.commands.len();
+                if self.rep_push(Some(name), toks).is_err() {
+                    self.commands.truncate(mark);
+                    Self::ws_skip_warning(name, toks, &e);
+                }
             }
+            Err(e) => Self::ws_skip_warning(name, toks, &e),
+        }
+        Ok(())
+    }
+
+    /// The warning of a skipped `name = <MATLAB expression>;`.
+    fn ws_skip_warning(name: &str, toks: &[Token], e: &anyhow::Error) {
+        let text: Vec<&str> = toks.iter().map(|t| t.raw.as_str()).collect();
+        let loc = toks.first().map(|t| t.loc.to_string()).unwrap_or_default();
+        println!(
+            "WARNING: {loc}: MATLAB statement `{name} = {};` is not supported by dynare-rust ({e}); skipped.",
+            text.join(" ")
+        );
+    }
+}
+
+impl Parser<'_> {
+    /// `x(i, j) = v;` / `x(k) = v;` on a numeric workspace array (`init(:,[2,4]) = ones(10,2);`
+    /// before a `dseries(init, ...)`): `:`, scalar or vector indices, a scalar or an array of
+    /// the indexed shape. Whether the statement is one: the name is a numeric workspace array
+    /// followed by `(...) =`.
+    pub(super) fn ws_indexed_assignment_ahead(&self, name: &str) -> bool {
+        if !matches!(self.q1.workspace.vars.get(name), Some(WsValue::Num(_)))
+            || !self.c.peek_at(1).is_some_and(|t| t.is("("))
+        {
+            return false;
+        }
+        let mut depth = 0;
+        let mut k = 1;
+        while let Some(t) = self.c.peek_at(k) {
+            if t.is("(") {
+                depth += 1;
+            } else if t.is(")") {
+                depth -= 1;
+                if depth == 0 {
+                    return self.c.peek_at(k + 1).is_some_and(|t| t.is("="));
+                }
+            } else if t.is(";") {
+                return false;
+            }
+            k += 1;
+        }
+        false
+    }
+
+    pub(super) fn ws_indexed_assignment(&mut self) -> Result<()> {
+        let (name, loc) = self.c.ident()?;
+        let (name, loc) = (name.to_string(), loc.clone());
+        let toks = self.c.statement()?;
+        let mut depth = 0;
+        let close = toks
+            .iter()
+            .position(|t| {
+                depth += t.is("(") as i32 - t.is(")") as i32;
+                depth == 0
+            })
+            .ok_or_else(|| anyhow!("{loc}: unbalanced parentheses"))?;
+        let dir = Path::new(&*loc.file).parent().map(Path::to_path_buf).unwrap_or_default();
+        let ev = WsEval { p: self, dir: &dir };
+        let rhs = ev.expr_all(&toks[close + 2..]).map_err(|e| anyhow!("{loc}: {name}(...) = ...: {e}"))?;
+        let rhs = as_mat(&rhs)?.clone();
+        let Some(WsValue::Num(m)) = self.q1.workspace.vars.get(&name) else { unreachable!() };
+        let (nr, nc) = (m.nrows(), m.ncols());
+        let args = super::split_commas(&toks[1..close]);
+        // 0-based indices of one subscript (`:` is all of `n`)
+        let idx = |a: &[Token], n: usize| -> Result<Vec<usize>> {
+            if matches!(a, [t] if t.is(":")) {
+                return Ok((0..n).collect());
+            }
+            let ev = WsEval { p: self, dir: &dir };
+            let v = ev.expr_all(a)?;
+            as_mat(&v)?
+                .iter()
+                .map(|&x| {
+                    if x >= 1.0 && x.fract() == 0.0 && (x as usize) <= n {
+                        Ok(x as usize - 1)
+                    } else {
+                        bail!("index {x} out of bounds (1..{n})")
+                    }
+                })
+                .collect()
+        };
+        let cells: Vec<(usize, usize)> = match args.as_slice() {
+            [i, j] => {
+                let (ri, ci) = (idx(i, nr)?, idx(j, nc)?);
+                ci.iter().flat_map(|&c| ri.iter().map(move |&r| (r, c))).collect()
+            }
+            [k] => idx(k, nr * nc)?.into_iter().map(|l| (l % nr, l / nr)).collect(),
+            _ => bail!("{loc}: {name}(...) = ...: one or two subscripts expected"),
+        };
+        if rhs.len() != 1 && rhs.len() != cells.len() {
+            bail!("{loc}: {name}(...) = ...: the dimensions do not agree");
+        }
+        let Some(WsValue::Num(m)) = self.q1.workspace.vars.get_mut(&name) else { unreachable!() };
+        for (k, &(r, c)) in cells.iter().enumerate() {
+            m[(r, c)] = if rhs.len() == 1 { rhs[0] } else { rhs[k] };
         }
         Ok(())
     }
@@ -653,7 +763,32 @@ impl WsEval<'_, '_> {
                 }
                 Some(x) if x.is(",") => *i += 1,
                 _ => {
-                    let v = self.expr(t, i)?;
+                    // MATLAB: in brackets `[0.01 -0.02]` is two elements (a sign after a blank
+                    // and before its operand starts a new element), `[0.01 - 0.02]` one
+                    let mut depth = 0i32;
+                    let mut end = *i;
+                    while let Some(x) = t.get(end) {
+                        if x.is("(") || x.is("[") || x.is("{") {
+                            depth += 1;
+                        } else if x.is(")") || x.is("]") || x.is("}") {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                        } else if depth == 0 && (x.is(",") || x.is(";")) {
+                            break;
+                        } else if depth == 0 && end > *i && (x.is("-") || x.is("+")) {
+                            let (p, n) = (&t[end - 1], t.get(end + 1));
+                            let after_blank = p.loc == x.loc && x.col.0 > p.col.1 + 1;
+                            let glued = n.is_some_and(|n| n.loc == x.loc && n.col.0 == x.col.1 + 1);
+                            let p_operand = !matches!(&p.tok, Tok::Punct(o) if !matches!(*o, ")" | "]" | "}"));
+                            if after_blank && glued && p_operand {
+                                break;
+                            }
+                        }
+                        end += 1;
+                    }
+                    let v = self.expr(&t[..end], i)?;
                     row.push(as_mat(&v)?.clone());
                 }
             }
@@ -675,6 +810,14 @@ impl WsEval<'_, '_> {
             }
             if let Some(v) = p.mf_locals.get(name) {
                 return Ok(scalar(*v));
+            }
+            // a calibrated parameter: Dynare's driver also assigns it to a MATLAB variable
+            // (`rho = M_.params(3);`)
+            if let Some(s) = p.b.symbol(name)
+                && s.kind == SymbolKind::Param
+                && !p.b.params[s.index].is_nan()
+            {
+                return Ok(scalar(p.b.params[s.index]));
             }
             return match name {
                 "pi" => Ok(scalar(std::f64::consts::PI)),
@@ -725,6 +868,38 @@ impl WsEval<'_, '_> {
             "log" => unary(f64::ln),
             "sqrt" => unary(f64::sqrt),
             "abs" => unary(f64::abs),
+            "floor" => unary(f64::floor),
+            "ceil" => unary(f64::ceil),
+            "round" => unary(f64::round),
+            // max/min of a vector, or elementwise of two arrays (a scalar broadcasts); NaN
+            // is ignored as in MATLAB
+            "max" | "min" => {
+                let pick = |a: f64, b: f64| match (a.is_nan(), b.is_nan()) {
+                    (true, _) => b,
+                    (_, true) => a,
+                    _ if (name == "max") == (b > a) => b,
+                    _ => a,
+                };
+                match args.as_slice() {
+                    [v] => {
+                        let v = as_mat(v)?;
+                        if v.nrows() != 1 && v.ncols() != 1 {
+                            bail!("{name}: only vectors are supported");
+                        }
+                        Ok(scalar(v.iter().copied().reduce(pick).unwrap_or(f64::NAN)))
+                    }
+                    [a, b] => {
+                        let (a, b) = (as_mat(a)?, as_mat(b)?);
+                        let (r, c) = if a.len() == 1 { b.shape() } else { a.shape() };
+                        if !(a.len() == 1 || b.len() == 1 || a.shape() == b.shape()) {
+                            bail!("{name}: arrays of different sizes");
+                        }
+                        let at = |m: &Mat, i: usize, j: usize| if m.len() == 1 { m[0] } else { m[(i, j)] };
+                        Ok(num(Mat::from_fn(r, c, |i, j| pick(at(a, i, j), at(b, i, j)))))
+                    }
+                    _ => bail!("{name}: expected one or two arguments"),
+                }
+            }
             "transpose" => match args.as_slice() {
                 [a] => Ok(num(as_mat(a)?.transpose())),
                 _ => bail!("transpose: expected one argument"),

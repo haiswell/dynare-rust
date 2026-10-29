@@ -1,0 +1,168 @@
+Prior distribution for parameter rho has unbounded density!
+Initial value of the log posterior (or likelihood): 983.0463
+improvement < crit termination
+
+Final value of minus the log posterior (or likelihood):-1343.679468 
+
+MODE CHECK
+
+Fval obtained by the optimization routine: -1343.679468
+
+RESULTS FROM POSTERIOR ESTIMATION
+parameters
+           prior mean     mode    s.d.  prior pstdev
+
+alp            0.3560   0.4035  0.0207   beta 0.0200 
+bet            0.9930   0.9909  0.0020   beta 0.0020 
+gam            0.0085   0.0046  0.0009   norm 0.0030 
+logmst         0.0002   0.0142  0.0015   norm 0.0070 
+rho            0.1290   0.8455  0.0340   beta 0.2230 
+phi            0.6500   0.6891  0.0482   beta 0.0500 
+del            0.0100   0.0017  0.0010   beta 0.0050 
+
+standard deviation of shocks
+           prior mean     mode    s.d.  prior pstdev
+
+e_a            0.0354   0.0136  0.0009   invg    Inf 
+e_m            0.0089   0.0033  0.0002   invg    Inf 
+
+
+Log data density [Laplace approximation] is 1299.024592.
+
+Estimation::mcmc: Multiple chains mode.
+Estimation::mcmc: Searching for initial values...
+Estimation::mcmc: Initial values found!
+
+Estimation::mcmc: Write details about the MCMC... Ok!
+Estimation::mcmc: Details about the MCMC are available in schorfheide_2000/metropolis/schorfheide_2000_mh_history_0.mat
+
+
+Estimation::mcmc: Number of mh files: 1 per block.
+Estimation::mcmc: Total number of generated files: 2.
+Estimation::mcmc: Total number of iterations: 5000.
+Estimation::mcmc: Current acceptance ratio per chain:
+                                                       Chain  1: 26.42%
+                                                       Chain  2: 26.12%
+Estimation::mcmc: Total number of MH draws per chain: 5000.
+Estimation::mcmc: Total number of generated MH files: 1.
+Estimation::mcmc: I'll use mh-files 1 to 1.
+Estimation::mcmc: In MH-file number 1 I'll start at line 2501.
+Estimation::mcmc: Finally I keep 2500 draws per chain.
+
+
+
+MCMC Inefficiency factors per block
+Parameter       Block 1     Block 2
+SE_e_a           15.517       7.030
+SE_e_m           39.199      16.933
+alp              18.848      27.751
+bet              30.755      44.506
+gam              12.085      46.466
+logmst           36.341      18.724
+rho              36.500       8.027
+phi              16.127       6.568
+del              18.400      40.555
+
+
+
+Convergence diagnostics results for chain 1.
+
+Geweke (1992) Convergence Tests, based on means of draws 2500 to 3000 vs 3750 to 5000 for chain 1.
+p-values are for Chi2-test for equality of means.
+Parameter         Post. Mean        Post. Std   p-val No Taper   p-val 4% Taper   p-val 8% Taper  p-val 15% Taper
+SE_e_a                 0.014            0.001            0.000            0.150            0.219            0.255
+SE_e_m                 0.003            0.000            0.000            0.132            0.185            0.210
+alp                    0.405            0.021            0.000            0.135            0.214            0.248
+bet                    0.990            0.002            0.000            0.035            0.071            0.064
+gam                    0.005            0.001            0.174            0.723            0.766            0.787
+logmst                 0.014            0.002            0.000            0.270            0.371            0.439
+rho                    0.844            0.036            0.601            0.894            0.915            0.923
+phi                    0.681            0.046            0.825            0.954            0.961            0.965
+del                    0.003            0.001            0.000            0.128            0.196            0.212
+
+
+
+
+Convergence diagnostics results for chain 2.
+
+Geweke (1992) Convergence Tests, based on means of draws 2500 to 3000 vs 3750 to 5000 for chain 2.
+p-values are for Chi2-test for equality of means.
+Parameter         Post. Mean        Post. Std   p-val No Taper   p-val 4% Taper   p-val 8% Taper  p-val 15% Taper
+SE_e_a                 0.014            0.001            0.469            0.861            0.886            0.901
+SE_e_m                 0.003            0.000            0.082            0.656            0.712            0.742
+alp                    0.404            0.021            0.000            0.016            0.043            0.075
+bet                    0.990            0.002            0.000            0.253            0.332            0.342
+gam                    0.005            0.001            0.000            0.038            0.069            0.098
+logmst                 0.014            0.002            0.000            0.060            0.117            0.157
+rho                    0.844            0.032            0.842            0.958            0.962            0.961
+phi                    0.682            0.050            0.012            0.490            0.501            0.482
+del                    0.003            0.001            0.157            0.760            0.806            0.825
+
+
+Univariate convergence diagnostic, Brooks and Gelman (1998):
+    Parameter 1...  Done! 
+    Parameter 2...  Done! 
+    Parameter 3...  Done! 
+    Parameter 4...  Done! 
+    Parameter 5...  Done! 
+    Parameter 6...  Done! 
+    Parameter 7...  Done! 
+    Parameter 8...  Done! 
+    Parameter 9...  Done! 
+
+marginal density: I'm computing the posterior mean and covariance...  Done!
+marginal density: I'm computing the posterior log marginal density (modified harmonic mean)... Done!
+
+
+ESTIMATION RESULTS
+
+Log data density (Modified Harmonic Mean) is 1299.058310.
+parameters
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+alp               0.356       0.4040      0.3718      0.4372     beta       0.0200
+bet               0.993       0.9901      0.9863      0.9937     beta       0.0020
+gam               0.009       0.0047      0.0029      0.0061     norm       0.0030
+logmst            0.000       0.0143      0.0120      0.0170     norm       0.0070
+rho               0.129       0.8434      0.7960      0.8988     beta       0.2230
+phi               0.650       0.6787      0.6017      0.7553     beta       0.0500
+del               0.010       0.0025      0.0005      0.0046     beta       0.0050
+
+standard deviation of shocks
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+e_a               0.035       0.0138      0.0124      0.0154     invg          Inf
+e_m               0.009       0.0033      0.0031      0.0036     invg          Inf
+Estimation::mcmc: Posterior (dsge) IRFs...
+Estimation::mcmc: Posterior IRFs, done!
+Estimation::compute_moments_varendo: I'm computing endogenous moments (this may take a while)... 
+
+
+Posterior mean variance decomposition (in percent)
+             e_a     e_m
+P          94.22    5.78
+gp_obs     32.47   67.53
+
+
+Done!
+
+Estimation::mcmc: Smoothed variables
+Estimation::mcmc: Smoothed variables, done!
+Estimation::mcmc: Smoothed shocks
+Estimation::mcmc: Smoothed shocks, done!
+Estimation::mcmc: Trend coefficients
+Estimation::mcmc: Trend coefficients, done!
+Estimation::mcmc: Init State
+Estimation::mcmc: Init State, done!
+Estimation::mcmc: Smoothed constant
+Estimation::mcmc: Smoothed constant, done!
+Estimation::mcmc: Smoothed trend
+Estimation::mcmc: Smoothed trend, done!
+Estimation::mcmc: Updated Variables
+Estimation::mcmc: Updated Variables, done!
+Estimation::mcmc: One step ahead forecast (filtered variables)
+Estimation::mcmc: One step ahead forecast (filtered variables), done!
+Estimation::mcmc: Forecasted variables (mean)
+Estimation::mcmc: Forecasted variables (mean), done!
+Estimation::mcmc: Forecasted variables (point)
+Estimation::mcmc: Forecasted variables (point), done!

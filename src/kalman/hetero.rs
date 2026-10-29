@@ -37,20 +37,31 @@ impl HeteroSpec {
         first_obs: usize,
         nobs: usize,
         exo_names: &[String],
+        init: crate::dates::Date,
     ) -> Result<Self> {
         let mut qvalue = Mat::from_element(n_exo, nobs + 1, f64::NAN);
         let mut qscale = Mat::from_element(n_exo, nobs + 1, f64::NAN);
         let fo = first_obs as i64;
         for d in decl {
-            for &p in &d.periods {
-                // mask_periods = periods >= first_obs & periods <= nobs+first_obs
-                if p >= fo && p <= nobs as i64 + fo {
-                    let c = (p - fo) as usize;
-                    if d.is_value {
-                        qvalue[(d.exo, c)] = d.value * d.value;
-                    } else {
-                        qscale[(d.exo, c)] = d.value * d.value;
-                    }
+            // mask_periods = periods >= first_obs & periods <= nobs+first_obs
+            let mut cols: Vec<usize> =
+                d.periods.iter().filter(|&&p| p >= fo && p <= nobs as i64 + fo).map(|&p| (p - fo) as usize).collect();
+            // dates: periods >= dataset_.dates(1) & periods <= dataset_.dates(end)
+            for &t in &d.dates {
+                let Some(c) = init.diff(t) else {
+                    bail!(
+                        "heteroskedastic_shocks: dates in \"periods\" do not have the same frequency as those in the dataset"
+                    )
+                };
+                if c >= 0 && c < nobs as i64 {
+                    cols.push(c as usize);
+                }
+            }
+            for c in cols {
+                if d.is_value {
+                    qvalue[(d.exo, c)] = d.value * d.value;
+                } else {
+                    qscale[(d.exo, c)] = d.value * d.value;
                 }
             }
         }

@@ -1,0 +1,152 @@
+==== Method of Moments Estimation (IRF_MATCHING) ====
+
+Initial value of the moment objective function: 682.5116
+
+Time required to compute objective function once: 0.1273 seconds
+
+Bayesian Impulse Response Function Matching with
+  - optimizer (mode_compute=5): newrat
+  - stochastic simulations with perturbation order: 1
+  - number of matched IRFs: 69
+  - number of parameters: 5
+
+Try diagonal Hessian
+
+Mode Compute Iteration 1: Value of minimized moment distance objective function: -200.2739458456.
+
+Computing Hessian at the mode.
+
+RESULTS FROM POSTERIOR ESTIMATION
+parameters
+           prior mean     mode    s.d.  prior pstdev
+
+kappa          0.1200   0.1124  0.0090   gamm 0.0500
+phi_pi         1.5000   1.5703  0.0272   norm 0.2500
+rho_a          0.7000   0.7977  0.0044   beta 0.1000
+rho_i          0.6000   0.6140  0.0153   beta 0.1000
+
+standard deviation of shocks
+           prior mean     mode    s.d.  prior pstdev
+
+e_i            0.2500   0.2420  0.0160   invg 1.0000
+
+Log data density [Laplace approximation] is 181.408689.
+method_of_moments::mcmc: Multiple chains mode.
+method_of_moments::mcmc: Searching for initial values...
+method_of_moments::mcmc: Initial values found!
+
+method_of_moments::mcmc: Write details about the MCMC... Ok!
+method_of_moments::mcmc: Details about the MCMC are available in nkmc/metropolis/nkmc_mh_history_0.mat
+
+method_of_moments::mcmc: Number of mh files: 1 per block.
+method_of_moments::mcmc: Total number of generated files: 2.
+method_of_moments::mcmc: Total number of iterations: 1000.
+method_of_moments::mcmc: Current acceptance ratio per chain:
+                                                       Chain  1: 57.2%
+                                                       Chain  2: 59.5%
+method_of_moments::mcmc: Total number of MH draws per chain: 1000.
+method_of_moments::mcmc: Total number of generated MH files: 1.
+method_of_moments::mcmc: I'll use mh-files 1 to 1.
+method_of_moments::mcmc: In MH-file number 1 I'll start at line 501.
+method_of_moments::mcmc: Finally I keep 500 draws per chain.
+
+MCMC Inefficiency factors per block
+Parameter       Block 1     Block 2
+SE_e_i           46.236      28.049
+kappa            14.591       9.985
+phi_pi           23.304       4.911
+rho_a            13.994       7.822
+rho_i            14.726       8.611
+
+marginal density: I'm computing the posterior mean and covariance...  Done!
+marginal density: I'm computing the posterior log marginal density (modified harmonic mean)... Done!
+
+ESTIMATION RESULTS
+
+Log data density (Modified Harmonic Mean) is 181.261361.
+parameters
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+kappa             0.120       0.1125      0.0983      0.1282     gamm       0.0500
+phi_pi            1.500       1.5718      1.5302      1.6131     norm       0.2500
+rho_a             0.700       0.7975      0.7901      0.8041     beta       0.1000
+rho_i             0.600       0.6114      0.5869      0.6368     beta       0.1000
+
+standard deviation of shocks
+             prior mean   post. mean        90% HPD interval    prior       pstdev
+
+e_i               0.250       0.2417      0.2121      0.2716     invg       1.0000
+
+COMPARISON OF MATCHED DATA IRFS AND MODEL IRFS
+IRF                  Data       Model
+i e_a (2)      -0.9444981  -1.0083457
+i e_a (3)      -1.2120516  -1.2333391
+i e_a (4)      -1.2525827  -1.1745016
+i e_a (5)      -1.1178614  -1.0215858
+i e_a (6)      -0.8819638  -0.8524859
+i e_a (7)      -0.6543905  -0.6966554
+i e_a (8)      -0.5038725  -0.5630515
+i e_a (9)      -0.4264027  -0.4523530
+i e_a (10)     -0.3768232  -0.3622258
+i e_i (1)      -0.3185155  -0.2895290
+i e_i (2)      -0.2471544  -0.2311888
+i e_i (3)      -0.1803975  -0.1845006
+i e_i (4)       1.3515834   1.4306243
+i e_i (5)       1.0934663   1.0546162
+i e_i (6)       0.8610360   0.8026579
+i e_i (7)       0.6358350   0.6230340
+i e_i (8)       0.4553529   0.4892659
+i e_i (9)       0.3439976   0.3868045
+i e_i (10)      0.2881315   0.3069687
+i e_i (11)      0.2532199   0.2441352
+i e_i (12)      0.2133970   0.1943974
+pi e_a (1)      0.1653187   0.1548973
+pi e_a (2)      0.1205601   0.1234699
+pi e_a (3)      0.0897419   0.0984396
+pi e_a (4)      0.9789442   0.8909142
+pi e_a (5)      0.8828228   0.8524077
+pi e_a (6)      0.6967167   0.7429157
+pi e_a (7)      0.5532698   0.6205503
+pi e_a (8)      0.4757644   0.5073746
+pi e_a (9)      0.4240244   0.4101828
+pi e_a (10)     0.3600405   0.3295882
+pi e_a (11)     0.2800571   0.2639425
+pi e_a (12)     0.2046815   0.2109803
+pi e_i (1)     -0.2604879  -0.2366408
+pi e_i (2)     -0.1067590  -0.1052700
+pi e_i (3)     -0.0419394  -0.0468295
+pi e_i (4)     -0.0172667  -0.0208322
+pi e_i (5)     -0.0078535  -0.0092672
+pi e_i (6)     -0.0037406  -0.0041225
+pi e_i (7)     -0.0017066  -0.0018339
+pi e_i (8)     -0.0007154  -0.0008158
+pi e_i (9)     -0.0002822  -0.0003629
+pi e_i (10)    -0.0001136  -0.0001614
+pi e_i (11)    -0.0000503  -0.0000718
+pi e_i (12)    -0.0000239  -0.0000319
+y e_a (1)      -0.0517989  -0.0475766
+y e_a (2)      -0.0203488  -0.0211645
+y e_a (3)      -0.0083777  -0.0094151
+y e_a (4)      -0.0038105  -0.0041883
+y e_a (5)      -0.0018149  -0.0018632
+y e_a (6)      -0.0008280  -0.0008288
+y e_a (7)      -0.0003471  -0.0003687
+y e_a (8)      -0.0001369  -0.0001640
+y e_a (9)      -0.0000551  -0.0000730
+y e_a (10)     -0.0000244  -0.0000325
+y e_a (11)     -0.0000116  -0.0000144
+y e_a (12)     -0.0000054  -0.0000064
+y e_i (1)       0.1704299   0.1758916
+y e_i (2)       0.0701669   0.0782457
+y e_i (3)       0.0319145   0.0348077
+y e_i (4)       0.0152008   0.0154843
+y e_i (5)       0.0069353   0.0068882
+y e_i (6)       0.0029071   0.0030642
+y e_i (7)       0.0011467   0.0013631
+y e_i (8)       0.0004616   0.0006064
+y e_i (9)       0.0002043   0.0002698
+y e_i (10)      0.0000970   0.0001200
+y e_i (11)      0.0000451   0.0000534
+y e_i (12)      0.0000194   0.0000237
+
+==== Method of Moments Estimation (IRF_MATCHING) Completed ====

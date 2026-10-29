@@ -128,7 +128,9 @@ impl RamseyStatic<'_> {
         let model = self.model;
         let r = self.info();
         let n = model.n_endo();
-        let n0 = r.orig_endo_nbr;
+        // M_.ramsey_orig_endo_nbr (the FOCs: declared variables and diff / EXPECTATION aux
+        // variables) and M_.orig_endo_nbr (declared variables)
+        let (n0, nd) = (r.orig_endo_nbr, model.orig_endo_nbr);
         let inst_nbr = n0 - r.orig_eq_nbr;
         let exo = self.exo_ss.to_vec();
         let mut params = p.to_vec();
@@ -140,16 +142,16 @@ impl RamseyStatic<'_> {
                 yi[k] = v;
             }
             ssm.eval(model, &mut yi, &exo, &mut params);
-            if yi[..n0].iter().any(|v| !v.is_finite()) {
+            if yi[..nd].iter().any(|v| !v.is_finite()) {
                 // complex / NaN steady state: penalty (dynare-rust's NaN for MATLAB's complex)
-                let pen = 1.0 + yi[..n0].iter().filter(|v| v.is_finite()).map(|v| v.abs()).sum::<f64>();
+                let pen = 1.0 + yi[..nd].iter().filter(|v| v.is_finite()).map(|v| v.abs()).sum::<f64>();
                 return Eval { resids: vec![pen; inst_nbr], steady_state: vec![f64::NAN; n], params };
             }
             full = yi;
         }
         let nm = r.mult_index.len();
         let mut xx = vec![0.0; n];
-        xx[..n0].copy_from_slice(&full[..n0]);
+        xx[..nd].copy_from_slice(&full[..nd]);
         let has_aux = !model.aux_vars.is_empty();
         if has_aux {
             model.set_auxiliary_variables(&mut xx, &exo, &params);
@@ -176,7 +178,7 @@ impl RamseyStatic<'_> {
         let resids = if self.ssm.is_some() {
             r1
         } else {
-            let mut v: Vec<f64> = res[n0..n0 + (n0 - inst_nbr)].to_vec();
+            let mut v: Vec<f64> = res[n0..n0 + (nd - inst_nbr)].to_vec();
             v.extend(r1);
             v
         };
@@ -255,7 +257,7 @@ impl RamseyStatic<'_> {
                 (ys0, p.to_vec()) // check_static_model: the initial values already solve the model
             } else {
                 let nl = |x: &[f64]| self.static_1(p, x, ys_init).resids;
-                let out = self.solve_fd(&nl, &ys0[..n0], opts);
+                let out = self.solve_fd(&nl, &ys0[..model.orig_endo_nbr], opts);
                 if out.errorflag {
                     return Err(SolveError::new(81, f64::NAN));
                 }

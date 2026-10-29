@@ -155,3 +155,92 @@ impl DynamicDerivatives {
         self.g2_index.is_empty()
     }
 }
+
+/// Symbolic derivatives of the dynamic model of every order `2..=order` (any `order`), for the
+/// general k-order solver (`order >= 4`). Same variables and sorted-index convention as
+/// [`DynamicDerivatives`]: `index[m - 2]` lists `(eq, [v1 <= ... <= vm])`.
+#[derive(Clone, Debug)]
+pub struct DynamicDerivativesK {
+    pub order: usize,
+    pub index: Vec<Vec<(usize, Vec<usize>)>>,
+    n_endo: usize,
+    n_params: usize,
+    has_ss: bool,
+    tapes: Vec<Tape>,
+}
+
+impl Model {
+    /// Symbolic derivatives of orders `2..=order` of the dynamic model (see [`DynamicDerivativesK`]).
+    pub fn dynamic_derivatives_k(&self, order: usize) -> DynamicDerivativesK {
+        let n = self.n_endo();
+        let mut dag = self.dag.clone();
+        let mut memo: HashMap<DiffVar, HashMap<NodeId, NodeId>> = HashMap::new();
+        let mut buf = Vec::new();
+        let mut found: Vec<Vec<(usize, Vec<usize>, NodeId)>> = vec![Vec::new(); order.saturating_sub(1)];
+        // depth-first over sorted variable tuples
+        let mut stack: Vec<(usize, Vec<usize>, NodeId)> = Vec::new();
+        for (eq, &r) in self.resid.iter().enumerate() {
+            stack.push((eq, Vec::new(), r));
+            while let Some((eq, cols, f)) = stack.pop() {
+                if cols.len() == order {
+                    continue;
+                }
+                let lo = cols.last().copied().unwrap_or(0);
+                for c in leaf_cols(&dag, f, n, &mut buf).into_iter().filter(|&c| c >= lo) {
+                    let v = col_var(n, c);
+                    let d = dag.diff(f, v, memo.entry(v).or_default());
+                    if d == Dag::ZERO {
+                        continue;
+                    }
+                    let mut cs = cols.clone();
+                    cs.push(c);
+                    if cs.len() >= 2 {
+                        found[cs.len() - 2].push((eq, cs.clone(), d));
+                    }
+                    stack.push((eq, cs, d));
+                }
+            }
+        }
+        let dyn_y = move |j: u32, l: i32| (l + 1) as usize * n + j as usize;
+        let x0 = |k: u32, _l: i32| k as usize;
+        let tapes = found
+            .iter()
+            .map(|f| Tape::compile(&dag, &f.iter().map(|e| e.2).collect::<Vec<_>>(), &dyn_y, &x0))
+            .collect();
+        DynamicDerivativesK {
+            order,
+            index: found.into_iter().map(|f| f.into_iter().map(|(eq, cs, _)| (eq, cs)).collect()).collect(),
+            n_endo: n,
+            n_params: self.n_params(),
+            has_ss: self.uses_steady_state(),
+            tapes,
+        }
+    }
+}
+
+impl DynamicDerivativesK {
+    /// Values at the steady state `ys` (all leads/lags at `ys`), `vals[m - 2]` in the order of
+    /// `index[m - 2]` (see [`DynamicDerivatives::eval`] for `p`).
+    pub fn eval(&self, ys: &[f64], x: &[f64], p: &[f64]) -> Vec<Vec<f64>> {
+        let y3: Vec<f64> = ys.iter().chain(ys).chain(ys).copied().collect();
+        let pext;
+        let p = if self.has_ss && p.len() < self.n_params + self.n_endo {
+            pext = [&p[..self.n_params], ys].concat();
+            &pext[..]
+        } else {
+            p
+        };
+        let mut s = vec![0.0; self.tapes.iter().map(|t| t.scratch_len()).max().unwrap_or(0)];
+        self.tapes
+            .iter()
+            .zip(&self.index)
+            .map(|(t, idx)| {
+                let mut out = vec![0.0; idx.len()];
+                if !out.is_empty() {
+                    t.eval_into(&y3, x, p, &mut s, &mut out);
+                }
+                out
+            })
+            .collect()
+    }
+}

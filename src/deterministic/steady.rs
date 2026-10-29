@@ -81,6 +81,12 @@ pub fn evaluate_steady_state(
     opts: &SteadyOptions,
     check: bool,
 ) -> Result<(Vec<f64>, Vec<f64>), SolveError> {
+    if model.planner().is_some_and(|pl| pl.ramsey.is_some()) {
+        // options_.ramsey_policy: dyn_ramsey_static (the steady-state model, if any, gives the
+        // variables conditional on the instruments)
+        let rs = crate::policy::ramsey::RamseyStatic { model, ssm, exo_ss: x };
+        return rs.steady_state(params, ys_init, opts);
+    }
     let mut p = params.to_vec();
     if let Some(ssm) = ssm {
         let mut ys = ys_init.to_vec();
@@ -114,6 +120,11 @@ pub fn evaluate_steady_state(
     model.set_auxiliary_variables(&mut g, x, &p);
     // ---- solve_algo = 10 (lmmcp on static_mcp_problem; 11, PATH, is not shipped
     // with Dynare and also runs lmmcp here)
+    if model.bytecode && opts.solve_algo == 5 {
+        let r = |y: &[f64]| f(y).0;
+        let ys = crate::solver::steady_state_bytecode(&f, &r, &g, opts)?;
+        return Ok((ys, p));
+    }
     if matches!(opts.solve_algo, 10 | 11) && !opts.linear {
         return steady_mcp(model, &g, x, p, opts);
     }

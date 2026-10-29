@@ -72,6 +72,18 @@ pub struct SliceOptions {
     /// objective is always evaluated in full (same draws, no early rejection).
     pub fast_likelihood_evaluation_for_rejection: bool,
     pub fast_likelihood_evaluation_for_rejection_penalty: f64,
+    /// `maximize` (false): each iteration maximizes the posterior from the last draw
+    /// (`posterior_sampler_iteration.m`) instead of drawing a slice step.
+    pub maximize: bool,
+    /// `maximize_using_mh_bounds` (false): the maximization stays within the range of the
+    /// previous MCMC's draws (`load_mh_file`), see [`maximize_bounds`].
+    pub maximize_using_mh_bounds: bool,
+    /// `mode_compute` (5) of `maximize`.
+    pub mode_compute: i32,
+    /// The estimation's `optim` (`options_.optim_opt`), read by the `maximize` optimizer.
+    pub optim: Option<OptValue>,
+    /// The bounds of `maximize_using_mh_bounds` (set by [`maximize_bounds`]).
+    pub maximize_bounds: Option<Bounds>,
 }
 
 impl Default for SliceOptions {
@@ -85,6 +97,11 @@ impl Default for SliceOptions {
             use_prior_draws: false,
             fast_likelihood_evaluation_for_rejection: false,
             fast_likelihood_evaluation_for_rejection_penalty: 10.0,
+            maximize: false,
+            maximize_using_mh_bounds: false,
+            mode_compute: 5,
+            optim: None,
+            maximize_bounds: None,
         }
     }
 }
@@ -262,12 +279,9 @@ impl SamplerOptions {
                         );
                     }
                 }
-                ("maximize" | "maximize_using_mh_bounds", SamplingMethod::Slice) => {
-                    if flag(&v)? {
-                        bail!("slice: option {k} (needs load_mh_file) is not ported to dynare-rust");
-                    }
-                }
-                ("mode_compute", SamplingMethod::Slice) => {} // only used by `maximize`
+                ("maximize", SamplingMethod::Slice) => so.slice.maximize = flag(&v)?,
+                ("maximize_using_mh_bounds", SamplingMethod::Slice) => so.slice.maximize_using_mh_bounds = flag(&v)?,
+                ("mode_compute", SamplingMethod::Slice) => so.slice.mode_compute = kv_num(&k, &v)? as i32,
                 _ => println!("WARNING: {who}: Unknown option ({k})!"),
             }
         }
@@ -295,6 +309,7 @@ impl SamplerOptions {
     /// TaRB sampler's own `optim` only when that one is non-empty, so the block optimizer
     /// (`posterior_sampler_iteration.m`) runs with the estimation's options otherwise.
     pub fn with_estimation_optim(mut self, optim: Option<&OptValue>) -> Self {
+        self.slice.optim = optim.cloned();
         if self.tarb.optim.is_none() {
             self.tarb.optim = optim.cloned();
         }
@@ -319,6 +334,80 @@ impl SamplerOptions {
             SamplingMethod::TaRB => "TaRB Metropolis-Hastings",
         }
     }
+}
+
+/// `check_posterior_sampler_options.m` on `maximize_using_mh_bounds` (the slice sampler's
+/// `maximize` within the range of the previous MCMC's draws): the option needs `maximize` and
+/// `load_mh_file`, and excludes `mh_recover`.
+pub fn check_maximize(so: &SamplerOptions, load_mh_file: bool, mh_recover: bool) -> Result<()> {
+    if so.method != SamplingMethod::Slice || !so.slice.maximize_using_mh_bounds {
+        return Ok(());
+    }
+    if !so.slice.maximize {
+        bail!("check_posterior_sampler_options:: the maximize_using_mh_bounds requires the maximize option.");
+    }
+    if !load_mh_file {
+        bail!("check_posterior_sampler_options:: the maximize_using_mh_bounds requires the load_mh_file option.");
+    }
+    if mh_recover {
+        bail!(
+            "check_posterior_sampler_options:: the maximize_using_mh_bounds is incompatible with the mh_recover option."
+        );
+    }
+    Ok(())
+}
+
+/// `check_posterior_sampler_options.m` with `maximize` and `maximize_using_mh_bounds`
+/// (after [`check_maximize`]): `GetAllPosteriorDraws(options_, dname, fname, 'all')` (the
+/// kept draws of the previous MCMC, in a matrix of `NumberOfDraws*nblck` rows preallocated
+/// with zeros, `NumberOfDraws` following the current `mh_drop`), and the bounds
+/// `lb = max(min(lb*0.99, lb-1e-6), (lb+mh_lb)/2)`, `ub = min(max(ub*1.01, ub+1e-6), (ub+mh_ub)/2)`
+/// around their range.
+pub fn maximize_bounds(
+    so: &mut SamplerOptions,
+    dname: &std::path::Path,
+    fname: &str,
+    mh_drop: f64,
+    mh_bounds: &Bounds,
+) -> Result<()> {
+    use super::mh_files::{MhFile, MhPaths, load_last_record};
+    if so.method != SamplingMethod::Slice || !(so.slice.maximize && so.slice.maximize_using_mh_bounds) {
+        return Ok(());
+    }
+    let paths = MhPaths::new(dname, fname);
+    let (rec, _) = load_last_record(&paths)?;
+    let kd =
+        rec.keeped_draws.clone().ok_or_else(|| anyhow!("GetAllPosteriorDraws: the mh history has no KeepedDraws"))?;
+    let npar = rec.npar();
+    let total = rec.total_draws();
+    let number_of_draws = total - (mh_drop * total as f64).floor() as usize;
+    let (mut lo, mut hi) = (vec![f64::INFINITY; npar], vec![f64::NEG_INFINITY; npar]);
+    let mut rows = 0;
+    for b in 1..=rec.nblck {
+        let mut first_line = kd.first_line;
+        for k in kd.first_mh_file..=rec.total_files() {
+            let f = MhFile::read(&paths.mh_file(k, b))?;
+            for t in first_line.saturating_sub(1)..f.rows() {
+                for (i, &v) in f.row(t).iter().enumerate() {
+                    lo[i] = lo[i].min(v);
+                    hi[i] = hi[i].max(v);
+                }
+                rows += 1;
+            }
+            first_line = 1;
+        }
+    }
+    if rows < number_of_draws * rec.nblck {
+        // rows of the preallocated zeros(NumberOfDraws*nblcks, npar) left unfilled
+        for i in 0..npar {
+            lo[i] = lo[i].min(0.0);
+            hi[i] = hi[i].max(0.0);
+        }
+    }
+    let lb = (0..npar).map(|i| (lo[i] * 0.99).min(lo[i] - 1e-6).max(0.5 * (lo[i] + mh_bounds.lb[i]))).collect();
+    let ub = (0..npar).map(|i| (hi[i] * 1.01).max(hi[i] + 1e-6).min(0.5 * (hi[i] + mh_bounds.ub[i]))).collect();
+    so.slice.maximize_bounds = Some(Bounds { lb, ub });
+    Ok(())
 }
 
 /// `load(mode_files, 'xparams')`: one mode per column.
@@ -504,7 +593,10 @@ fn run_chains<'a>(
     let npar = ix2[0].len();
     let nkeep = opts.replic.saturating_sub(opts.store_from);
     let ses = opts.session.as_deref();
+    // options_.gradient_epsilon/method of the slice sampler's maximize and TaRB's optimizer
+    let grad = crate::estimation::optim::minimize::gradient_options();
     let run_chain = |b: usize| -> Result<(Chain, f64, f64)> {
+        let _grad = crate::estimation::optim::minimize::GradientGuard::set(grad);
         let nruns = ses.map_or(opts.replic, |s| s.chain_rng(b, opts.seed, opts.replic).1);
         let mut writer = ses.and_then(|s| s.take_writer(b));
         let mut st = make(b, &ix2[b], ilogpo2[b])?;
@@ -725,7 +817,15 @@ pub fn posterior_sampler_full(
             run_chains(&ix2, &ilogpo2, mh, progress, &make)?
         }
         SamplingMethod::Slice => {
-            let setup = slice::SliceSetup::new(so, invhess, bounds, npar)?;
+            let loaded = so.use_mh_covariance_matrix && ses.is_some_and(|s| s.start_points().is_some());
+            let setup = slice::SliceSetup::new(so, invhess, bounds, npar, loaded)?;
+            if so.slice.maximize {
+                let mb = so.slice.maximize_bounds.as_ref().unwrap_or(bounds);
+                let make = |b: usize, x: &[f64], _lp: f64| -> Result<Box<dyn Stepper + '_>> {
+                    Ok(Box::new(slice::Maximize::new(obj, mb, so, chain_rng(b), x, b)))
+                };
+                return finish(run_chains(&ix2, &ilogpo2, mh, progress, &make)?, factor, width);
+            }
             let make = |b: usize, x: &[f64], lp: f64| -> Result<Box<dyn Stepper + '_>> {
                 Ok(Box::new(slice::Slice::new(obj, &setup, so.priors.as_deref(), chain_rng(b), x, lp, width)))
             };
@@ -738,6 +838,14 @@ pub fn posterior_sampler_full(
             run_chains(&ix2, &ilogpo2, mh, progress, &make)?
         }
     };
+    finish((chains, acceptance, evals_per_draw), factor, width)
+}
+
+fn finish(
+    (chains, acceptance, evals_per_draw): (Vec<Chain>, Vec<f64>, Vec<f64>),
+    factor: f64,
+    width: usize,
+) -> Result<SamplerResult> {
     Ok(SamplerResult {
         mh: MhResult { chains, init_scale_factor: factor, prefetch: width },
         acceptance,

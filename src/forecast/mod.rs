@@ -186,7 +186,8 @@ pub fn dsge_smoother_request(
         req
     } else {
         let mut r0 = req.cloned().unwrap_or_default();
-        r0.a_initial = Some(crate::estimation::q3::kalman_a0(dsge, &resolved, &full, &data.filter_initial_state));
+        let fis = data.filter_initial_state_at(&resolved.params);
+        r0.a_initial = Some(crate::estimation::q3::kalman_a0(dsge, &resolved, &full, &fis));
         req_init = r0;
         Some(&req_init)
     };

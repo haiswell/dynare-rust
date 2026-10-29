@@ -55,10 +55,11 @@ impl PlannerSpec {
 /// Ramsey structure (`M_.ramsey_orig_endo_nbr`, `M_.ramsey_orig_eq_nbr`, multipliers).
 #[derive(Clone, Debug)]
 pub struct RamseyInfo {
-    /// Declared endogenous variables (`M_.ramsey_orig_endo_nbr`); the first that many
-    /// equations are the FOCs.
+    /// Declared endogenous variables and the `diff` / `EXPECTATION` aux variables
+    /// (`M_.ramsey_orig_endo_nbr`); the first that many equations are the FOCs.
     pub orig_endo_nbr: usize,
-    /// Original model equations (`M_.ramsey_orig_eq_nbr`), equations `orig_endo_nbr..`.
+    /// Original model equations and the `diff` / `EXPECTATION` aux equations
+    /// (`M_.ramsey_orig_eq_nbr`), equations `orig_endo_nbr..`.
     pub orig_eq_nbr: usize,
     /// Endogenous index of `MULT_{i+1}` (multiplier of original equation `i`).
     pub mult_index: Vec<usize>,
@@ -79,6 +80,8 @@ struct ObjectiveTape {
     /// with one output per sorted triple `j <= k <= l` of `third`.
     tape3: Tape,
     third: Vec<(usize, usize, usize)>,
+    /// The static objective (for the derivatives of any order, `objective_derivatives_k`).
+    node: NodeId,
 }
 
 /// Optimal-policy information attached to a [`Model`].
@@ -108,7 +111,6 @@ pub(super) struct Prepared {
 pub(super) struct Builder<'a> {
     pub dag: &'a mut Dag,
     pub endo_names: &'a mut Vec<String>,
-    pub endo_symb_id: &'a mut Vec<usize>,
     pub next_symb_id: &'a mut usize,
     pub param_names: &'a mut Vec<String>,
     pub params: &'a mut Vec<f64>,
@@ -157,13 +159,7 @@ pub(super) fn prepare(b: Builder<'_>, spec: Option<PlannerSpec>) -> Result<Optio
                  it needs one equation less per instrument"
             );
         }
-        if !spec.instruments.is_empty() && orig_endo_nbr - n_eq != instruments.len() {
-            bail!(
-                "optimal policy: {} instrument(s) declared but the model has {} equation(s) less than variables",
-                instruments.len(),
-                orig_endo_nbr - n_eq
-            );
-        }
+        // a different number of instruments only warns (model_diagnostics.m, ramsey::check_instruments)
     }
     if spec.discretionary {
         eq_deficit = orig_endo_nbr - n_eq;
@@ -176,26 +172,12 @@ pub(super) fn prepare(b: Builder<'_>, spec: Option<PlannerSpec>) -> Result<Optio
         if b.dag.max_endo_lead(obj) > 0 || b.dag.max_endo_lag(obj) > 0 {
             bail!("leads and lags on variables are forbidden in 'planner_objective'");
         }
-        let beta = discount_param.expect("discount parameter");
-        // multipliers, one per equation, after the declared variables
-        let mut mult_index = Vec::with_capacity(n_eq);
-        for i in 0..n_eq {
-            let name = format!("MULT_{}", i + 1);
-            if b.symbols.contains_key(&name) {
-                bail!("'{name}' is reserved for the Ramsey multipliers");
-            }
-            b.endo_names.push(name.clone());
-            b.endo_symb_id.push(*b.next_symb_id);
-            let j = b.endo_names.len() - 1;
-            b.symbols.insert(name, super::Symbol { kind: super::SymbolKind::Endo, index: j, symb_id: *b.next_symb_id });
-            *b.next_symb_id += 1;
-            mult_index.push(j);
-        }
-        // The first-order conditions are built by `dtree` (the preprocessor's DataTree); the
-        // static ones are filled in by `ModelBuilder::build` (`Prepared::ramsey.3`).
-        let _ = (beta, obj);
-        let foc_static = Vec::new();
-        ramsey = Some((orig_endo_nbr, n_eq, mult_index, foc_static));
+        // The multipliers (one per equation, after the declared variables and the diff /
+        // EXPECTATION aux variables) and the first-order conditions are created by `dtree` (the
+        // preprocessor's DataTree), see `Prepared::set_ramsey`; the static FOCs are filled in
+        // by `ModelBuilder::build` (`Prepared::ramsey.3`).
+        let _ = obj;
+        ramsey = Some((orig_endo_nbr, n_eq, Vec::new(), Vec::new()));
     }
     Ok(Some(Prepared { spec, discount_param, instruments, eq_deficit, ramsey }))
 }
@@ -203,16 +185,27 @@ pub(super) fn prepare(b: Builder<'_>, spec: Option<PlannerSpec>) -> Result<Optio
 impl Prepared {
     /// Input of the Ramsey step of the `dtree` transform pass.
     pub(super) fn tree_input(&self, endo_symb_id: &[usize], discount_symb: usize) -> Option<super::dtree::PlannerIn> {
-        let (orig_endo, _, mult_index, _) = self.ramsey.as_ref()?;
+        let (orig_endo, _, _, _) = self.ramsey.as_ref()?;
         let (objective, nums) = self.spec.objective_ast.clone()?;
         Some(super::dtree::PlannerIn {
             objective,
             nums,
-            orig_endo: *orig_endo,
-            mults: mult_index.iter().map(|&j| endo_symb_id[j] as u32).collect(),
             discount: discount_symb as u32,
             endo_symb: endo_symb_id[..*orig_endo].iter().map(|&x| x as u32).collect(),
         })
+    }
+
+    /// Sizes and multipliers created by the transform pass: `M_.ramsey_orig_endo_nbr`,
+    /// `M_.ramsey_orig_eq_nbr` and the endogenous index of each `MULT_i`.
+    pub(super) fn set_ramsey(&mut self, orig_endo: usize, orig_eq: usize, mult_index: Vec<usize>) {
+        if let Some(r) = self.ramsey.as_mut() {
+            (r.0, r.1, r.2) = (orig_endo, orig_eq, mult_index);
+        }
+    }
+
+    /// Whether the model has `ramsey_model` / `ramsey_policy`.
+    pub(super) fn is_ramsey(&self) -> bool {
+        self.ramsey.is_some()
     }
 
     /// Static versions of the first-order conditions (before the aux substitution).
@@ -276,6 +269,7 @@ impl Prepared {
                 hess,
                 tape3: Tape::compile(dag, &roots3, &st_y, &x0),
                 third,
+                node: u,
             }
         });
         let ramsey = self.ramsey.map(|(orig_endo_nbr, orig_eq_nbr, mult_index, foc_static)| {
@@ -357,6 +351,61 @@ impl Model {
         let mut s = vec![0.0; o.tape3.scratch_len()];
         o.tape3.eval(y, x, p, &mut s);
         Some(o.third.iter().enumerate().map(|(k, &(i, j, l))| (i, j, l, o.tape3.output(k, &s))).collect())
+    }
+
+    /// Derivatives of orders `1..=order` of the planner objective at the static point `y`
+    /// (`k_order_welfare` at order >= 4): `out[m - 1]` lists `([j1 <= ... <= jm], value)` over
+    /// the endogenous variables (declaration order), structurally non-zero entries only.
+    pub fn planner_objective_derivatives_k(
+        &self,
+        order: usize,
+        y: &[f64],
+        x: &[f64],
+        p: &[f64],
+    ) -> Option<Vec<Vec<(Vec<usize>, f64)>>> {
+        let o = self.planner.as_ref()?.objective.as_ref()?;
+        let mut dag = self.dag.clone();
+        let mut found: Vec<Vec<(Vec<usize>, NodeId)>> = vec![Vec::new(); order];
+        let mut stack = vec![(Vec::<usize>::new(), o.node)];
+        let mut leaves = Vec::new();
+        while let Some((js, f)) = stack.pop() {
+            if js.len() == order {
+                continue;
+            }
+            leaves.clear();
+            dag.collect_leaves(f, &mut leaves);
+            let lo = js.last().copied().unwrap_or(0);
+            let mut vars: Vec<usize> = leaves
+                .iter()
+                .filter_map(|l| if let Node::Endo(j, _) = l { Some(*j as usize) } else { None })
+                .filter(|&j| j >= lo)
+                .collect();
+            vars.sort_unstable();
+            vars.dedup();
+            for j in vars {
+                let mut memo = HashMap::new();
+                let d = dag.diff(f, DiffVar::Endo(j as u32, 0), &mut memo);
+                if d != Dag::ZERO {
+                    let mut js2 = js.clone();
+                    js2.push(j);
+                    found[js2.len() - 1].push((js2.clone(), d));
+                    stack.push((js2, d));
+                }
+            }
+        }
+        let st_y = |j: u32, _l: i32| j as usize;
+        let x0 = |k: u32, _l: i32| k as usize;
+        Some(
+            found
+                .into_iter()
+                .map(|f| {
+                    let tape = Tape::compile(&dag, &f.iter().map(|e| e.1).collect::<Vec<_>>(), &st_y, &x0);
+                    let mut s = vec![0.0; tape.scratch_len()];
+                    tape.eval(y, x, p, &mut s);
+                    f.into_iter().enumerate().map(|(k, (js, _))| (js, tape.output(k, &s))).collect()
+                })
+                .collect(),
+        )
     }
 
     /// `<fname>.ramsey_multipliers_static_g1`: derivative of the static FOCs (rows,

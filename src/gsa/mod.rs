@@ -358,6 +358,12 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
         eo.push((k.clone(), v.clone()));
     }
     let mut dsge = DsgeModel::new(mf, None).context("sensitivity")?;
+    // run.m: options_.loglinear = options_gsa.loglinear (inside the estimation-init branch)
+    if runs_estimation_init(mf, cmd_index, &g)
+        && let Some(v) = opt(o, "loglinear")
+    {
+        dsge.loglinear = !matches!(v, OptValue::Num(x) if *x == 0.0);
+    }
     let qz = qz_criterium(&eo, runs_estimation_init(mf, cmd_index, &g));
     dsge.set_solver_options(crate::solver::SolverOptions { qz_criterium: qz, ..Default::default() });
     if mf.model.n_exo() == 0 {
@@ -367,8 +373,11 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
     }
     let nshock =
         dsge.estimated.iter().filter(|e| matches!(e.kind, EstimatedKind::StdErr(_) | EstimatedKind::Corr(..))).count();
+    // stability_mapping.m: without priors (ML) the bounds are those of estimated_params
+    let ml = dsge.priors.is_empty();
     let prior_trunc = match num(&eo, "prior_trunc") {
         Some(v) if v != 0.0 => v,
+        _ if ml => 0.0,
         _ => {
             println!(
                 "\nstability_mapping: GSA with priors requires bounded support. Setting options_.prior_trunc=1e-10."
@@ -384,7 +393,14 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
             _ => (e.lb, e.ub),
         })
         .collect();
-    let bounds = estimation_bounds(&dsge.priors, &explicit, prior_trunc);
+    let bounds = if ml {
+        Bounds {
+            lb: explicit.iter().map(|b| b.0.unwrap_or(f64::NEG_INFINITY)).collect(),
+            ub: explicit.iter().map(|b| b.1.unwrap_or(f64::INFINITY)).collect(),
+        }
+    } else {
+        estimation_bounds(&dsge.priors, &explicit, prior_trunc)
+    };
     let mut xparam_calib = calibration_vector(&dsge); // get_all_parameters(estim_params_, M_)
     // stability_mapping.m: with neighborhood_width > 0 and a mode_file, the sample is centred
     // on xparam1 loaded from the mode file
@@ -429,14 +445,14 @@ pub fn run(mf: &ModFile, dir: &Path, fname: &str, o: &Options, cmd_index: usize)
         let mh_drop = num(&eo, "mh_drop").unwrap_or(0.5);
         let sub_draws = num(&eo, "sub_draws").map(|v| v as usize);
         posterior::posterior_sample(&ctx, &dsge, dir, mh_drop, sub_draws, 0)?
-    } else if g.load_stab {
-        stability::load(&ctx, &dsge, &g, restrictions.as_ref())?
-    } else if g.stab {
+    } else if g.stab && !g.load_stab {
         let m = stability::stability_mapping(&ctx, &dsge, &g, &mut rng, restrictions.as_ref())?;
         stability::save(&ctx, &g, &m)?;
         m
     } else {
-        bail!("sensitivity: stab=0 requires load_stab=1 (a saved sample)");
+        // load_stab=1, or stab=0: run.m skips the mapping and the later analyses read the
+        // sample the previous call saved
+        stability::load(&ctx, &dsge, &g, restrictions.as_ref())?
     };
     if stab.x0.is_none() {
         println!("\nSensitivity computations stopped: no parameter set provided a unique solution");

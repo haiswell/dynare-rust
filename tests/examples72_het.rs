@@ -322,3 +322,167 @@ fn nk_ramsey_osr_osr() {
         check_dr_mat(n, m, &r["dr"][n], 1e-6);
     }
 }
+
+/// Masks every numeric token (whitespace-separated) of a line so the layout can be compared
+/// exactly; the numbers are returned separately.
+fn mask_numbers(line: &str) -> (String, Vec<f64>) {
+    let mut out = String::new();
+    let mut nums = Vec::new();
+    let mut tok = String::new();
+    let flush = |tok: &mut String, out: &mut String, nums: &mut Vec<f64>| {
+        if tok.is_empty() {
+            return;
+        }
+        match tok.parse::<f64>() {
+            Ok(v) if tok.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '.') => {
+                nums.push(v);
+                out.push('#');
+            }
+            _ => out.push_str(tok),
+        }
+        tok.clear();
+    };
+    for c in line.chars() {
+        if c == ' ' || c == '\t' {
+            flush(&mut tok, &mut out, &mut nums);
+            out.push(c);
+        } else {
+            tok.push(c);
+        }
+    }
+    flush(&mut tok, &mut out, &mut nums);
+    (out, nums)
+}
+
+/// The console tables of `heterogeneity_load_steady_state` (STEADY STATE, RESIDUALS) have
+/// Dynare's layout (padding, headers, number formats) line by line; the numbers agree to 1e-6
+/// (residuals at the 1e-10 level are solver noise, so an absolute 1e-9 is allowed there).
+fn check_display(name: &str) {
+    let (mf, st) = run_het(name);
+    let ss = st.steady_state.as_ref().unwrap();
+    let h = mf.het.model.as_ref().unwrap();
+    let got = format!(
+        "{}{}",
+        dynare::heterogeneity::steady::steady_state_text(&mf.model, h, ss),
+        dynare::heterogeneity::steady::residuals_text(&mf.model, h, ss)
+    );
+    let want = std::fs::read_to_string(dir(name).join("display.txt")).unwrap();
+    let got_l: Vec<&str> = got.lines().skip_while(|l| l.is_empty()).collect();
+    let want_l: Vec<&str> = want.lines().collect();
+    assert_eq!(got_l.len(), want_l.len(), "{name}: number of lines\n{got}");
+    for (g, w) in got_l.iter().zip(&want_l) {
+        let (gm, gn) = mask_numbers(g);
+        let (wm, wn) = mask_numbers(w);
+        assert_eq!(gm, wm, "{name}: layout of {g:?} vs {w:?}");
+        for (a, b) in gn.iter().zip(&wn) {
+            assert!((a - b).abs() <= 1e-9 + 1e-6 * b.abs(), "{name}: {g:?} vs {w:?}");
+        }
+    }
+}
+
+#[test]
+fn display_krusell_smith_1998() {
+    check_display("krusell_smith_1998");
+}
+
+#[test]
+fn display_hank_one_asset() {
+    check_display("hank_one_asset");
+}
+
+#[test]
+fn display_hank_two_assets() {
+    check_display("hank_two_assets");
+}
+
+/// `fp` is a fingerprint (sizes, sum, absolute sum, i-, j- and ij-weighted sums) of a matrix.
+fn fingerprint(a: &Mat) -> Vec<f64> {
+    let (mut s, mut abs, mut wi, mut wj, mut wij) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for j in 0..a.ncols() {
+        for i in 0..a.nrows() {
+            let v = a[(i, j)];
+            let (fi, fj) = ((i + 1) as f64, (j + 1) as f64);
+            s += v;
+            abs += v.abs();
+            wi += v * fi;
+            wj += v * fj;
+            wij += v * fi * fj;
+        }
+    }
+    vec![s, abs, wi, wj, wij]
+}
+
+fn check_fp(what: &str, got: &Mat, want: &Value) {
+    assert_eq!(vec![got.nrows() as f64, got.ncols() as f64], flat(&want["size"]), "{what} size");
+    let w = [&want["sum"], &want["abs"], &want["wi"], &want["wj"], &want["wij"]];
+    let g = fingerprint(got);
+    let scale = want["abs"].as_f64().unwrap().max(1e-300);
+    if scale < 1e-6 {
+        // a block that is zero in exact arithmetic: both sides are rounding noise
+        assert!(fingerprint(got)[1] < 1e-6, "{what}: expected a (numerically) zero block");
+        return;
+    }
+    for (k, (a, b)) in g.iter().zip(w).enumerate() {
+        let b = b.as_f64().unwrap();
+        // k = 0: the plain sum; 2..: weighted sums are as large as `abs` times the weights
+        let sc =
+            if k >= 2 { scale * (got.nrows().max(got.ncols()) as f64).powi(if k == 4 { 2 } else { 1 }) } else { scale };
+        assert!((a - b).abs() <= 1e-8 * sc.max(1e-2), "{what} fingerprint[{k}]: {a} vs {b}");
+    }
+}
+
+fn row_mat(v: &[f64]) -> Mat {
+    Mat::from_fn(1, v.len(), |_, j| v[j])
+}
+
+/// Every field of the Dynare results at fingerprint level: all Jacobian blocks `dr.G.*.*` in
+/// full (not only the first column), `mat.dG`, `mat.G`, `mat.F`, `mat.dF`, the policies and
+/// distribution, the grids and the IRFs.
+fn check_full(name: &str) {
+    let r: Value = serde_json::from_str(&std::fs::read_to_string(dir(name).join("fp.json")).unwrap()).unwrap();
+    let (mf, st) = run_het(name);
+    let ss = st.steady_state.as_ref().unwrap();
+    let dr = st.dr.as_ref().unwrap();
+    let mut n = 0;
+    for (v, by) in r["G"].as_object().unwrap() {
+        for (s, fp) in by.as_object().unwrap() {
+            check_fp(&format!("G.{v}.{s}"), dr.g_block(v, s).unwrap(), fp);
+            n += 1;
+        }
+    }
+    assert_eq!(n, dr.g.len(), "number of G blocks");
+    check_fp("dG", ss.mat.dg.as_ref().unwrap(), &r["dG"]);
+    assert_close("mat.G", &ss.mat.g, &flat(&r["mat_G"]), 1e-8);
+    check_fp("mat.F", ss.mat.f.as_ref().unwrap(), &r["mat_F"]);
+    let (nh, nc, np) = ss.mat.df_dims;
+    check_fp("mat.dF", &Mat::from_fn(nh, nc * np, |i, j| ss.mat.df[i + nh * j]), &r["mat_dF"]);
+    check_fp("d.hist", &row_mat(&ss.steady_state.d_hist.as_ref().unwrap().data), &r["d_hist"]);
+    for (k, a) in &ss.steady_state.pol_values {
+        check_fp(&format!("pol.{k}"), &row_mat(&a.data), &r["pol"][k]);
+    }
+    for (k, g) in r["d_grids"].as_object().unwrap() {
+        assert_close(&format!("d.grids.{k}"), ss.steady_state.d_grid(k), &flat(g), 1e-12);
+    }
+    if let Some(ri) = r["irfs"].as_object() {
+        let sim = st.sim.as_ref().unwrap();
+        for (k, fp) in ri {
+            check_fp(&format!("irf {k}"), &row_mat(&sim.irfs.iter().find(|(n, _)| n == k).unwrap().1), fp);
+        }
+    }
+    let _ = mf;
+}
+
+#[test]
+fn full_krusell_smith_1998() {
+    check_full("krusell_smith_1998");
+}
+
+#[test]
+fn full_hank_one_asset() {
+    check_full("hank_one_asset");
+}
+
+#[test]
+fn full_hank_two_assets() {
+    check_full("hank_two_assets");
+}

@@ -217,6 +217,9 @@ const POLICY_OPTIONS: &[&str] = &[
     "maxit",
     "tolf",
     "optim",
+    "analytic_derivation",
+    "analytic_derivation_mode",
+    "huge_number",
 ];
 
 /// `options_.osr` and `options_.optim_opt` (persistent across `osr` commands).
@@ -229,11 +232,24 @@ pub struct OsrOptions {
     pub tolf: Option<f64>,
     /// `options_.optim_opt` (`optim` option).
     pub optim: Option<OptValue>,
+    /// `options_.analytic_derivation` (false), `options_.analytic_derivation_mode` (0).
+    pub analytic_derivation: bool,
+    pub analytic_derivation_mode: i32,
+    /// `options_.huge_number` (1e7 when `None`).
+    pub huge_number: Option<f64>,
 }
 
 impl Default for OsrOptions {
     fn default() -> Self {
-        OsrOptions { opt_algo: 4, maxit: None, tolf: None, optim: None }
+        OsrOptions {
+            opt_algo: 4,
+            maxit: None,
+            tolf: None,
+            optim: None,
+            analytic_derivation: false,
+            analytic_derivation_mode: 0,
+            huge_number: None,
+        }
     }
 }
 
@@ -256,6 +272,9 @@ pub struct Session {
     /// ([`Session::take_params`]); while it is there, the next command reads it instead of
     /// `mf.model.params`.
     pub params: Option<Vec<f64>>,
+    /// `oo_.endo_simul` of the last simulation (`periods > 0`), for `datatomfile`; taken by
+    /// the driver.
+    pub endo_simul: Option<Mat>,
     pub dr: Option<DecisionRule>,
     /// Second- or third-order decision rule of the last stoch_simul-like command.
     pub kdr: Option<KOrderDr>,
@@ -432,6 +451,9 @@ impl Session {
         ramsey::check_instruments(m, !mf.steady_state_model.is_empty())?;
         // ramsey_constraints: parsed (preprocessor errors), not used by dyn_ramsey_static.m
         ramsey::parse_constraints(m, &mf.policy.ramsey_constraints)?;
+        if self.ss_opts.partial_information && self.ctx.is_some() {
+            return self.ramsey_stoch_simul_pi(mf, vars);
+        }
         let order = self.effective_order(m);
         self.order = self.ss_opts.order;
         let p0 = self.params(mf);
@@ -452,6 +474,31 @@ impl Session {
             self.dr = Some(kdr.first.clone());
             self.kdr = Some(kdr);
         }
+        Ok(())
+    }
+
+    /// `stoch_simul(partial_information)` on a Ramsey model: `PCL_resol.m` at the Ramsey
+    /// steady state (`evaluate_steady_state` -> `dyn_ramsey_static.m`), then `dr1_PI.m` on the
+    /// model with the multipliers; `oo_.dr` is then the PCL solution, so the `_ramsey.json`
+    /// decision rule is not written. `options_.partial_information` is reset afterwards.
+    fn ramsey_stoch_simul_pi(&mut self, mf: &ModFile, vars: &[String]) -> Result<()> {
+        let m = &mf.model;
+        // (not noprint in quiet mode: PCL_varobs is only set when printing, and the IRFs and moments need it)
+        let o = self.ss_opts.clone();
+        self.ss_opts.partial_information = false; // stoch_simul.m: "temporary fix waiting for local options"
+        crate::analysis::partial_info::stoch_simul_pi_prologue(m, &o)?;
+        self.order = 1;
+        let p0 = self.params(mf);
+        let res = self.resolver(mf, false);
+        let (ys, p) = res.steady_state_params(&p0).map_err(|e| anyhow!("Ramsey policy: {e}"))?;
+        let ctx = self.ctx.as_ref().expect("checked by the caller");
+        crate::analysis::partial_info::stoch_simul_pi_at(mf, &o, vars, ctx, ys.clone(), p.clone(), mf.sigma_e.clone())?;
+        // the full-information rule, for the later commands that read this state
+        let g1 = m.dynamic_jacobian(&ys, &res.exo_ss, &p);
+        self.dr = res.solver.solve(&g1, &ys).ok();
+        self.kdr = None;
+        self.params = Some(p);
+        self.exo_simul_first = Some(exo_steady_state(mf));
         Ok(())
     }
 
@@ -534,6 +581,9 @@ impl Session {
             let r = crate::analysis::stoch_simul(&mf.model, &sol, &o, &names, ctx, None)?;
             if let Some(ex) = r.exo_simul.as_ref().filter(|e| e.nrows() > 0) {
                 first = Some(ex.row(0).iter().copied().collect());
+            }
+            if r.endo_simul.is_some() {
+                self.endo_simul = r.endo_simul;
             }
         } else if !self.quiet {
             let sol = LinearSolution { dr: dr.clone(), sigma_e: mf.sigma_e.clone(), params: self.params(mf) };
@@ -867,6 +917,21 @@ impl Session {
         if let Some(v) = opt(o, "optim") {
             self.osr_opts.optim = Some(v.clone());
         }
+        // options_.analytic_derivation / analytic_derivation_mode / huge_number persist too
+        match opt(o, "analytic_derivation") {
+            None => {}
+            Some(OptValue::Flag) => self.osr_opts.analytic_derivation = true,
+            Some(OptValue::Num(v)) => self.osr_opts.analytic_derivation = *v != 0.0,
+            Some(OptValue::Str(v)) if v.eq_ignore_ascii_case("true") => self.osr_opts.analytic_derivation = true,
+            Some(OptValue::Str(v)) if v.eq_ignore_ascii_case("false") => self.osr_opts.analytic_derivation = false,
+            Some(_) => bail!("osr: analytic_derivation must be a boolean"),
+        }
+        if let Some(v) = num(o, "analytic_derivation_mode") {
+            self.osr_opts.analytic_derivation_mode = v as i32;
+        }
+        if let Some(v) = num(o, "huge_number") {
+            self.osr_opts.huge_number = Some(v);
+        }
         let print = !self.quiet && !self.ss_opts.noprint;
         let m = &mf.model;
         let order = self.ss_opts.order.max(1);
@@ -874,6 +939,9 @@ impl Session {
         let use_weights = !pd.optim_weights.is_empty();
         if use_weights && order != 1 {
             bail!("OSR: OSR without planner_objective only supports order=1.");
+        }
+        if !use_weights && self.osr_opts.analytic_derivation {
+            bail!("OSR: analytic_derivation is only available at order=1 with optim_weights.");
         }
         if !use_weights && order > 2 {
             bail!(
@@ -914,6 +982,23 @@ impl Session {
             }
             self.osr_opts.optim = Some(OptValue::List(items));
         }
+        let analytic = if use_weights && self.osr_opts.analytic_derivation {
+            match self.osr_opts.analytic_derivation_mode {
+                0 | 1 => {}
+                // get_perturbation_params_derivs.m with estim_params_ = [] (as +osr/objective.m
+                // passes it) reads estim_params_.param_vals, which does not exist
+                -1 | -2 => bail!(
+                    "OSR: analytic_derivation_mode={}: Unrecognized field name \"param_vals\" (Dynare 7.2's \
+                     get_perturbation_params_derivs.m needs an estimated_params block for numerical derivatives; \
+                     use analytic_derivation_mode=0)",
+                    self.osr_opts.analytic_derivation_mode
+                ),
+                k => bail!("OSR: analytic_derivation_mode={k} is not 0, 1, -1 or -2"),
+            }
+            Some(crate::identification::derivs::ModelParamDerivs::new(m).at_exo_steady_state(&mf.exo_steady_state()))
+        } else {
+            None
+        };
         let res = self.resolver(mf, false);
         let weights = if use_weights {
             // i_var = unique(i_var); positions in the decision rule
@@ -945,6 +1030,7 @@ impl Session {
             weights,
             sigma_e: mf.sigma_e.clone(),
             welfare: welfare_kind,
+            analytic,
         };
         let x0: Vec<f64> = pd.osr_params.iter().map(|&i| p0[i]).collect();
         let (l0, info0, _) = obj.loss(&x0);
@@ -982,6 +1068,7 @@ impl Session {
             self.osr_opts.optim.as_ref(),
             !self.quiet,
             self.ctx.as_ref().map_or(0, |c| c.seed), // --seed (stochastic optimizers 2, 9)
+            self.osr_opts.huge_number,
         )?;
         let mut p = p0.clone();
         for (&i, &v) in pd.osr_params.iter().zip(&r.x) {
@@ -990,10 +1077,23 @@ impl Session {
         let optim_params: Vec<(String, f64)> =
             pd.osr_params.iter().zip(&r.x).map(|(&i, &v)| (m.param_names[i].clone(), v)).collect();
         if print {
-            println!("\nOPTIMAL VALUE OF THE PARAMETERS\n");
-            for (n, v) in &optim_params {
-                println!("{n:<12} {v:>12.6}");
-            }
+            // osr.run: dyntable(options_, title, {'Variables';'Value'}, labels, p, lh, 10, 6)
+            let labels: Vec<String> = optim_params.iter().map(|(n, _)| n.clone()).collect();
+            let vals = Mat::from_fn(labels.len(), 1, |i, _| optim_params[i].1);
+            let headers = vec!["Variables".to_string(), "Value".to_string()];
+            let lh = crate::analysis::table::max_len(&labels) + 2;
+            print!(
+                "{}",
+                crate::analysis::table::dyntable(
+                    "OPTIMAL VALUE OF THE PARAMETERS",
+                    &headers,
+                    &labels,
+                    &vals,
+                    lh,
+                    10,
+                    6
+                )
+            );
             println!("\nObjective function : {}\n", crate::analysis::table::fmt_g(r.fval, 16, 6));
         }
         self.osr = Some(OsrResult {

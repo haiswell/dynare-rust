@@ -95,7 +95,8 @@ fn check(name: &str, file: &str, moments: bool) -> (Value, Value) {
     }
     if moments {
         for k in ["mean", "var", "variance_decomposition"] {
-            if !r[k].is_null() && !j[k].is_null() {
+            if !r[k].is_null() {
+                assert!(!j[k].is_null(), "{k} missing from the results file");
                 assert_close(k, &flat(&j[k]), &flat(&r[k]), tol);
             }
         }
@@ -144,7 +145,10 @@ fn bkk_1992_macroprocessor_hp_filter() {
 fn collard_2001_analytical_steady_state() {
     // the fsolve helper of steady_state_model is MATLAB code: explicit error
     let (_, text, ok) = run("collard_2001_analytical_steady_state", "collard_2001_analytical_steady_state.mod");
-    assert!(!ok && text.contains("collard_2001_analytical_steady_state_helper"), "{text}");
+    assert!(
+        !ok && text.contains("collard_2001_analytical_steady_state_helper") && text.contains("MATLAB function"),
+        "{text}"
+    );
     // the rest of the steady_state_model block, with h at Dynare's value
     check("collard_2001_analytical_steady_state", "collard_2001_analytical_steady_state_noh.mod", true);
     // write_latex_dynamic_model / write_latex_static_model
@@ -203,6 +207,10 @@ fn collard_2001_simulated_moments() {
         })
         .unwrap();
     assert_close("mean", &sm.mean, &flat(&r["mean"]), 1e-8);
+    assert_close("skewness", &sm.skewness, &flat(&r["skewness"]), 1e-8);
+    assert_close("kurtosis", &sm.kurtosis, &flat(&r["kurtosis"]), 1e-8);
+    assert_eq!(flat(&j["skewness"]).len(), 6, "skewness missing from the results file");
+    assert_eq!(flat(&j["kurtosis"]).len(), 6, "kurtosis missing from the results file");
     let var: Vec<f64> = (0..6).flat_map(|i| (0..6).map(move |k| (i, k))).map(|(i, k)| sm.var[(i, k)]).collect();
     assert_close("var", &var, &flat(&r["var"]), 1e-8);
     for (l, a) in sm.autocorr.iter().enumerate() {

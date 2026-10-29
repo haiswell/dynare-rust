@@ -57,6 +57,10 @@ pub enum SymbolKind {
     Trend,
 }
 
+/// `symb_id` of a parameter declared with [`ModelBuilder::declare_late_param`] until the
+/// transform pass gives it one.
+const LATE_SYMB_ID: usize = usize::MAX;
+
 /// Entry of the symbol table. `symb_id` is Dynare's global symbol id (declaration order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Symbol {
@@ -116,6 +120,9 @@ pub struct ModelBuilder {
     /// they enter the model as parameters appended to `M_.params` (Dynare keeps them out of
     /// `M_.exo_names`; their paths only matter for forecasts, through `dr.ghud`).
     pub q1_exo_det: Vec<(String, f64)>,
+    /// VAR models / PAC: what the transform pass needs (`dtree::pac`); the parameters declared
+    /// with [`ModelBuilder::declare_late_param`] get their symbol id there.
+    pub pac: dtree::pac::PacInput,
 }
 
 impl ModelBuilder {
@@ -159,6 +166,20 @@ impl ModelBuilder {
         };
         self.symbols.insert(name.to_string(), Symbol { kind, index, symb_id: self.next_symb_id });
         self.next_symb_id += 1;
+        Ok(index)
+    }
+
+    /// A parameter that the preprocessor creates in its transform pass (PAC `h`, growth
+    /// neutrality and `mce_alpha` parameters): its symbol id comes after the auxiliary
+    /// variables created before it (see `dtree::pac`).
+    pub fn declare_late_param(&mut self, name: &str) -> Result<usize> {
+        if let Some(s) = self.symbols.get(name) {
+            bail!("symbol '{name}' declared twice (already a {:?})", s.kind);
+        }
+        self.param_names.push(name.to_string());
+        self.params.push(f64::NAN);
+        let index = self.param_names.len() - 1;
+        self.symbols.insert(name.to_string(), Symbol { kind: SymbolKind::Param, index, symb_id: LATE_SYMB_ID });
         Ok(index)
     }
 
@@ -410,6 +431,28 @@ impl ModelBuilder {
         })
     }
 
+    /// The smallest lag (<= 0) of an endogenous or exogenous variable in the equations parsed so
+    /// far (the preprocessor's `DynamicModel::minLagForSymbol`).
+    pub fn min_lag(&self, name: &str) -> i32 {
+        let Some(sym) = self.symbols.get(name).copied() else { return 0 };
+        let j = sym.index as u32;
+        let mut leaves = Vec::new();
+        for (l, r) in &self.equations {
+            self.dag.collect_leaves(*l, &mut leaves);
+            self.dag.collect_leaves(*r, &mut leaves);
+        }
+        for (_, v) in &self.locals {
+            self.dag.collect_leaves(*v, &mut leaves);
+        }
+        leaves
+            .iter()
+            .filter_map(|n| match (sym.kind, n) {
+                (SymbolKind::Endo, Node::Endo(k, l)) | (SymbolKind::Exo, Node::Exo(k, l)) if *k == j => Some(*l),
+                _ => None,
+            })
+            .fold(0, i32::min)
+    }
+
     /// `varexo_det`: moves the exogenous variable `from` to index `to <= from` (the ones in
     /// between shift up), in the names, the symbol table and the equations parsed so far, so
     /// that the `varexo_det` variables stay after the ordinary ones (Dynare numbers the two
@@ -611,6 +654,7 @@ impl ModelBuilder {
             log_vars,
             mut bg,
             q1_exo_det,
+            mut pac,
             mut dag,
             mut endo_names,
             exo_names,
@@ -636,7 +680,6 @@ impl ModelBuilder {
             planner::Builder {
                 dag: &mut dag,
                 endo_names: &mut endo_names,
-                endo_symb_id: &mut endo_symb_id,
                 next_symb_id: &mut next_symb_id,
                 param_names: &mut param_names,
                 params: &mut params,
@@ -660,6 +703,7 @@ impl ModelBuilder {
             exo_det_params.push(k);
         }
         let mut aux_vars = Vec::new();
+        let mut pac_key_names = Vec::new();
         let mut aux_rhs = Vec::new();
         let (orig_max_lead, orig_max_lag, orig_max_lag_with_diffs, orig_eq_nbr, static_override);
         let static_eqs: Vec<Option<(NodeId, NodeId)>>; // model_info
@@ -668,7 +712,9 @@ impl ModelBuilder {
         if !items.is_empty() {
             let mut syms = vec![dtree::Sym { ty: dtree::SymType::Param, index: 0 }; next_symb_id];
             let mut names = vec![String::new(); next_symb_id];
-            for (name, sy) in &symbols {
+            pac.late_params =
+                symbols.iter().filter(|(_, s)| s.symb_id == LATE_SYMB_ID).map(|(n, s)| (n.clone(), s.index)).collect();
+            for (name, sy) in symbols.iter().filter(|(_, s)| s.symb_id != LATE_SYMB_ID) {
                 let ty = match sy.kind {
                     SymbolKind::Endo => dtree::SymType::Endo,
                     SymbolKind::Exo => dtree::SymType::Exo,
@@ -687,6 +733,7 @@ impl ModelBuilder {
             let lookup = |name: &str| {
                 symbols
                     .get(name)
+                    .filter(|s| s.symb_id != LATE_SYMB_ID)
                     .map(|s| s.symb_id as u32)
                     .or_else(|| excluded.iter().rev().find(|(n, _)| n == name).map(|x| x.1 as u32))
             };
@@ -709,6 +756,7 @@ impl ModelBuilder {
                         }
                         bg.clone()
                     },
+                    pac: &pac,
                     planner: planner_pre.as_ref().and_then(|p| {
                         p.tree_input(&endo_symb_id, symbols.get("optimal_policy_discount_factor")?.symb_id)
                     }),
@@ -723,17 +771,38 @@ impl ModelBuilder {
             equation_tags = tr.tags;
             static_override = tr.static_override;
             static_eqs = tr.static_eqs; // model_info
-            orig_eq_nbr = equations.len() - tr.aux.len();
-            for (name, a, rhs) in tr.aux.iter().cloned() {
+            for (name, s) in &tr.pac.param_symb {
+                if let Some(sy) = symbols.get_mut(name) {
+                    sy.symb_id = *s as usize;
+                }
+            }
+            pac_key_names = tr.pac.key_names.clone();
+            // the Ramsey multipliers (aux type 6) are endogenous variables without aux equation,
+            // kept in the planner information rather than in `aux_vars`
+            let mut mult_index = Vec::new();
+            let mut shown = Vec::with_capacity(tr.shown.len());
+            for ((name, a, rhs), sh) in tr.aux.iter().cloned().zip(tr.shown.iter().cloned()) {
                 endo_symb_id.push(next_symb_id);
+                if a.ty == 6 {
+                    let j = endo_names.len();
+                    symbols.insert(name.clone(), Symbol { kind: SymbolKind::Endo, index: j, symb_id: next_symb_id });
+                    mult_index.push(j);
+                } else {
+                    aux_vars.push(a);
+                    aux_rhs.push(rhs);
+                    shown.push(sh);
+                }
                 next_symb_id += 1;
                 endo_names.push(name);
-                aux_vars.push(a);
-                aux_rhs.push(rhs);
+            }
+            let n_mult = mult_index.len();
+            orig_eq_nbr = equations.len() - (tr.aux.len() - n_mult);
+            if let (Some(p), Some(r)) = (planner_pre.as_mut(), tr.ramsey.as_ref()) {
+                p.set_ramsey(r.orig_endo, r.orig_eq, mult_index);
             }
             aux_subst::name_exprs(&dag, &endo_names, &exo_names, Some(&param_names), &mut aux_vars, &aux_rhs);
-            let first = aux_vars.len() - tr.shown.len();
-            for (k, sh) in tr.shown.iter().enumerate() {
+            let first = aux_vars.len() - shown.len();
+            for (k, sh) in shown.iter().enumerate() {
                 if let Some((f, arg)) = sh {
                     let (pre, post) = (format!("{f}("), ")");
                     let mut one = [aux_vars[first + k].clone()];
@@ -744,7 +813,7 @@ impl ModelBuilder {
             orig_max_lead = tr.orig_max_lead.max(0);
             orig_max_lag = tr.orig_max_lag.max(0);
             orig_max_lag_with_diffs = tr.orig_max_lag_with_diffs.max(0);
-            if orig_eq_nbr + eq_deficit != n_endo_before_aux {
+            if orig_eq_nbr + eq_deficit != n_endo_before_aux + n_mult {
                 bail!("the model has {orig_eq_nbr} equations for {orig_endo_nbr} endogenous variables");
             }
         } else {
@@ -753,6 +822,9 @@ impl ModelBuilder {
             }
             if let Some(why) = &needs_dtree {
                 bail!("{why} is not supported together with optimal policy");
+            }
+            if planner_pre.as_ref().is_some_and(|p| p.is_ramsey()) {
+                bail!("ramsey_model needs a model block");
             }
             orig_eq_nbr = equations.len();
             if n_eq_written == 0 && !endo_names.is_empty() && !bvar_present {
@@ -954,6 +1026,7 @@ impl ModelBuilder {
         Ok(Model {
             endo_names,
             orig_endo_nbr,
+            pac_key_names,
             exo_names,
             param_names,
             params,
@@ -985,6 +1058,7 @@ impl ModelBuilder {
             exo_det_params,
             static_eqs, // model_info
             block_solve: None,
+            bytecode: false,
         })
     }
 }
@@ -1000,6 +1074,8 @@ pub struct Model {
     /// Calibration (`M_.params`); NaN if never set.
     pub params: Vec<f64>,
     pub aux_vars: Vec<AuxVar>,
+    /// VAR models / PAC: the variables that stand for `ModelBuilder::pac.keys`.
+    pub pac_key_names: Vec<String>,
     /// Per endogenous variable `[lag, current, lead]`: 1-based column in the compressed dynamic
     /// Jacobian, 0 = absent (`M_.lead_lag_incidence'`).
     pub lead_lag_incidence: Vec<[usize; 3]>,
@@ -1045,6 +1121,9 @@ pub struct Model {
     // ---- end model_info ----
     /// `model(block)`: the block decompositions the solvers use (set after parsing).
     pub block_solve: Option<std::sync::Arc<blocks::BlockSolve>>,
+    /// `model(bytecode)`: the steady state with `solve_algo = 5` and the perfect foresight
+    /// solver with `stack_solve_algo = 5` (the `bytecode` MEX's Newton) are allowed.
+    pub bytecode: bool,
 }
 
 /// hidden equation tag carrying a `⟂` complementarity condition from the parser.

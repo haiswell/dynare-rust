@@ -43,6 +43,12 @@ pub struct SteadyOptions {
     pub trust_region_initial_step_bound_factor: f64,
     /// `options_.linear` (`model(linear)`): one Newton step instead of `dynare_solve`.
     pub linear: bool,
+    /// `options_.solve_randomize_initial_guess` (Dynare default true): retry from `rand`
+    /// guesses drawn from MATLAB's global stream when the residuals or the Jacobian are not
+    /// finite at the initial guess. Off by default here: the global stream is per thread,
+    /// so only the solves that run in sequence on the driver thread (the deterministic
+    /// session) turn it on.
+    pub randomize_initial_guess: bool,
 }
 
 impl Default for SteadyOptions {
@@ -54,6 +60,7 @@ impl Default for SteadyOptions {
             tolx: f64::EPSILON.powf(2.0 / 3.0),
             trust_region_initial_step_bound_factor: 1.0,
             linear: false,
+            randomize_initial_guess: false,
         }
     }
 }
@@ -65,8 +72,8 @@ pub struct SolveOutcome {
     pub errorflag: bool,
     /// Dynare's `errorcode` (-11: converged at the initial guess, solve1:
     /// -1/1 success, 2 maxit, 3 dX, 4 spurious, 5 zero Jacobian, ...).
-    /// -10: non-finite residuals/Jacobian at the initial guess (Dynare would
-    /// then randomize the initial guess, which is not reproducible here).
+    /// -10: non-finite residuals/Jacobian at the initial guess (and at the randomized
+    /// guesses with [`SteadyOptions::randomize_initial_guess`]).
     /// -20: `lnsrch1.m` raised a MATLAB error (non-finite Newton direction
     /// or "Roundoff problem in nlsearch").
     pub errorcode: i32,
@@ -99,17 +106,40 @@ pub fn dynare_solve(f: StaticFn, x0: &[f64], opts: &SteadyOptions) -> SolveOutco
 pub fn dynare_solve_r(f: StaticFn, resid: ResidFn, x0: &[f64], opts: &SteadyOptions) -> SolveOutcome {
     let nn = x0.len();
     let (tolf, tolx, maxit) = (opts.tolf, opts.tolx, opts.maxit);
-    let (fvec, fjac) = f(x0);
+    let (mut fvec, mut fjac) = f(x0);
     let fvec_finite = fvec.iter().all(|x| x.is_finite());
     if fvec_finite && max_abs(&fvec) < tolf {
         return SolveOutcome { x: x0.to_vec(), errorflag: false, errorcode: -11 };
     }
-    if !fvec_finite || fjac.iter().any(|x| !x.is_finite()) {
-        // options_.solve_randomize_initial_guess: MATLAB's rand stream cannot be reproduced.
-        return SolveOutcome { x: x0.to_vec(), errorflag: true, errorcode: -10 };
+    let wrong = |fvec: &[f64], fjac: &Mat| !fvec.iter().all(|x| x.is_finite()) || fjac.iter().any(|x| !x.is_finite());
+    let mut x = x0.to_vec();
+    if wrong(&fvec, &fjac) {
+        if !opts.randomize_initial_guess {
+            return SolveOutcome { x: x0.to_vec(), errorflag: true, errorcode: -10 };
+        }
+        // random numbers for the variables of idx: dynare_solve.m takes find(x) (the
+        // non-zero entries) when any entry is non-zero, all of them otherwise
+        let idx: Vec<usize> =
+            if x0.iter().any(|&v| v != 0.0) { (0..nn).filter(|&i| x0[i] != 0.0).collect() } else { (0..nn).collect() };
+        let mut ok = false;
+        for _ in 0..=idx.len() * 10 {
+            let r = crate::gsa::rng::with_global(|g| g.rand_vec(idx.len()));
+            for (&i, v) in idx.iter().zip(r) {
+                x[i] = v * 10.0;
+            }
+            (fvec, fjac) = f(&x);
+            if !wrong(&fvec, &fjac) {
+                ok = true;
+                break;
+            }
+        }
+        // the next tries draw randn (MATLAB's ziggurat), not reproduced: the guess is
+        // reported wrong as when every try fails
+        if !ok {
+            return SolveOutcome { x: x0.to_vec(), errorflag: true, errorcode: -10 };
+        }
     }
     let all: Vec<usize> = (0..nn).collect();
-    let mut x = x0.to_vec();
     match opts.solve_algo {
         1 | 12 => {
             let (errorflag, errorcode) = solve1(f, resid, &mut x, &all, &all, tolf, tolx, maxit);
@@ -170,6 +200,49 @@ pub fn dynare_solve_r(f: StaticFn, resid: ResidFn, x0: &[f64], opts: &SteadyOpti
             SolveOutcome { x: x0.to_vec(), errorflag: true, errorcode: -30 }
         }),
     }
+}
+
+/// `model(bytecode)` with `solve_algo = 5` (`evaluate_steady_state.m` -> `bytecode('static', ...)`):
+/// Newton iterations on the whole static model with a Gaussian elimination of the Jacobian
+/// until `max|f| < solve_tolf`, at most `steady.maxit` steps; when the sum of squared residuals
+/// rises the step is halved from the previous iterate (the MEX's `slowc`). Failure (or a
+/// singular Jacobian) is `info = 20`, as the MEX's error makes `check = 1`.
+pub fn steady_state_bytecode(
+    f: StaticFn,
+    r: ResidFn,
+    guess: &[f64],
+    opts: &SteadyOptions,
+) -> Result<Vec<f64>, SolveError> {
+    let fail = |x: &[f64]| {
+        let ss: f64 = r(x).iter().map(|v| v * v).sum();
+        Err(SolveError::new(if ss.is_nan() { 22 } else { 20 }, ss))
+    };
+    let mut x = guess.to_vec();
+    let (mut fv, mut jac) = f(&x);
+    let mut res2: f64 = fv.iter().map(|v| v * v).sum();
+    for _ in 0..=opts.maxit {
+        if fv.iter().all(|v| v.is_finite()) && max_abs(&fv) < opts.tolf {
+            return Ok(x);
+        }
+        let (fl, pv, _) = lu(&jac);
+        if fl.iter().any(|v| !v.is_finite()) || (0..fl.nrows()).any(|k| fl[(k, k)] == 0.0) {
+            return fail(&x);
+        }
+        let mut dx = Mat::from_column_slice(fv.len(), 1, &fv);
+        lu_solve(&fl, &pv, false, &mut dx);
+        let mut slowc = 1.0;
+        loop {
+            let xn: Vec<f64> = x.iter().zip(dx.iter()).map(|(a, d)| a - slowc * d).collect();
+            let (fn_, jn) = f(&xn);
+            let r2: f64 = fn_.iter().map(|v| v * v).sum();
+            if r2.is_finite() && r2 <= res2 || slowc < 1e-6 {
+                (x, fv, jac, res2) = (xn, fn_, jn, r2);
+                break;
+            }
+            slowc /= 2.0;
+        }
+    }
+    fail(&x)
 }
 
 /// Port of `optimization/solve1.m` (Jacobian supplied). Returns `(errorflag, errorcode)`.

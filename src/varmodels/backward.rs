@@ -86,16 +86,13 @@ impl Series {
     }
 }
 
-/// Row of the dynamic model that defines each auxiliary variable (the `M_.aux_vars`, and
-/// `hidden`: the variables that the PAC statements add, whose equations come last among the
-/// original ones): a matching of the variables with the defining equations in which they
-/// appear at `t`.
-fn aux_rows(model: &Model, hidden: &[usize]) -> Result<Vec<(usize, usize)>> {
+/// Row of the dynamic model that defines each auxiliary variable (the `M_.aux_vars`): a
+/// matching of the variables with the defining equations in which they appear at `t`.
+fn aux_rows(model: &Model) -> Result<Vec<(usize, usize)>> {
     let n = model.n_endo();
     let pat = model.dynamic_jacobian_pattern();
-    let first = model.orig_eq_nbr.saturating_sub(hidden.len());
-    let mut vars: Vec<usize> = hidden.to_vec();
-    vars.extend(model.aux_vars.iter().map(|a| a.endo_index));
+    let first = model.orig_eq_nbr;
+    let vars: Vec<usize> = model.aux_vars.iter().map(|a| a.endo_index).collect();
     let edges: Vec<Vec<usize>> = vars
         .iter()
         .map(|&v| pat.iter().filter(|&&(r, c)| c == n + v && r >= first).map(|&(r, _)| r).collect())
@@ -127,16 +124,9 @@ fn aux_rows(model: &Model, hidden: &[usize]) -> Result<Vec<(usize, usize)>> {
 
 /// Fills the auxiliary variables of the periods `0..nobs` of `y` (n x T, column = period) from
 /// the other variables (`dynamic_set_auxiliary_series`).
-fn set_auxiliary_series(
-    model: &Model,
-    params: &[f64],
-    y: &mut Mat,
-    x: &Mat,
-    nobs: usize,
-    hidden: &[usize],
-) -> Result<()> {
+fn set_auxiliary_series(model: &Model, params: &[f64], y: &mut Mat, x: &Mat, nobs: usize) -> Result<()> {
     let n = model.n_endo();
-    let rows = aux_rows(model, hidden)?;
+    let rows = aux_rows(model)?;
     if rows.is_empty() {
         return Ok(());
     }
@@ -257,7 +247,7 @@ fn histval_initial_conditions(model: &Model, origs: &[usize], histval: &[(bool, 
 }
 
 /// Port of `+backward_model/simul_static_model.m` with the innovations given (third argument):
-/// each period solves the static model from zero (`dynare_solve`, default `options_.solve_algo`,
+/// each period solves the static model from zero (`dynare_solve`, `options_.solve_algo`,
 /// `options_.simul.maxit`, `options_.dynatol.{f,x}`); a period where the solver fails is NaN.
 /// The dseries starts at the first date of the innovations.
 fn simul_static_model(
@@ -266,11 +256,12 @@ fn simul_static_model(
     samplesize: usize,
     innovations: &Series,
     origs: &[usize],
+    solve_algo: u8,
 ) -> Result<Series> {
     let n = model.n_endo();
     let nx = model.n_exo();
     let shocks = innovations_matrix(model, innovations, samplesize)?;
-    let opts = crate::solver::SteadyOptions { maxit: 50, tolf: 1e-5, tolx: 1e-5, ..Default::default() };
+    let opts = crate::solver::SteadyOptions { solve_algo, maxit: 50, tolf: 1e-5, tolx: 1e-5, ..Default::default() };
     let mut y = Mat::from_element(n, samplesize, f64::NAN);
     for t in 0..samplesize {
         let xt: Vec<f64> = shocks.row(t).iter().copied().collect();
@@ -312,23 +303,22 @@ pub fn simul_backward_model(
     init: Option<&Series>,
     samplesize: usize,
     innovations: Option<&Series>,
-    hidden: &[String],
     histval: &[(bool, usize, i32, f64)],
+    solve_algo: u8,
 ) -> Result<Series> {
     let n = model.n_endo();
     let nx = model.n_exo();
     if model.lead_lag_incidence.iter().any(|l| l[2] != 0) {
         bail!("simul_backward_model: the model is not backward or static.");
     }
-    let hidden: Vec<usize> = hidden.iter().filter_map(|h| model.endo_names.iter().position(|x| x == h)).collect();
-    let origs: Vec<usize> = (0..model.orig_endo_nbr).filter(|i| !hidden.contains(i)).collect();
+    let origs: Vec<usize> = (0..model.orig_endo_nbr).collect();
     if model.lead_lag_incidence.iter().all(|l| l[0] == 0) {
         println!("The model is static. Use simul_static_model instead.");
         // Dynare passes its third argument on, undefined when it is not given
         let s = innovations.ok_or_else(|| {
             anyhow!("simul_backward_model: the model is static and needs the innovations (third argument)")
         })?;
-        return simul_static_model(model, params, samplesize, s, &origs);
+        return simul_static_model(model, params, samplesize, s, &origs, solve_algo);
     }
     let orig = origs.len();
     let orig_names: Vec<String> = origs.iter().map(|&i| model.endo_names[i].clone()).collect();
@@ -399,10 +389,10 @@ pub fn simul_backward_model(
         }
     }
     x.rows_mut(nobs, samplesize).copy_from(&shocks);
-    set_auxiliary_series(model, params, &mut y, &x, nobs, &hidden)?;
+    set_auxiliary_series(model, params, &mut y, &x, nobs)?;
     // period by period: dynare_solve on the dynamic residuals (`backward_model.dynamic_model`),
-    // with the default options_.solve_algo, options_.simul.maxit and options_.dynatol.{f,x}
-    let opts = crate::solver::SteadyOptions { maxit: 50, tolf: 1e-5, tolx: 1e-5, ..Default::default() };
+    // with options_.solve_algo, options_.simul.maxit and options_.dynatol.{f,x}
+    let opts = crate::solver::SteadyOptions { solve_algo, maxit: 50, tolf: 1e-5, tolx: 1e-5, ..Default::default() };
     let ws = std::cell::RefCell::new(model.workspace());
     for it in nobs..total {
         let xt: Vec<f64> = x.row(it).iter().copied().collect();

@@ -81,6 +81,48 @@ impl Drop for AnalyticGuard {
 }
 // ---- end estimation completion
 
+/// `options_.gradient_method` and `options_.gradient_epsilon` (`options_.X = V;` statements in
+/// the .mod, defaults 2 and 1e-6): csminwel's numerical gradient and newrat's initial steps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradientOptions {
+    pub method: f64,
+    pub epsilon: f64,
+}
+
+impl Default for GradientOptions {
+    fn default() -> Self {
+        GradientOptions { method: 2.0, epsilon: 1e-6 }
+    }
+}
+
+thread_local! {
+    static GRADIENT: std::cell::Cell<GradientOptions> = std::cell::Cell::new(GradientOptions::default());
+}
+
+/// The `options_.gradient_method/gradient_epsilon` [`minimize`] uses on this thread.
+pub fn gradient_options() -> GradientOptions {
+    GRADIENT.with(|g| g.get())
+}
+
+/// Sets [`gradient_options`] for the [`minimize`] calls of this thread until the guard is
+/// dropped (the estimation driver's thread, and the MCMC chains' for the slice sampler's
+/// `maximize` and TaRB's optimizer).
+pub struct GradientGuard(GradientOptions);
+
+impl GradientGuard {
+    pub fn set(v: GradientOptions) -> Self {
+        let old = gradient_options();
+        GRADIENT.with(|g| g.set(v));
+        GradientGuard(old)
+    }
+}
+
+impl Drop for GradientGuard {
+    fn drop(&mut self) {
+        GRADIENT.with(|g| g.set(self.0));
+    }
+}
+
 /// What `dynare_minimize_objective.m` receives besides the objective and the
 /// start: bounds, names, prior information, the `optim` string, and (Rust
 /// only) the random stream for the stochastic optimizers.
@@ -133,10 +175,13 @@ pub(crate) fn unquote(s: &str) -> String {
     s.trim().trim_matches(|c| c == '\'' || c == '"').to_string()
 }
 
-/// A numeric `optim` value (MATLAB `eval`s strings such as `'1e-5'` too).
+/// A numeric `optim` value (MATLAB `eval`s strings such as `'1e-5'` too, and the logicals
+/// `true`/`false` act as 1/0).
 pub fn kv_num(key: &str, v: &OptValue) -> Result<f64> {
     match v {
         OptValue::Num(x) => Ok(*x),
+        OptValue::Str(s) if s.trim() == "true" => Ok(1.0),
+        OptValue::Str(s) if s.trim() == "false" => Ok(0.0),
         OptValue::Str(s) => s.trim().parse::<f64>().map_err(|_| anyhow!("optim: the value of {key} must be a number")),
         OptValue::Vec(x) if x.len() == 1 => Ok(x[0]),
         _ => bail!("optim: the value of {key} must be a number"),
@@ -239,7 +284,8 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
             quasi_newton(obj, x0, Some((&ctx.bounds.lb, &ctx.bounds.ub)), &o)
         }
         2 => {
-            let mut o = SaOptions { seed: ctx.seed, stream: ctx.stream, ..Default::default() };
+            let mut o =
+                SaOptions { seed: ctx.seed, stream: ctx.stream, names: ctx.names.to_vec(), ..Default::default() };
             o.apply_optim(&kv("simulated_annealing")?)?;
             if !ctx.verbose {
                 o.verbosity = 0;
@@ -257,6 +303,12 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
         }
         4 => {
             let mut o = CsminwelOptions { verbose: ctx.verbose, parallel: true, analytic, ..Default::default() };
+            // numgrad = options_.gradient_method; epsilon = options_.gradient_epsilon
+            let grad = gradient_options();
+            if let Some(m) = numgrad_algorithm("gradient_method", &OptValue::Num(grad.method), o.analytic)? {
+                o.gradient_method = m;
+            }
+            o.gradient_epsilon = grad.epsilon;
             for (k, v) in kv("csminwel")? {
                 match k.as_str() {
                     "MaxIter" => o.nit = kv_num(&k, &v)? as usize,
@@ -276,7 +328,14 @@ pub fn minimize(optimizer: i32, obj: &dyn Objective, x0: &[f64], ctx: &MinimizeC
             Ok(csminwel(obj, x0, &o))
         }
         5 => {
-            let mut o = NewratOptions { verbose: ctx.verbose, parallel: true, ..Default::default() };
+            let mut o = NewratOptions {
+                verbose: ctx.verbose,
+                parallel: true,
+                names: ctx.names.to_vec(),
+                // hess_info.h1 = options_.gradient_epsilon*ones(n_params,1)
+                gradient_epsilon: gradient_options().epsilon,
+                ..Default::default()
+            };
             if analytic_derivation() {
                 // ---- estimation completion ---- crit = options_.newrat.tolerance.f_analytic
                 o.analytic = true;

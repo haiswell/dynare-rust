@@ -23,6 +23,7 @@ use super::{dsge_smoother, extend_dates, save_figures, simult_constant};
 use crate::dsge::DsgeModel;
 use crate::graphics::{Color, Figure, LineStyle, Panel, Series};
 use crate::linalg::{Mat, chol_upper};
+use crate::modfile::PathValue;
 use crate::modfile::{ModFile, OptValue, Options, opt};
 use crate::solver::DecisionRule;
 
@@ -38,7 +39,14 @@ pub struct ConstrainedPaths {
 }
 
 impl ConstrainedPaths {
-    pub fn from_block(mf: &ModFile, block: &[(String, Vec<(usize, usize, f64)>)]) -> Result<ConstrainedPaths> {
+    /// `steady_state` is `oo_.steady_state` at the time of the command, for the values that
+    /// mention endogenous variables (`values (gy_obs+0.01)`).
+    pub fn from_block(
+        mf: &ModFile,
+        block: &[(String, Vec<(usize, usize, PathValue)>)],
+        steady_state: &dyn Fn() -> Result<(Vec<f64>, Vec<f64>)>,
+    ) -> Result<ConstrainedPaths> {
+        let mut ss: Option<(Vec<f64>, Vec<f64>)> = None;
         let cl = block.iter().flat_map(|(_, r)| r.iter().map(|&(_, b, _)| b)).max().unwrap_or(0);
         let mut paths = Mat::from_element(block.len(), cl, f64::NAN);
         let mut vars = Vec::new();
@@ -48,8 +56,13 @@ impl ConstrainedPaths {
                     .endo_index(name)
                     .ok_or_else(|| anyhow!("conditional_forecast_paths: unknown variable {name}"))?,
             );
-            for &(a, b, v) in ranges {
-                for t in a..=b {
+            for (a, b, v) in ranges {
+                if ss.is_none() && matches!(v, PathValue::Steady(_)) {
+                    ss = Some(steady_state()?);
+                }
+                let (y, x) = ss.as_ref().map_or((&[][..], &[][..]), |(y, x)| (y, x));
+                let v = v.eval(&mf.model, y, x)?;
+                for t in *a..=*b {
                     paths[(i, t - 1)] = v;
                 }
             }
@@ -527,24 +540,27 @@ pub fn conditional_forecast_command(
     Ok(cf)
 }
 
+/// dynare-rust's summary table (Dynare prints nothing here): a progress note.
 fn print_summary(cf: &ConditionalForecast) {
-    println!("\nCONDITIONAL FORECAST ({}): mean of the constrained variables and of the controlled shocks", cf.title);
-    print!("{:<12}", "");
+    use std::fmt::Write;
+    let mut o = format!(
+        "\nCONDITIONAL FORECAST ({}): mean of the constrained variables and of the controlled shocks\n{:<12}",
+        cf.title, ""
+    );
     let show = |n: &str| if n.len() > 14 { n[..14].to_string() } else { n.to_string() };
     for n in cf.constrained.names.iter().chain(&cf.instrument_names) {
-        print!(" {:>14}", show(n));
+        let _ = write!(o, " {:>14}", show(n));
     }
-    println!();
     for t in 1..=cf.constrained.paths.ncols() {
-        print!("{:<12}", cf.dates[t]);
+        let _ = write!(o, "\n{:<12}", cf.dates[t]);
         for &v in &cf.constrained.vars {
-            print!(" {:>14.4}", cf.cond.mean[(t, cf.column(v).unwrap())]);
+            let _ = write!(o, " {:>14.4}", cf.cond.mean[(t, cf.column(v).unwrap())]);
         }
         for j in 0..cf.instruments.len() {
-            print!(" {:>14.4}", cf.exo.mean[(t - 1, j)]);
+            let _ = write!(o, " {:>14.4}", cf.exo.mean[(t - 1, j)]);
         }
-        println!();
     }
+    crate::progress::note(o);
 }
 
 /// `<fname>_conditional_forecast.csv`: `date,horizon,variable,cond_mean,cond_lower,cond_upper,

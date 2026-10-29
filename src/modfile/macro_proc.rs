@@ -210,7 +210,15 @@ fn process(lines: &[SrcLine], env: &mut Env, out: &mut Vec<SrcLine>) -> Result<(
             i += 1;
             continue;
         };
-        let d = strip_directive_comment(d).trim_start();
+        // a directive continues on the next line after a trailing `\\`
+        let mut joined = strip_directive_comment(d).trim_start().to_string();
+        while let Some(head) = joined.trim_end().strip_suffix("\\\\")
+            && let Some(next) = lines.get(i + 1)
+        {
+            joined = format!("{head} {}", strip_directive_comment(&next.text));
+            i += 1;
+        }
+        let d = joined.as_str();
         let kw_end = d.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(d.len());
         let (kw, rest) = (&d[..kw_end], d[kw_end..].trim());
         let ctx = || format!("{}: in @#{kw}", loc(l));
@@ -650,13 +658,13 @@ impl MParser<'_> {
                 (Value::Str(x), Value::Str(y)) => x.partial_cmp(y),
                 _ => a.num()?.partial_cmp(&b.num()?),
             };
-            let o = o.ok_or_else(|| anyhow!("cannot compare {a} and {b}"))?;
-            a = Value::Bool(match op {
+            // a comparison with NaN is false (C++ doubles)
+            a = Value::Bool(o.is_some_and(|o| match op {
                 "<" => o.is_lt(),
                 ">" => o.is_gt(),
                 "<=" => o.is_le(),
                 _ => o.is_ge(),
-            });
+            }));
         }
     }
 
@@ -831,13 +839,24 @@ impl MParser<'_> {
     /// `NAME[k]` after the `[`: the grammar only indexes a variable, once (`[1, 2][1]`,
     /// `v[1][2]` and `f(x)[1]` are syntax errors in Dynare).
     fn index(&mut self, a: Value) -> Result<Value> {
-        let k = self.expr()?;
+        // `a[i]`, `a[i:j]`, `a[1, 8, 17:19]` (a comma-separated list of indices and ranges)
+        let mut keys = vec![self.expr()?];
+        while self.eat_op(",") {
+            keys.push(self.expr()?);
+        }
         self.expect_op("]")?;
-        let idx: Vec<usize> = match &k {
-            Value::Array(v) => v.iter().map(|x| x.num().map(|n| n as usize)).collect::<Result<_>>()?,
-            x => vec![x.num()? as usize],
-        };
-        let single = !matches!(k, Value::Array(_));
+        let mut idx: Vec<usize> = Vec::new();
+        for k in &keys {
+            match k {
+                Value::Array(v) => {
+                    for x in v {
+                        idx.push(x.num()? as usize);
+                    }
+                }
+                x => idx.push(x.num()? as usize),
+            }
+        }
+        let single = keys.len() == 1 && !matches!(keys[0], Value::Array(_));
         Ok(match &a {
             Value::Array(items) | Value::Tuple(items) => {
                 let picked: Vec<Value> = idx
@@ -1090,9 +1109,11 @@ impl MParser<'_> {
                                 "macro function {id}: more than {MAX_MACRO_CALL_DEPTH} nested calls (infinite recursion?)"
                             );
                         }
-                        let mut p =
-                            MParser { t: &[], i: 0, env: self.env, locals: self.locals.clone(), depth: self.depth + 1 };
-                        p.locals.extend(params.iter().cloned().zip(args));
+                        // the body sees its own arguments and the global variables, not the
+                        // caller's arguments (tests/macro_processor/example1_macro.mod: in
+                        // `g(a) = f(1) + a`, `f` reads the global `a`)
+                        let locals = params.iter().cloned().zip(args).collect();
+                        let mut p = MParser { t: &[], i: 0, env: self.env, locals, depth: self.depth + 1 };
                         let toks = mlex(body)?;
                         p.t = &toks;
                         let v = p.expr()?;
@@ -1106,6 +1127,9 @@ impl MParser<'_> {
                 match id.as_str() {
                     "true" => Ok(Value::Bool(true)),
                     "false" => Ok(Value::Bool(false)),
+                    // number literals of the macro lexer
+                    "inf" => Ok(Value::Num(f64::INFINITY)),
+                    "nan" => Ok(Value::Num(f64::NAN)),
                     _ => {
                         let v = self.lookup(&id).ok_or_else(|| anyhow!("unknown macro variable '{id}'"))?;
                         if self.eat_op("[") { self.index(v) } else { Ok(v) }
@@ -1134,7 +1158,15 @@ fn cartesian(x: &[Value], y: &[Value]) -> Vec<Value> {
 
 fn cast(ty: &str, v: Value) -> Result<Value> {
     Ok(match ty {
-        "bool" => Value::Bool(v.truthy()?),
+        "bool" => match v {
+            // String::toBool: "true" / "false" in any case, else a non-zero number
+            Value::Str(s) if s.trim().eq_ignore_ascii_case("true") => Value::Bool(true),
+            Value::Str(s) if s.trim().eq_ignore_ascii_case("false") => Value::Bool(false),
+            Value::Str(s) => {
+                Value::Bool(s.trim().parse::<f64>().map_err(|_| anyhow!("cannot cast \"{s}\" to bool"))? != 0.0)
+            }
+            v => Value::Bool(v.truthy()?),
+        },
         "real" => match v {
             Value::Str(s) => Value::Num(s.trim().parse().map_err(|_| anyhow!("cannot cast \"{s}\" to real"))?),
             Value::Array(a) | Value::Tuple(a) if a.len() == 1 => Value::Num(a[0].num()?),

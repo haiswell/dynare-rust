@@ -245,7 +245,15 @@ impl Session {
             Expr::Call(f, args) => {
                 let args: Vec<Val> = args.iter().map(|x| self.value(x, cx)).collect::<Result<_>>()?;
                 match f.as_str() {
-                    "dseries" => Val::Ds(dseries(&args)?),
+                    "dseries" => match args.as_slice() {
+                        // dseries(file): a csv/xls(x)/mat/m file
+                        [Val::Str(file)] => {
+                            let (init, names, v) = crate::deterministic::workspace::load_dseries_file(file, cx.dir)?;
+                            let data = (0..v.ncols()).map(|j| v.column(j).iter().copied().collect()).collect();
+                            Val::Ds(Dseries { init: Some(init), names, data })
+                        }
+                        _ => Val::Ds(dseries(&args)?),
+                    },
                     "report" => Val::Report(Box::new(Report { opts: pairs(&args)?, pages: vec![] })),
                     "dates" => match args.as_slice() {
                         [Val::Str(s)] => Val::Date(Date::parse(s).ok_or_else(|| anyhow!("'{s}' is not a date"))?),

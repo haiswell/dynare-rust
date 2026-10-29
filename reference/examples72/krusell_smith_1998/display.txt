@@ -1,0 +1,26 @@
+STEADY STATE
+
+Aggregate variables:
+Y     		 1
+r     		 0.01
+w     		 0.89
+K     		 3.14286
+
+
+Heterogeneous state variables (unconditional moments):
+          Mean  Std. dev.
+a       3.1429     5.2212
+
+
+RESIDUALS (at the steady state)
+
+Aggregate equations:
+Equation 1 (Production function)    	0
+Equation 2 (Capital rental rate)    	5.20417e-18
+Equation 3 (Wage rate)              	0
+Equation 4 (Capital market clearing)	1.34559e-12
+
+Heterogeneous equations (infinity norm over the grid):
+Equation 1 (Euler equation with borrowing constraint)	0.000207137
+Equation 2 (Budget constraint)                       	2.22045e-16
+Equation 3 (Envelope condition)                      	0

@@ -479,9 +479,87 @@ fn gauss_newton(
     Ok((x0, s1))
 }
 
-/// `pac.estimate.iterative_ols(eqname, guess, data, range)`: all the error correction and
-/// autoregressive parameters of the equation must be in `guess` (the order of the result is
-/// `[ec, ar_1, ...]`).
+/// `decomposeAdditiveTerms`: the additive terms of `a` with their signs.
+fn additive_terms(a: &Ast, sign: f64, out: &mut Vec<(Ast, f64)>) {
+    use crate::model::expr::{BinaryOp, UnaryOp};
+    match a {
+        Ast::Bin(BinaryOp::Add, x, y) => {
+            additive_terms(x, sign, out);
+            additive_terms(y, sign, out);
+        }
+        Ast::Bin(BinaryOp::Sub, x, y) => {
+            additive_terms(x, sign, out);
+            additive_terms(y, -sign, out);
+        }
+        Ast::Un(UnaryOp::Neg, x) => additive_terms(x, -sign, out),
+        _ => out.push((a.clone(), sign)),
+    }
+}
+
+fn has_name(a: &Ast, n: &str) -> bool {
+    match a {
+        Ast::Var { name, .. } => name == n,
+        Ast::Num(_) => false,
+        Ast::Un(_, x) => has_name(x, n),
+        Ast::Bin(_, x, y) => has_name(x, n) || has_name(y, n),
+        Ast::Op(_, v) => v.iter().any(|x| has_name(x, n)),
+    }
+}
+
+/// `a` with the parameter `n` replaced by one.
+fn with_unit(a: &Ast, n: &str) -> Ast {
+    match a {
+        Ast::Var { name, .. } if name == n => Ast::Num(1.0),
+        Ast::Un(o, x) => Ast::Un(*o, Box::new(with_unit(x, n))),
+        Ast::Bin(o, x, y) => Ast::Bin(*o, Box::new(with_unit(x, n)), Box::new(with_unit(y, n))),
+        Ast::Op(o, v) => Ast::Op(*o, v.iter().map(|x| with_unit(x, n)).collect()),
+        _ => a.clone(),
+    }
+}
+
+/// The terms `scaling_factor*param*variable` of the PAC equation other than the error
+/// correction, autoregressive and PAC expectation terms: `M_.pac.<m>.optim_additive` (in the
+/// optimizing part `share*(...)`) and `M_.pac.<m>.additive` (the others), as (terms, sign) per
+/// parameter `n`.
+fn extra_terms(pac: &PacModel, n: &str) -> (Vec<(Ast, f64)>, Vec<(Ast, f64)>) {
+    use crate::model::expr::BinaryOp;
+    let mut top = Vec::new();
+    additive_terms(&pac.eq_rhs, 1.0, &mut top);
+    let is_share = |a: &Ast| matches!(a, Ast::Var { name, .. } if Some(name) == pac.share.as_ref());
+    let (mut optim, mut additive) = (Vec::new(), Vec::new());
+    for (t, s) in top {
+        let inner = match &t {
+            Ast::Bin(BinaryOp::Mul, x, y) if is_share(x) => Some(&**y),
+            Ast::Bin(BinaryOp::Mul, x, y) if is_share(y) => Some(&**x),
+            _ => None,
+        };
+        match inner {
+            Some(i) => {
+                let mut v = Vec::new();
+                additive_terms(i, s, &mut v);
+                optim.extend(v.into_iter().filter(|(a, _)| has_name(a, n)));
+            }
+            None if has_name(&t, n) => additive.push((t, s)),
+            None => {}
+        }
+    }
+    (optim, additive)
+}
+
+/// `[~, ia] = setdiff(a, b)`: the positions in `a` of the values not in `b`, sorted by value.
+fn setdiff_ia(a: &[usize], b: &[usize]) -> Vec<usize> {
+    let mut ia: Vec<usize> = (0..a.len()).filter(|&i| !b.contains(&a[i])).collect();
+    ia.sort_by_key(|&i| a[i]);
+    ia.dedup_by_key(|i| a[*i]);
+    ia
+}
+
+/// `pac.estimate.iterative_ols(eqname, guess, data, range)` (`+pac/+estimate/iterative_ols.m`):
+/// all the error correction and autoregressive parameters of the equation must be in `guess`;
+/// the other estimated parameters are those of the share of optimizing agents and of the
+/// additive terms (`optim_additive` inside the optimizing part, `additive` outside). The
+/// regressors are ordered as in MATLAB: error correction, autoregressive, optimizing additive,
+/// additive terms.
 pub fn estimate_iterative_ols(
     vms: &VarModels,
     eqname: &str,
@@ -502,23 +580,53 @@ pub fn estimate_iterative_ols(
             bail!("pac.estimate.iterative_ols: the parameter {n} must be in the initial values");
         }
     }
-    if guess.len() != order.len() {
-        bail!(
-            "pac.estimate.iterative_ols: only the parameters of the error correction and autoregressive terms can be estimated"
-        );
+    // ipnames_ and params0
+    let ip = indices(names, guess)?;
+    let params0: Vec<f64> = guess.iter().map(|(_, v)| *v).collect();
+    // share of optimizing agents: estimated (in the initial values) or calibrated
+    let share_k = match &pac.share {
+        Some(n) => Some(indices(names, &[(n.clone(), 0.0)])?[0]),
+        None => None,
+    };
+    let estimate_share = share_k.is_some_and(|k| ip.contains(&k));
+    if let (Some(k), false) = (share_k, estimate_share)
+        && !(0.0..=1.0).contains(&params[k])
+    {
+        bail!("The share of optimizing agents shoud be in (0,1).");
+    }
+    // the estimated parameters of the additive terms
+    let (mut optim, mut additive) = (Vec::new(), Vec::new());
+    for (i, (n, _)) in guess.iter().enumerate() {
+        if order.contains(n) || Some(ip[i]) == share_k {
+            continue;
+        }
+        let (o, a) = extra_terms(pac, n);
+        if !o.is_empty() {
+            optim.push((ip[i], o));
+        } else if !a.is_empty() {
+            additive.push((ip[i], a));
+        } else if pac.non_optimizing.as_ref().is_some_and(|e| has_name(e, n)) {
+            bail!("The estimation of non optimizing behaviour parameters is not yet allowed.");
+        } else {
+            bail!(
+                "pac.estimate.iterative_ols: only the parameters of the error correction, autoregressive and additive terms and the share of optimizing agents can be estimated ({n})"
+            );
+        }
     }
     if range.0 == 0 || range.1 < range.0 || range.1 >= data.cols.first().map_or(0, |c| c.len()) {
         bail!("invalid estimation range");
     }
     let rname = residual_name(pac, names, data, range, true)?;
     let rname = rname.as_deref();
-    let est = indices(names, &order.iter().map(|n| (n.clone(), 0.0)).collect::<Vec<_>>())?;
-    let mut x0: Vec<f64> = order.iter().map(|n| guess.iter().find(|(g, _)| g == n).unwrap().1).collect();
-    // regressors
+    // regressors: error correction, autoregressive, optimizing additive and additive terms
     let defs: HashMap<&str, &Ast> = pac.defs.iter().map(|(n, a)| (n.as_str(), a)).collect();
     let t_n = range.1 - range.0 + 1;
-    let ncol = 1 + pac.ar_params.len();
+    let n1 = 1 + pac.ar_params.len();
+    let ncol = n1 + optim.len() + additive.len();
     let mut xdata = Mat::zeros(t_n, ncol);
+    // the parameter of each column
+    let mut colpar = indices(names, &order.iter().map(|n| (n.clone(), 0.0)).collect::<Vec<_>>())?;
+    colpar.extend(optim.iter().chain(&additive).map(|(k, _)| *k));
     {
         let e = Ev { names, params, data, defs: defs.clone(), residual: rname };
         let lag = |n: &str, k: i32| Ast::Var {
@@ -526,44 +634,145 @@ pub fn estimate_iterative_ols(
             lag: k,
             loc: crate::modfile::lexer::Loc { file: std::sync::Arc::from("<pac>"), line: 0 },
         };
-        let ect = Ast::Bin(
-            crate::model::expr::BinaryOp::Sub,
-            Box::new(lag(&pac.target, -1)),
-            Box::new(lag(&pac.lhs_var, -1)),
-        );
+        // (the auxiliary variable of a target `log(x)` is computed from its definition, as
+        // `dynamic_set_auxiliary_series` adds it to the data)
+        let target = match &pac.target_expr {
+            Some(e) => crate::varmodels::lagged(e, 1),
+            None => lag(&pac.target, -1),
+        };
+        let lhs = |k: i32| match &pac.lhs_expr {
+            Some(e) => crate::varmodels::lagged(e, k as usize),
+            None => lag(&pac.lhs_var, -k),
+        };
+        let ect = Ast::Bin(crate::model::expr::BinaryOp::Sub, Box::new(target), Box::new(lhs(1)));
+        let extra: Vec<(&str, &Vec<(Ast, f64)>)> =
+            optim.iter().chain(&additive).map(|(k, v)| (names[*k].as_str(), v)).collect();
         for (i, t) in (range.0..=range.1).enumerate() {
             xdata[(i, 0)] = e.ev(&ect, t as isize)?;
-            for k in 1..=pac.ar_params.len() {
-                xdata[(i, k)] = e.ev(&Ast::Op(SpecialOp::Diff, vec![lag(&pac.lhs_var, -(k as i32))]), t as isize)?;
+            for k in 1..n1 {
+                xdata[(i, k)] = e.ev(&Ast::Op(SpecialOp::Diff, vec![lhs(k as i32)]), t as isize)?;
+            }
+            for (c, (n, terms)) in extra.iter().enumerate() {
+                let mut v = 0.0;
+                for (a, s) in terms.iter() {
+                    v += s * e.ev(&with_unit(a, n), t as isize)?;
+                }
+                xdata[(i, n1 + c)] = v;
             }
         }
     }
-    set_params(vms, pac, names, params, &est, &x0)?;
+    // params_id_1 (error correction and autoregressive), params_id_5 (and optimizing additive),
+    // params_id_4 = [params_id_1; params_id_3] (the order of params0_)
+    let mut excl: Vec<usize> = share_k.into_iter().collect();
+    excl.extend(optim.iter().chain(&additive).map(|(k, _)| *k));
+    let id1 = setdiff_ia(&ip, &excl);
+    let mut excl5: Vec<usize> = share_k.into_iter().collect();
+    excl5.extend(additive.iter().map(|(k, _)| *k));
+    let n5 = setdiff_ia(&ip, &excl5).len();
+    let id0: Vec<usize> = (0..ip.len()).filter(|&i| Some(ip[i]) == share_k).collect();
+    let id3: Vec<usize> = (0..ip.len()).filter(|i| !id1.contains(i) && !id0.contains(i)).collect();
+    let id4: Vec<usize> = id1.iter().chain(&id3).copied().collect();
+    if id4.len() != ncol {
+        bail!("pac.estimate.iterative_ols: {} parameters for {ncol} regressors", id4.len());
+    }
+    let mut x0: Vec<f64> = id4.iter().map(|&i| params0[i]).collect();
+    let mut gamma = match share_k {
+        Some(_) if estimate_share => params0[id0[0]],
+        Some(k) => params[k],
+        None => 1.0,
+    };
+    if !(0.0..=1.0).contains(&gamma) {
+        bail!("Initial value for the share of optimizing agents shoud be in (0,1).");
+    }
+    // M_.params(ipnames_) = params0
+    set_params(vms, pac, names, params, &ip, &params0)?;
+    let col = |c: usize| xdata.column(c).iter().copied().collect::<Vec<f64>>();
+    let at_share = |p: &[f64], v: f64| -> Result<Vec<f64>> {
+        let mut p = p.to_vec();
+        p[share_k.unwrap()] = v;
+        Ok(residuals(pac, names, &p, data, range, rname)?.0)
+    };
     let mut counter = 0;
     let (mut ssr, mut resid, mut lhs);
     loop {
         counter += 1;
+        // YDATA = lhs - share*PacExpectations - (1-share)*non optimizing - calibrated additive
+        // terms - share*calibrated optimizing additive terms: the residual plus the estimated
+        // terms at the current M_.params
         let (r0, l) = residuals(pac, names, params, data, range, rname)?;
-        // y = lhs - (rhs - X*p) = r0 + X*p
-        let xp = &xdata * Mat::from_column_slice(ncol, 1, &x0);
-        let y: Vec<f64> = (0..t_n).map(|i| r0[i] + xp[(i, 0)]).collect();
+        let mut y = r0;
+        for (c, &k) in colpar.iter().enumerate() {
+            let w = if c < n1 + optim.len() { gamma } else { 1.0 } * params[k];
+            for (i, v) in col(c).iter().enumerate() {
+                y[i] += w * v;
+            }
+        }
         let ym = Mat::from_column_slice(t_n, 1, &y);
         let p1 = xdata.clone().svd(true, true).solve(&ym, 1e-14).map_err(|e| anyhow!("{e}"))?;
-        let p1: Vec<f64> = p1.iter().copied().collect();
-        let fit = &xdata * Mat::from_column_slice(ncol, 1, &p1);
-        resid = (0..t_n).map(|i| y[i] - fit[(i, 0)]).collect::<Vec<f64>>();
+        let mut p1: Vec<f64> = p1.iter().copied().collect();
+        for v in p1.iter_mut().take(n5) {
+            *v /= gamma;
+        }
+        let fit = xdata.columns(0, n5) * Mat::from_column_slice(n5, 1, &p1[..n5]);
+        resid = (0..t_n).map(|i| y[i] - fit[(i, 0)] * gamma).collect::<Vec<f64>>();
+        if !optim.is_empty() {
+            let rest = xdata.columns(n5, ncol - n5) * Mat::from_column_slice(ncol - n5, 1, &p1[n5..]);
+            for (i, r) in resid.iter_mut().enumerate() {
+                *r -= rest[(i, 0)];
+            }
+        }
         ssr = resid.iter().map(|v| v * v).sum();
         lhs = l;
         let crit = p1.iter().zip(&x0).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
         x0 = p1;
-        set_params(vms, pac, names, params, &est, &x0)?;
+        if estimate_share {
+            // M_.params(ipnames_(params_id_4)) = params0_ (and the h parameters)
+            let est: Vec<usize> = id4.iter().map(|&i| ip[i]).collect();
+            set_params(vms, pac, names, params, &est, &x0)?;
+            // YDATA = lhs - non optimizing - calibrated additive - XDATA(:,n1:end)*params0_(n1:end)
+            // (from the last autoregressive column, as in MATLAB); ZDATA = XDATA(:,1:n5)*
+            // params0_(1:n5) + PacExpectations - non optimizing + calibrated optimizing additive
+            let k = share_k.unwrap();
+            let yv = at_share(params, 0.0)?;
+            let r1 = at_share(params, 1.0)?;
+            let (mut zy, mut zz) = (0.0, 0.0);
+            for i in 0..t_n {
+                let mut yi = yv[i];
+                let mut zi = yv[i] - r1[i];
+                for (c, &kc) in colpar.iter().enumerate() {
+                    let x = xdata[(i, c)];
+                    if c >= n1 + optim.len() {
+                        yi += x * params[kc];
+                    }
+                    if !additive.is_empty() && c + 1 >= n1 {
+                        yi -= x * x0[c];
+                    }
+                    if c < n5 {
+                        zi += x * (x0[c] - params[kc]);
+                    }
+                }
+                zy += zi * yi;
+                zz += zi * zi;
+            }
+            gamma = (zy / zz).clamp(0.0, 1.0);
+            if gamma < f64::EPSILON {
+                bail!(
+                    "On iteration {counter} the share of optimizing agents is found to be zero. Please increase the default lower bound for this parameter."
+                );
+            }
+            params[k] = gamma;
+        } else {
+            // M_.params(ipnames_) = params0_
+            set_params(vms, pac, names, params, &ip, &x0)?;
+        }
         if crit <= 1e-6 || counter > 1000 {
             break;
         }
     }
     let tf = t_n as f64;
     Ok(PacEstimate {
-        parnames: order,
+        // fieldnames(params): the share of optimizing agents is not in the estimator
+        parnames: guess.iter().map(|(n, _)| n.clone()).collect(),
         estimator: x0,
         covariance: None,
         student: vec![f64::NAN; ncol],

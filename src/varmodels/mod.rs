@@ -15,6 +15,7 @@
 pub mod backward;
 pub mod pac;
 pub mod pac_estimate;
+mod pac_print;
 
 use crate::linalg::{Mat, mul, solve};
 use crate::model::SymbolKind;
@@ -28,14 +29,15 @@ use std::collections::BTreeMap;
 /// equation is read).
 pub const VE_PLACEHOLDER: &str = "\u{1}var_expectation:";
 
-/// One endogenous variable of a tagged equation's right-hand side.
+/// One variable of a tagged equation's right-hand side: an endogenous variable or an
+/// expression of one (`diff(x)`, `log(x)`, `diff(diff(x))`, ...) that the preprocessor replaces
+/// by an auxiliary variable, at lag `lag` ([`key_of`]).
 #[derive(Clone, Debug)]
 pub struct Term {
+    /// The key of the expression at `t` (`x`, `diff(x)`, ...).
     pub var: String,
     /// `x(-lag)`; 0 is a contemporaneous variable (structural VAR).
     pub lag: usize,
-    /// `diff(x(-lag))` (trend component models).
-    pub diff: bool,
     /// Coefficient: an expression of the parameters, evaluated with the current calibration.
     pub coef: Ast,
 }
@@ -44,8 +46,17 @@ pub struct Term {
 #[derive(Clone, Debug)]
 pub struct EqSpec {
     pub tag: String,
+    /// Key of the left-hand side ([`key_of`]) and the expression at `t`.
     pub lhs: String,
+    pub lhs_expr: Ast,
+    /// The left-hand side has a `diff` (`M_.var.<m>.diff`, `nonstationary`).
     pub lhs_diff: bool,
+    /// `undiff` of a left-hand side `diff(e)`: the key of `e` and `e`.
+    pub undiff: Option<(String, Ast)>,
+    /// The variables that stand for the left-hand side and for its `undiff` once the model is
+    /// built (the key until then).
+    pub lhs_name: String,
+    pub undiff_name: String,
     pub terms: Vec<Term>,
     /// Terms without variables (the VAR constant `c`).
     pub consts: Vec<Ast>,
@@ -67,6 +78,8 @@ pub struct TrendComponentModel {
     pub eqtags: Vec<String>,
     /// Per equation: is it a trend (target) equation.
     pub targets: Vec<bool>,
+    /// The `targets` option in its order (`target_eqtags`, the columns of `A0star`).
+    pub target_eqtags: Vec<String>,
     pub eqs: Vec<EqSpec>,
 }
 
@@ -146,6 +159,12 @@ pub struct VarModels {
     pub companions: BTreeMap<(String, String), Companion>,
     /// dseries computed by the commands (`X = simul_backward_model(...)`, `Y = X;`).
     pub series: BTreeMap<String, backward::Series>,
+    /// Keys of the variables of the auxiliary models ([`key_of`]) resolved by the transform
+    /// pass (`Model::pac_key_names`, same order).
+    pub keys: Vec<String>,
+    /// The `diff` (type 8) and unary operator (type 10) auxiliary variables of the model:
+    /// (name, type, original variable).
+    pub aux: Vec<(String, u8, String)>,
 }
 
 // ---------------------------------------------------------------- numerics
@@ -168,8 +187,15 @@ fn rdiv(v: &Mat, m: &Mat) -> Result<Mat> {
 }
 
 impl VarModel {
+    /// `list_of_variables_in_companion_var`.
     pub fn lhs(&self) -> Vec<String> {
-        self.eqs.iter().map(|e| e.lhs.clone()).collect()
+        self.eqs.iter().map(|e| e.lhs_name.clone()).collect()
+    }
+
+    /// The companion variables as expressions at `t` (what the `h` / expectation parameters
+    /// multiply).
+    pub fn companion_exprs(&self) -> Vec<(String, Ast)> {
+        self.eqs.iter().map(|e| (e.lhs.clone(), e.lhs_expr.clone())).collect()
     }
 
     /// The equation whose LHS is the variable of the RHS term `t`. As in the preprocessor, the
@@ -177,7 +203,7 @@ impl VarModel {
     /// only, and the LHS `x` the level terms only. Terms that match no LHS are left out of the
     /// VAR (`varmatrices.m` has no entry for them).
     fn lhs_index(&self, t: &Term) -> Option<usize> {
-        self.eqs.iter().position(|e| e.lhs == t.var && e.lhs_diff == t.diff)
+        self.eqs.iter().position(|e| e.lhs == t.var)
     }
 
     /// Lag order `p` (at least one): the largest lag of the terms that enter the VAR.
@@ -225,22 +251,45 @@ impl VarModel {
 }
 
 impl TrendComponentModel {
+    /// `list_of_variables_in_companion_var`: the `undiff` of the LHS of the error correction
+    /// equations (`getUndiffLHSForPac`), the LHS of the target equations.
     pub fn lhs(&self) -> Vec<String> {
-        self.eqs.iter().map(|e| e.lhs.clone()).collect()
+        self.eqs
+            .iter()
+            .enumerate()
+            .map(
+                |(i, e)| if self.targets[i] || e.undiff.is_none() { e.lhs_name.clone() } else { e.undiff_name.clone() },
+            )
+            .collect()
+    }
+
+    /// The companion variables as expressions at `t`.
+    pub fn companion_exprs(&self) -> Vec<(String, Ast)> {
+        self.eqs
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match &e.undiff {
+                Some(u) if !self.targets[i] => u.clone(),
+                _ => (e.lhs.clone(), e.lhs_expr.clone()),
+            })
+            .collect()
     }
 
     pub fn ecm_eqs(&self) -> Vec<usize> {
         (0..self.eqs.len()).filter(|&i| !self.targets[i]).collect()
     }
 
+    /// The target equations in the order of the `targets` option (`target_eqn`).
     pub fn target_eqs(&self) -> Vec<usize> {
-        (0..self.eqs.len()).filter(|&i| self.targets[i]).collect()
+        self.target_eqtags.iter().filter_map(|t| self.eqtags.iter().position(|x| x == t)).collect()
     }
 
+    /// `getMaxLag`: the largest lag of the right-hand side terms that are left-hand sides of
+    /// the model (`VarMaxLag`).
     pub fn max_lag(&self) -> usize {
-        self.ecm_eqs()
+        self.eqs
             .iter()
-            .flat_map(|&i| self.eqs[i].terms.iter().filter(|t| t.diff).map(|t| t.lag))
+            .flat_map(|e| e.terms.iter().filter(|t| self.eqs.iter().any(|q| q.lhs == t.var)).map(|t| t.lag))
             .max()
             .unwrap_or(1)
             .max(1)
@@ -251,26 +300,20 @@ impl TrendComponentModel {
         let ecm = self.ecm_eqs();
         let tgt = self.target_eqs();
         let (m, q, p) = (ecm.len(), tgt.len(), self.max_lag());
-        let names: Vec<&str> = ecm.iter().map(|&i| self.eqs[i].lhs.as_str()).collect();
+        let dnames: Vec<&str> = ecm.iter().map(|&i| self.eqs[i].lhs.as_str()).collect();
+        let names: Vec<&str> = ecm.iter().map(|&i| self.eqs[i].undiff.as_ref().map_or("", |u| u.0.as_str())).collect();
         let tnames: Vec<&str> = tgt.iter().map(|&i| self.eqs[i].lhs.as_str()).collect();
         let mut ar = vec![Mat::zeros(m, m); p];
         let mut a0 = Mat::zeros(m, m);
         let mut a0star = Mat::zeros(m, q);
         for (r, &i) in ecm.iter().enumerate() {
             let e = &self.eqs[i];
-            if !e.lhs_diff {
+            if e.undiff.is_none() {
                 bail!("{} is not a trend component model. The LHS variables should be in differences", self.name);
             }
             for t in &e.terms {
                 let v = ev(&t.coef)?;
-                if t.diff {
-                    let Some(c) = names.iter().position(|n| *n == t.var) else {
-                        bail!(
-                            "trend_component_model {}: diff({}) is not the LHS of an error correction equation",
-                            self.name,
-                            t.var
-                        )
-                    };
+                if let Some(c) = dnames.iter().position(|n| *n == t.var) {
                     if t.lag == 0 {
                         bail!(
                             "trend_component_model {}: contemporaneous diff({}) on the RHS of '{}'",
@@ -284,14 +327,8 @@ impl TrendComponentModel {
                     a0[(r, c)] += v;
                 } else if let Some(c) = tnames.iter().position(|n| *n == t.var) {
                     a0star[(r, c)] -= v;
-                } else {
-                    bail!(
-                        "trend_component_model {}: variable {} of equation '{}' is neither endogenous nor a target of the model",
-                        self.name,
-                        t.var,
-                        e.tag
-                    );
                 }
+                // other terms are skipped, as by `fillAutoregressiveRow` / `fillErrorCorrectionRow`
             }
         }
         Ok(TcMatrices { ar, a0, a0star })
@@ -562,21 +599,56 @@ fn is_const(a: &Ast, kind: Kind) -> Result<bool> {
     })
 }
 
+/// The variables of the auxiliary models: an endogenous variable, or `diff` / a unary function
+/// (which the preprocessor replaces by an auxiliary variable) of one. Returns the expression at
+/// `t`, its key (`diff(log(x))`) and the lag; None for any other expression.
+pub fn key_of(a: &Ast, kind: Kind) -> Result<Option<(Ast, String, usize)>> {
+    fn walk(a: &Ast, kind: Kind) -> Option<(Ast, String, i32)> {
+        match a {
+            Ast::Var { name, lag, loc } if kind(name) == Some(SymbolKind::Endo) => {
+                Some((Ast::Var { name: name.clone(), lag: 0, loc: loc.clone() }, name.clone(), *lag))
+            }
+            Ast::Op(SpecialOp::Diff, v) if v.len() == 1 => {
+                let (e, k, l) = walk(&v[0], kind)?;
+                Some((Ast::Op(SpecialOp::Diff, vec![e]), format!("diff({k})"), l))
+            }
+            Ast::Un(op, x) if *op != UnaryOp::Neg => {
+                let (e, k, l) = walk(x, kind)?;
+                Some((Ast::Un(*op, Box::new(e)), format!("{}({k})", op.name()), l))
+            }
+            _ => None,
+        }
+    }
+    match walk(a, kind) {
+        Some((_, k, l)) if l > 0 => bail!("leads are not allowed in a VAR model ({k}(+{l}))"),
+        Some((e, k, l)) => Ok(Some((e, k, (-l) as usize))),
+        None => Ok(None),
+    }
+}
+
+/// `a` shifted by `-lag` (an expression of [`key_of`] at `t`).
+pub fn lagged(a: &Ast, lag: usize) -> Ast {
+    match a {
+        Ast::Var { name, lag: l, loc } => Ast::Var { name: name.clone(), lag: l - lag as i32, loc: loc.clone() },
+        Ast::Op(o, v) => Ast::Op(*o, v.iter().map(|x| lagged(x, lag)).collect()),
+        Ast::Un(o, x) => Ast::Un(*o, Box::new(lagged(x, lag))),
+        Ast::Bin(o, x, y) => Ast::Bin(*o, Box::new(lagged(x, lag)), Box::new(lagged(y, lag))),
+        Ast::Num(_) => a.clone(),
+    }
+}
+
 fn lin(a: &Ast, coef: &Ast, kind: Kind, tag: &str, out: &mut EqSpec) -> Result<()> {
     if is_const(a, kind)? {
         out.consts.push(mulc(coef, a));
         return Ok(());
     }
+    if let Some((_, key, lag)) = key_of(a, kind).map_err(|e| anyhow!("equation '{tag}': {e}"))? {
+        out.terms.push(Term { var: key, lag, coef: coef.clone() });
+        return Ok(());
+    }
     match a {
-        Ast::Var { name, lag, .. } => {
-            // exogenous variables are the innovations of the model
-            if kind(name) == Some(SymbolKind::Endo) {
-                if *lag > 0 {
-                    bail!("equation '{tag}': leads are not allowed in a VAR model ({name}(+{lag}))");
-                }
-                out.terms.push(Term { var: name.clone(), lag: (-*lag) as usize, diff: false, coef: coef.clone() });
-            }
-        }
+        // exogenous variables are the innovations of the model
+        Ast::Var { .. } => {}
         Ast::Un(UnaryOp::Neg, x) => lin(x, &mulc(coef, &Ast::Num(-1.0)), kind, tag, out)?,
         Ast::Bin(BinaryOp::Add, x, y) => {
             lin(x, coef, kind, tag, out)?;
@@ -598,28 +670,51 @@ fn lin(a: &Ast, coef: &Ast, kind: Kind, tag: &str, out: &mut EqSpec) -> Result<(
         Ast::Bin(BinaryOp::Div, x, y) if is_const(y, kind)? => {
             lin(x, &Ast::Bin(BinaryOp::Div, Box::new(coef.clone()), y.clone()), kind, tag, out)?
         }
-        Ast::Op(SpecialOp::Diff, args) => match &args[0] {
-            Ast::Var { name, lag, .. } if kind(name) == Some(SymbolKind::Endo) && *lag <= 0 => {
-                out.terms.push(Term { var: name.clone(), lag: (-*lag) as usize, diff: true, coef: coef.clone() });
-            }
-            _ => bail!("equation '{tag}': only diff(x(-k)) of a variable is supported"),
-        },
+        Ast::Op(SpecialOp::Diff, _) => bail!("equation '{tag}': only diff(x(-k)) of a variable is supported"),
         _ => bail!("equation '{tag}' is not linear in the variables"),
     }
     Ok(())
 }
 
-/// Linear structure of the equation `lhs = rhs` tagged `tag`.
-pub fn eq_spec(tag: &str, lhs: &Ast, rhs: &Ast, kind: Kind, allow_diff_lhs: bool) -> Result<EqSpec> {
-    let (name, lhs_diff) = match lhs {
-        Ast::Var { name, lag: 0, .. } if kind(name) == Some(SymbolKind::Endo) => (name.clone(), false),
-        Ast::Op(SpecialOp::Diff, a) if allow_diff_lhs => match &a[0] {
-            Ast::Var { name, lag: 0, .. } if kind(name) == Some(SymbolKind::Endo) => (name.clone(), true),
-            _ => bail!("equation '{tag}': the LHS must be a variable or diff(variable)"),
-        },
-        _ => bail!("equation '{tag}': the LHS must be a single endogenous variable at time t"),
+/// Linear structure of the equation `lhs = rhs` tagged `tag`. The LHS is a variable or an
+/// expression of one ([`key_of`]) at `t`; with `allow_expr_lhs` false, a variable.
+pub fn eq_spec(tag: &str, lhs: &Ast, rhs: &Ast, kind: Kind, allow_expr_lhs: bool) -> Result<EqSpec> {
+    let bad = || anyhow!("equation '{tag}': the LHS must be a single endogenous variable at time t");
+    let (lhs_expr, key, lag) = key_of(lhs, kind).map_err(|e| anyhow!("equation '{tag}': {e}"))?.ok_or_else(bad)?;
+    if lag != 0 || (!allow_expr_lhs && !matches!(lhs_expr, Ast::Var { .. })) {
+        return Err(bad());
+    }
+    fn count_diffs(a: &Ast) -> usize {
+        match a {
+            Ast::Op(SpecialOp::Diff, v) => 1 + count_diffs(&v[0]),
+            Ast::Op(_, v) => v.iter().map(count_diffs).sum(),
+            Ast::Un(_, x) => count_diffs(x),
+            _ => 0,
+        }
+    }
+    // `undiff`: the argument of the outermost diff
+    fn undiff(a: &Ast) -> Option<Ast> {
+        match a {
+            Ast::Op(SpecialOp::Diff, v) => Some(v[0].clone()),
+            Ast::Un(_, x) => undiff(x),
+            _ => None,
+        }
+    }
+    let undiff = undiff(&lhs_expr).map(|u| {
+        let k = key_of(&u, kind).ok().flatten().map(|x| x.1).unwrap_or_default();
+        (k, u)
+    });
+    let mut e = EqSpec {
+        tag: tag.to_string(),
+        lhs: key.clone(),
+        lhs_diff: count_diffs(&lhs_expr) > 0,
+        lhs_expr,
+        undiff_name: undiff.as_ref().map(|u| u.0.clone()).unwrap_or_default(),
+        undiff,
+        lhs_name: key,
+        terms: Vec::new(),
+        consts: Vec::new(),
     };
-    let mut e = EqSpec { tag: tag.to_string(), lhs: name, lhs_diff, terms: Vec::new(), consts: Vec::new() };
     lin(rhs, &Ast::Num(1.0), kind, tag, &mut e)?;
     Ok(e)
 }
@@ -651,6 +746,13 @@ pub fn expr_terms(a: &Ast, kind: Kind) -> Result<Vec<ExprTerm>> {
                 out.push(ExprTerm { var: name.clone(), param, constant: mult });
             }
             Ast::Un(UnaryOp::Neg, x) => walk(x, -mult, param, kind, out)?,
+            // `diff(x)`, `diff(log(x))`, ...: the auxiliary variable the preprocessor substitutes
+            // for it (`substituteDiff` / `substituteUnaryOpsInExpression`), renamed once the model
+            // is built (`resolve_names`)
+            Ast::Op(SpecialOp::Diff, _) | Ast::Un(..) => match key_of(a, kind).ok().flatten() {
+                Some((_, key, 0)) => out.push(ExprTerm { var: key, param, constant: mult }),
+                _ => return Err(bad()),
+            },
             Ast::Bin(BinaryOp::Add, x, y) => {
                 walk(x, mult, param.clone(), kind, out)?;
                 walk(y, mult, param, kind, out)?;
@@ -687,11 +789,14 @@ pub fn expr_terms(a: &Ast, kind: Kind) -> Result<Vec<ExprTerm>> {
 
 pub const INITIALIZE: &str = "var_expectation.initialize";
 pub const UPDATE: &str = "var_expectation.update";
+pub const PRINT: &str = "var_expectation.print";
 pub const GET_COMPANION: &str = "get_companion_matrix";
 // ---- pac ----
 pub const PAC_INITIALIZE: &str = "pac.initialize";
 pub const PAC_UPDATE: &str = "pac.update.expectation";
 pub const PAC_MCE: &str = "pac.mce.parameters";
+pub const PAC_PRINT: &str = "pac.print";
+pub const PAC_BGP_SET: &str = "pac.bgp.set";
 /// PAC estimation needs MATLAB workspace objects (dseries, structures): not runnable from a
 /// .mod file, see [`pac_estimate`].
 pub const PAC_ESTIMATE: &[&str] = &["pac.estimate.nls", "pac.estimate.iterative_ols"];
@@ -733,20 +838,6 @@ fn run_series(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Resu
                 Some(OptValue::Num(v)) => *v as usize,
                 _ => bail!("{name}: no sample size"),
             };
-            // the variables of the PAC statements are auxiliary in Dynare (not in M_.orig_endo_nbr)
-            let hidden: Vec<String> = mf
-                .varmodels
-                .pacs
-                .iter()
-                .flat_map(|p| {
-                    p.components.iter().map(|c| c.auxname.clone()).chain([
-                        p.aux_var.clone(),
-                        p.vns.clone(),
-                        p.mce_z.clone(),
-                    ])
-                })
-                .filter(|s| !s.is_empty())
-                .collect();
             let sim = backward::simul_backward_model(
                 &mf.model,
                 &mf.model.params,
@@ -754,8 +845,9 @@ fn run_series(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Resu
                 init.as_ref(),
                 n,
                 innov.as_ref(),
-                &hidden,
                 &mf.histval,
+                // options_.solve_algo as the commands so far left it (default 4)
+                mf.options.solve_algo.map_or(4, |v| v as u8),
             )?;
             println!(
                 "{name}: {n} periods simulated ({}, {} to {}).",
@@ -797,6 +889,63 @@ fn mf_fname(o: &Options) -> String {
         Some(OptValue::Str(v)) => v.clone(),
         _ => "dynare".into(),
     }
+}
+
+/// `dyn_table.m`: the table printed by `pac.estimate.nls` (columns 16 wide, `%16.5g` cells).
+fn dyn_table(
+    title: &str,
+    preamble: &[String],
+    afterward: &[String],
+    rows: &[String],
+    cols: &[&str],
+    indent: usize,
+    data: &[Vec<f64>],
+) -> String {
+    use crate::analysis::table::fmt_g;
+    let maxrow = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+    let mut colrow = " ".repeat(2 * indent + maxrow);
+    let mut colrow2 = colrow.clone();
+    for (i, c) in cols.iter().enumerate() {
+        let n = c.chars().count();
+        let fw = 16usize;
+        if n < fw {
+            let l = (fw - n % fw) / 2;
+            let r = (fw - n % fw).div_ceil(2);
+            colrow += &format!("{}{c}{}", " ".repeat(l), " ".repeat(r));
+            colrow2 += &"_".repeat(fw);
+        } else {
+            colrow += c;
+            colrow2 += &"_".repeat(n);
+        }
+        if i + 1 != cols.len() {
+            colrow += &" ".repeat(indent);
+            colrow2 += &" ".repeat(indent);
+        }
+    }
+    let sp = " ".repeat(indent);
+    let mut out = String::from("\n\n");
+    if title.chars().count() >= colrow.chars().count() {
+        out += &format!("{title}\n\n");
+    } else {
+        out += &format!("{}{title}\n\n", " ".repeat((colrow.chars().count() + indent - title.chars().count()) / 2));
+    }
+    for p in preamble {
+        out += &format!("{sp}{p}\n");
+    }
+    out += &format!("{colrow}\n{colrow2}\n\n");
+    for (r, row) in rows.iter().zip(data) {
+        out += &format!("    {r:<maxrow$}");
+        for &v in row {
+            out += &format!("{sp}{}", fmt_g(v, 16, 5));
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+    for a in afterward {
+        out += &format!("{sp}{a}\n");
+    }
+    out += &format!("{}\n\n", "_".repeat(colrow2.chars().count()));
+    out
 }
 
 /// `pac.estimate.nls` / `pac.estimate.iterative_ols` (options built by the parser, plus `dir`, the
@@ -913,9 +1062,42 @@ fn run_estimate(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Re
     } else {
         pac_estimate::estimate_iterative_ols(&mf.varmodels, &eq, &names, &mut params, &guess, &data, (first, last))?
     };
-    println!("{name}({eq}): SSR = {:.8}, R2 = {:.6}", est.ssr, est.r2);
-    for (n, v) in est.parnames.iter().zip(&est.estimator) {
-        println!("  {n} = {v:.8}");
+    if name == "pac.estimate.nls" && !matches!(opt(o, "noprint"), Some(OptValue::Num(v)) if *v != 0.0) {
+        // nls.m: dyn_table('NLS Estimation of equation ...', ...)
+        let lhs_var = mf.varmodels.pacs.iter().find(|p| p.eq_name == eq).map(|p| p.lhs_var.clone()).unwrap_or_default();
+        let label = |r: usize| match &dates {
+            Some(ds) => crate::dates::Date::parse(ds[r].trim()).map_or_else(|| ds[r].trim().to_string(), |d| d.label()),
+            None => (r + 1).to_string(),
+        };
+        let sd: Vec<f64> = match &est.covariance {
+            Some(c) => (0..c.nrows()).map(|i| c[(i, i)].sqrt()).collect(),
+            None => vec![f64::NAN; est.estimator.len()],
+        };
+        print!(
+            "{}",
+            dyn_table(
+                &format!("NLS Estimation of equation '{eq}'"),
+                &[
+                    format!("Dependent Variable: diff({lhs_var})"),
+                    format!("Observations: {} from {} to {}\n", last - first + 1, label(first), label(last)),
+                ],
+                &[format!("R^2: {:.6}", est.r2), format!("s^2: {:.6}", est.s2)],
+                &est.parnames,
+                &["Estimates", "t-statistic", "Std. Error"],
+                4,
+                &est.estimator
+                    .iter()
+                    .zip(&est.student)
+                    .zip(&sd)
+                    .map(|((a, b), c)| vec![*a, *b, *c])
+                    .collect::<Vec<_>>(),
+            )
+        );
+    } else if name != "pac.estimate.nls" {
+        println!("{name}({eq}): SSR = {:.8}, R2 = {:.6}", est.ssr, est.r2);
+        for (n, v) in est.parnames.iter().zip(&est.estimator) {
+            println!("  {n} = {v:.8}");
+        }
     }
     // oo_.pac.<model>
     if let Some(OptValue::Str(d)) = opt(o, "out_dir") {
@@ -936,7 +1118,7 @@ fn run_estimate(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Re
 
 /// Commands run by [`run`].
 pub fn handles(name: &str) -> bool {
-    matches!(name, INITIALIZE | UPDATE | GET_COMPANION | PAC_INITIALIZE | PAC_UPDATE | PAC_MCE) // ---- pac ----
+    matches!(name, INITIALIZE | UPDATE | PRINT | GET_COMPANION | PAC_INITIALIZE | PAC_UPDATE | PAC_MCE | PAC_PRINT | PAC_BGP_SET) // ---- pac ----
         || PAC_ESTIMATE.contains(&name)
         || matches!(name, SIMUL_BACKWARD | DS_COPY | DS_SET)
 }
@@ -957,12 +1139,56 @@ pub fn run(mf: &mut crate::modfile::ModFile, name: &str, o: &Options) -> Result<
         INITIALIZE => mf.varmodels.initialize(arg, &names, &params),
         // ---- pac ----
         PAC_INITIALIZE => mf.varmodels.pac_initialize(arg, &names, &params),
+        PAC_BGP_SET => {
+            use crate::modfile::opt;
+            let s = |k| match opt(o, k) {
+                Some(OptValue::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            let (eq, var) = (s("eq"), s("var"));
+            let value = match (opt(o, "logical"), opt(o, "value")) {
+                (Some(OptValue::Num(v)), _) => pac::PacBgp::Bool(*v != 0.0),
+                (_, Some(OptValue::Num(v))) => pac::PacBgp::Num(*v),
+                _ => bail!("{name}: expects a value"),
+            };
+            let pm = mf.varmodels.pacs.iter_mut().find(|p| p.name == *arg);
+            let pm = pm.ok_or_else(|| anyhow!("Reference to non-existent field '{arg}'."))?;
+            if !mf.model.endo_names.contains(&var) && !mf.model.exo_names.contains(&var) {
+                bail!("Endogenous/Exogenous variable {var} is unknown.");
+            }
+            pm.bgp_set(&eq, &var, value);
+            Ok(())
+        }
         PAC_UPDATE | PAC_MCE => {
             let vals = mf.varmodels.pac_update_values(arg, &names, &params)?;
             for (n, v) in vals {
                 let k = names.iter().position(|x| *x == n).ok_or_else(|| anyhow!("unknown parameter {n}"))?;
                 mf.model.params[k] = v;
             }
+            Ok(())
+        }
+        PAC_PRINT | PRINT => {
+            use crate::modfile::opt;
+            let withcal = !matches!(opt(o, "withcalibration"), Some(OptValue::Num(v)) if *v == 0.0);
+            let fname = mf_fname(o);
+            let (files, console) = if name == PRINT {
+                mf.varmodels.print_var_expectation(arg, &names, &params, &fname, withcal)?
+            } else {
+                let p = mf.varmodels.pac(arg).ok_or_else(|| anyhow!("PAC_EXPECTATION_MODEL {arg} is not defined."))?;
+                p.print(&mf.varmodels, &names, &params, &fname, withcal)?
+            };
+            let dir = match opt(o, "dir") {
+                Some(OptValue::Str(d)) => std::path::PathBuf::from(d),
+                _ => std::path::PathBuf::from("."),
+            };
+            for (f, text) in files {
+                let path = dir.join(&f);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, text)?;
+            }
+            print!("{console}");
             Ok(())
         }
         GET_COMPANION => mf.varmodels.get_companion_matrix(arg, &names, &params).map(|_| ()),

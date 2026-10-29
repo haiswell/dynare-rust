@@ -20,6 +20,7 @@ pub mod graphics;
 pub mod kalman;
 pub mod linalg;
 pub mod matfile;
+mod matfile_h5;
 pub mod model;
 pub mod modfile;
 pub mod parallel;

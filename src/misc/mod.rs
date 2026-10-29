@@ -160,7 +160,8 @@ impl Session {
             }
             OPTIONS_ASSIGNMENT => {
                 for (k, _) in o {
-                    if k.contains('.') {
+                    // options_.steady.maxit: GlobalOptions::write
+                    if k.contains('.') && k != "steady.maxit" {
                         println!("NOTE: `options_.{k} = ...` is not used by dynare-rust.");
                     }
                 }
@@ -221,6 +222,8 @@ impl Session {
         if !args.first().is_some_and(|a| a.eq_ignore_ascii_case("reset")) {
             self.last_seed = Some(*seed);
         }
+        // MATLAB's global stream (mt19937ar), which csminwel draws from
+        crate::gsa::rng::reset_global(*seed as u32);
         Ok(())
     }
 }
@@ -376,8 +379,30 @@ pub fn resid_text_det(mf: &ModFile, o: &Options, ci: usize, det: Option<(&[f64],
         .iter()
         .any(|c| matches!(c, Command::Other(n, o) if n == "resid" && opt(o, "non_zero").is_some()))
         || opt(o, "non_zero").is_some();
-    let tolf = crate::dsge::steady_options(mf).tolf;
-    Ok(residuals_text(m, &z, &equation_names(mf), tolf, non_zero))
+    let so = crate::dsge::steady_options(mf);
+    let disp = mcp_residuals(m, &y, &p, so.solve_algo, &mut z);
+    Ok(residuals_text_disp(m, &z, &equation_names(mf), so.tolf, non_zero, disp))
+}
+
+/// `display_static_residuals.m`'s complementarity conditions: with `solve_algo` 10 or 11 the
+/// residuals of the equations whose variable sits at a bound are set to 0. Returns the
+/// `disp_string` of the header.
+pub fn mcp_residuals(m: &crate::model::Model, ys: &[f64], p: &[f64], solve_algo: u8, z: &mut [f64]) -> &'static str {
+    let Ok(cc) = crate::deterministic::mcp::Complementarity::new(m, p) else {
+        return "";
+    };
+    if matches!(solve_algo, 10 | 11) {
+        for (j, (&lb, &ub)) in cc.lb.iter().zip(&cc.ub).enumerate() {
+            if (lb.is_finite() || ub.is_finite()) && (ys[j] <= lb + f64::EPSILON || ys[j] >= ub - f64::EPSILON) {
+                z[cc.eq_index[j]] = 0.0;
+            }
+        }
+        " (accounting for complementarity conditions)"
+    } else if cc.lb.iter().zip(&cc.ub).any(|(l, u)| l.is_finite() || u.is_finite()) {
+        " (ignoring complementarity conditions)"
+    } else {
+        ""
+    }
 }
 
 /// The body of `display_static_residuals.m` (with `nargout == 0`): the "Residuals of the static
@@ -390,9 +415,21 @@ pub fn residuals_text(
     tolf: f64,
     non_zero: bool,
 ) -> String {
+    residuals_text_disp(m, z, names, tolf, non_zero, "")
+}
+
+/// [`residuals_text`] with the header's `disp_string` (see [`mcp_residuals`]).
+pub fn residuals_text_disp(
+    m: &crate::model::Model,
+    z: &[f64],
+    names: &[Option<String>],
+    tolf: f64,
+    non_zero: bool,
+    disp: &str,
+) -> String {
     use std::fmt::Write;
     let mut s = String::new();
-    let _ = writeln!(s, "\n\nResiduals of the static equations:");
+    let _ = writeln!(s, "\n\nResiduals of the static equations{disp}:");
     let last = m.orig_endo_nbr.min(z.len());
     // size(strvcat(tags(:,3)),2)+1: the longest tag value of the model
     let wtag = m

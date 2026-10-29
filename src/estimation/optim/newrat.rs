@@ -8,7 +8,7 @@ use rayon::prelude::*;
 
 use super::{OptimResult, bfgsi1, csminit1, norm, pen};
 use crate::estimation::{Bounds, Objective, penalty_objective};
-use crate::linalg::{Mat, solve, sym_eig};
+use crate::linalg::{Mat, inv_lu, mldivide_sq, sym_eig, syrk_t};
 
 /// `hess_info` of `newrat.m` / `mr_hessian.m`.
 #[derive(Clone, Debug)]
@@ -49,6 +49,8 @@ pub struct NewratOptions {
     /// ---- estimation completion ---- `analytic_derivation`: gradient and outer-product
     /// Hessian from the objective (`analytic_Hessian = 'opg'`), no `mr_hessian`.
     pub analytic: bool,
+    /// `bayestopt_.name` (the "Done for param" lines of `mr_gstep.m`).
+    pub names: Vec<String>,
 }
 
 impl Default for NewratOptions {
@@ -64,6 +66,7 @@ impl Default for NewratOptions {
             verbose: true,
             parallel: true,
             analytic: false,
+            names: Vec::new(),
         }
     }
 }
@@ -351,10 +354,11 @@ pub fn mr_hessian(
             gga[(k, i)] *= a_diag[i];
         }
     }
-    let mut hh_mat = gga.transpose() * &gga;
-    let mut hh_mat0 = ggh.transpose() * &ggh;
+    // A'*A is a dsyrk in MATLAB, and its `\` a Cholesky solve (symmetric, positive diagonal)
+    let mut hh_mat = syrk_t(&gga);
+    let mut hh_mat0 = syrk_t(&ggh);
     let a = Mat::from_diagonal(&crate::linalg::Vector::from_vec(a_diag.clone()));
-    let left_div = |m: &Mat, b: &Mat| solve(m, b).unwrap_or_else(|| nan_mat(n));
+    let left_div = |m: &Mat, b: &Mat| mldivide_sq(m, b).unwrap_or_else(|| nan_mat(n));
     let mut ihh = &a * left_div(&hh_mat, &a);
     if hflag > 0 && min_eig(&hessian_mat) > 0.0 {
         let hh0 = &a * &hessian_mat * &a;
@@ -381,9 +385,8 @@ pub fn mr_hessian(
         }
         let igg = inv_a.transpose() * &ihh * &inv_a;
         // hh_mat0 = inv_A' / igg * inv_A
-        let igg_inv =
-            solve(&igg.transpose(), &Mat::identity(n, n)).map(|m| m.transpose()).unwrap_or_else(|| nan_mat(n));
-        hh_mat0 = inv_a.transpose() * igg_inv * &inv_a;
+        // inv_A' / igg = (igg' \ inv_A)'
+        hh_mat0 = left_div(&igg.transpose(), &inv_a).transpose() * &inv_a;
     }
     if hflag < 2 {
         hessian_mat = hh_mat0.clone();
@@ -452,6 +455,7 @@ fn mr_gstep(
     verbose: bool,
     gradient_epsilon: f64,
     robust: bool,
+    names: &[String],
 ) -> (f64, Vec<f64>, Vec<bool>, usize) {
     let n = x.len();
     let h1: Vec<f64> = h1.map(|h| h.to_vec()).unwrap_or_else(|| vec![gradient_epsilon; n]);
@@ -568,7 +572,8 @@ fn mr_gstep(
                 x = cb(&xx);
             }
             if verbose {
-                println!("Done for param {} = {:8.4}; f = {:8.4}", i + 1, x[i], f0);
+                let name = names.get(i).cloned().unwrap_or_else(|| (i + 1).to_string());
+                println!("Done for param {name} = {:8.4}; f = {:8.4}", x[i], f0);
             }
         }
         xh1 = x.clone();
@@ -653,7 +658,7 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
         let h = h.unwrap_or_else(|| Mat::identity(nx, nx));
         gg = g;
         htol0 = vec![htol_base; nx];
-        igg = solve(&h, &Mat::identity(nx, nx)).unwrap_or_else(|| nan_mat(nx));
+        igg = inv_lu(&h).unwrap_or_else(|| nan_mat(nx));
         hhg = Some(h.clone());
         h1 = None;
         dum = None;
@@ -699,11 +704,12 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
     let cbe = |v: &[f64]| check_bounds(v, bounds, f64::EPSILON);
     while norm(&gg) > gtol && !check && jit < opts.nit {
         jit += 1;
+        let tic1 = std::time::Instant::now();
         let icount = jit; // 1-based iteration counter: fval0[icount-1] is fval0(icount)
         penalty = fval0[icount - 1];
         crate::progress::detail(format!("newrat iteration {icount}, f = {penalty:.6}"));
         if verbose {
-            println!("\nIteration {icount}");
+            println!(" \nIteration {icount}");
         }
         let (fv, mut x0, fc, _) = csminit1(obj, &xparam1, penalty, fval0[icount - 1], &gg, false, &h_inv, verbose);
         fval = fv;
@@ -735,7 +741,7 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
             let mut iggx = Mat::identity(nx, nx);
             let k = ig_pos.len();
             let sub = Mat::from_fn(k, k, |r, c| hhx[(ig_pos[r], ig_pos[c])]);
-            let subinv = solve(&sub, &Mat::identity(k, k)).unwrap_or_else(|| nan_mat(k));
+            let subinv = inv_lu(&sub).unwrap_or_else(|| nan_mat(k));
             for r in 0..k {
                 for c in 0..k {
                     iggx[(ig_pos[r], ig_pos[c])] = subinv[(r, c)];
@@ -769,6 +775,7 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
             verbose,
             opts.gradient_epsilon,
             hess_info.robust,
+            &opts.names,
         );
         x0 = xg;
         ig = igv;
@@ -820,15 +827,19 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
                 fcount += 1;
                 gg = g;
                 if let Some(h) = h {
-                    h_inv = solve(&h, &inx).unwrap_or_else(|| nan_mat(nx));
+                    h_inv = inv_lu(&h).unwrap_or_else(|| nan_mat(nx));
                     hhg = Some(h.clone());
                     hh = Some(h);
                 }
             }
             if verbose {
-                println!("FVAL          {fval}");
-                println!("Improvement   {improvement}");
-                println!("Ftol          {ftol}");
+                let dxn: f64 =
+                    xhist[icount].iter().zip(&xhist[icount - 1]).map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
+                println!("Actual dxnorm {}", n2s(dxn));
+                println!("FVAL          {}", n2s(fval));
+                println!("Improvement   {}", n2s(improvement));
+                println!("Ftol          {}", n2s(ftol));
+                println!("Htol          {}", n2s(htol0.iter().cloned().fold(f64::NEG_INFINITY, f64::max)));
                 disp_eigenvalues_gradient(&gg, hh.as_ref());
             }
             ghist.push(gg.clone());
@@ -836,11 +847,11 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
             if verbose {
                 let dxn: f64 =
                     xhist[icount].iter().zip(&xhist[icount - 1]).map(|(a, b)| (a - b).powi(2)).sum::<f64>().sqrt();
-                println!("Actual dxnorm {dxn}");
-                println!("FVAL          {fval}");
-                println!("Improvement   {improvement}");
-                println!("Ftol          {ftol}");
-                println!("Htol          {}", htol0.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                println!("Actual dxnorm {}", n2s(dxn));
+                println!("FVAL          {}", n2s(fval));
+                println!("Improvement   {}", n2s(improvement));
+                println!("Ftol          {}", n2s(ftol));
+                println!("Htol          {}", n2s(htol0.iter().cloned().fold(f64::NEG_INFINITY, f64::max)));
             }
             htol = htol_base;
             let prev = &xhist[icount - 1];
@@ -850,7 +861,7 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
                 fcount += 1;
                 gg = g;
                 if let Some(h) = h {
-                    h_inv = solve(&h, &inx).unwrap_or_else(|| nan_mat(nx));
+                    h_inv = inv_lu(&h).unwrap_or_else(|| nan_mat(nx));
                     hhg = Some(h.clone());
                     hh = Some(h);
                 }
@@ -876,7 +887,7 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
                     let dg: Vec<f64> = gg.iter().zip(&ghist[icount - 1]).map(|(a, b)| a - b).collect();
                     let dx: Vec<f64> = xparam1.iter().zip(prev).map(|(a, b)| a - b).collect();
                     h_inv = bfgsi1(&h_inv, &dg, &dx, verbose);
-                    let inv = solve(&h_inv, &inx).unwrap_or_else(|| nan_mat(nx));
+                    let inv = inv_lu(&h_inv).unwrap_or_else(|| nan_mat(nx));
                     hh = Some(inv.clone());
                     hhg = Some(inv);
                 } else {
@@ -884,21 +895,33 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
                     h_inv = igg.clone();
                 }
             }
+            if verbose {
+                println!("Elapsed time for iteration {} s.", n2s(tic1.elapsed().as_secs_f64()));
+            }
             ghist.push(gg.clone());
         }
     }
     if jit == opts.nit {
+        println!();
         if !message.is_empty() {
             message.push(' ');
         }
         message.push_str("Maximum number of iterations reached.");
+        if verbose {
+            println!("Maximum number of iterations reached");
+        }
         exitflag = 0;
+        println!();
     }
     if norm(&gg) <= gtol {
         if !message.is_empty() {
             message.push(' ');
         }
-        message.push_str(&format!("Estimation ended: Gradient norm < {gtol}"));
+        message.push_str(&format!("Estimation ended: Gradient norm < {}", n2s(gtol)));
+        if verbose {
+            println!("Estimation ended:");
+            println!("Gradient norm < {}", n2s(gtol));
+        }
         exitflag = -1;
     }
     if check {
@@ -907,9 +930,9 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
         }
         message.push_str("Estimation successful.");
         exitflag = 1;
-    }
-    if verbose {
-        println!("{message}");
+        if verbose {
+            println!("{message}");
+        }
     }
     LAST_HESS_INFO.with(|h| *h.borrow_mut() = Some(hess_info.clone())); // ---- estimation completion
     OptimResult {
@@ -924,18 +947,25 @@ pub fn newrat(obj: &dyn Objective, x: &[f64], bounds: &Bounds, prior_std: &[f64]
     }
 }
 
+/// MATLAB `num2str` of a scalar (the console output of `newrat.m`).
+fn n2s(x: f64) -> String {
+    crate::gsa::stats::num2str(x)
+}
+
 fn disp_eigenvalues_gradient(gg: &[f64], hh: Option<&Mat>) {
-    println!("Gradient norm  {}", norm(gg));
+    println!("Gradient norm  {}", n2s(norm(gg)));
     if let Some(h) = hh {
         let (w, _) = sym_eig(h);
-        println!("Minimum Hessian eigenvalue {}", w.iter().cloned().fold(f64::INFINITY, f64::min));
-        println!("Maximum Hessian eigenvalue {}", w.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+        println!("Minimum Hessian eigenvalue {}", n2s(w.iter().cloned().fold(f64::INFINITY, f64::min)));
+        println!("Maximum Hessian eigenvalue {}", n2s(w.iter().cloned().fold(f64::NEG_INFINITY, f64::max)));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::matlab_sign;
+    use super::*;
+    use crate::estimation::Evaluation;
+    use serde_json::Value;
 
     /// mr_gstep.m:103 `sign(x(i))`: MATLAB's `sign(0)` is 0 (`f64::signum(0.0)` is 1).
     #[test]
@@ -944,5 +974,166 @@ mod tests {
         assert_eq!(matlab_sign(-0.0), 0.0);
         assert_eq!(matlab_sign(3e-7), 1.0);
         assert_eq!(matlab_sign(-3e-7), -1.0);
+    }
+
+    /// `reference/estimation/ratfit_loop.m`, evaluated bit for bit as in MATLAB.
+    struct RatFit {
+        with_dlik: bool,
+    }
+
+    impl RatFit {
+        fn eval_c(&self, x: &[f64]) -> (f64, Vec<f64>) {
+            const Y: [f64; 12] = [1.2, 1.9, 2.3, 2.4, 2.35, 2.2, 2.0, 1.9, 1.75, 1.6, 1.5, 1.45];
+            let r: Vec<f64> = (1..=12)
+                .map(|k| {
+                    let t = 0.5 * k as f64;
+                    let m = (x[0] + x[1] * t) / (1.0 + x[2] * t + x[3] * x[3] * t * t);
+                    let e = Y[k - 1] - m;
+                    e * e
+                })
+                .collect();
+            let mut f = 0.0;
+            for v in &r {
+                f += v;
+            }
+            (f, r)
+        }
+    }
+
+    impl Objective for RatFit {
+        fn dim(&self) -> usize {
+            4
+        }
+        fn eval(&self, x: &[f64]) -> (f64, i32) {
+            (self.eval_c(x).0, 0)
+        }
+        fn eval_full(&self, x: &[f64], c: bool) -> Evaluation {
+            let (fval, r) = self.eval_c(x);
+            Evaluation { fval, info: 0, info4: 0.0, contributions: (c && self.with_dlik).then_some(r) }
+        }
+    }
+
+    /// `num2hex` strings (one per element, column-major) to doubles.
+    fn hx(v: &Value) -> Vec<f64> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|s| s.as_str().unwrap())
+                    .filter(|s| !s.is_empty()) // cellstr(num2hex([]))
+                    .map(|s| f64::from_bits(u64::from_str_radix(s, 16).unwrap()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn hm(v: &Value, n: usize) -> Mat {
+        Mat::from_column_slice(n, n, &hx(v))
+    }
+
+    /// Equal to rounding (1e-14 relative; nearly all of them are bit for bit): MATLAB's scalar
+    /// `^` is not always correctly rounded (`1.9332^0.6`, the second `factor = factor^.6` of
+    /// csminit1.m, is 1 ulp above the libm value), so a line search that grows its step twice
+    /// lands a few ulps away.
+    fn same(a: &[f64], b: &[f64]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == y || (x - y).abs() <= 1e-14 * x.abs().max(y.abs()))
+    }
+
+    /// The steps of newrat.m given MATLAB's inputs (`dump_newrat_stages.m`): `mr_hessian.m`,
+    /// `mr_gstep.m` and `csminit1.m` reproduce MATLAB's outputs bit for bit, except the
+    /// inverse outer-product Hessian (`A'*(hh_mat\A)`: MATLAB's LAPACK and Accelerate round
+    /// the Cholesky solve differently).
+    #[test]
+    fn newrat_steps_reproduce_dynare_bit_for_bit() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/estimation/ref_newrat_stages.json");
+        let r: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("reference")).unwrap();
+        let names: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+        for (case, c) in r.as_object().unwrap() {
+            let obj = RatFit { with_dlik: c["with_dlik"].as_f64().unwrap() != 0.0 };
+            for (k, s) in c["mr_hessian"].as_array().unwrap().iter().enumerate() {
+                let tag = format!("{case} mr_hessian #{k}");
+                let x = hx(&s["x"]);
+                let bounds = Bounds { lb: hx(&s["lb"]), ub: hx(&s["ub"]) };
+                let hi = HessInfo {
+                    gstep: [1e-2, 1.0],
+                    htol: hx(&s["htol_in"])[0],
+                    htol_rel: hx(&s["htol_rel"])[0],
+                    h1: hx(&s["h1_in"]),
+                    robust: false,
+                };
+                let hflag = s["hflag"].as_u64().unwrap() as u8;
+                let m = mr_hessian(
+                    &obj,
+                    &x,
+                    hx(&s["penalty"])[0],
+                    hflag,
+                    hx(&s["htol0"])[0],
+                    &hi,
+                    &bounds,
+                    &[f64::NAN; 4],
+                    false,
+                );
+                assert!(same(&m.gg, &hx(&s["gg"])), "{tag}: gg {:?} vs {:?}", m.gg, hx(&s["gg"]));
+                assert!(same(&m.htol1, &hx(&s["htol1"])), "{tag}: htol1");
+                assert!(same(&m.hess_info.h1, &hx(&s["hh1"])) || !obj.with_dlik, "{tag}: h1");
+                assert!(same(&[m.hess_info.htol], &hx(&s["htol_out"])), "{tag}: htol");
+                assert_eq!(m.fcount as u64, s["fcount"].as_u64().unwrap(), "{tag}: fcount");
+                if obj.with_dlik {
+                    let hh = m.hh_mat0.as_ref().unwrap();
+                    assert!(same(hh.as_slice(), &hx(&s["hh_mat0"])), "{tag}: hh_mat0");
+                    let ihh = m.ihh.as_ref().unwrap();
+                    let ihh_m = hm(&s["ihh"], 4);
+                    let scale = ihh_m.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+                    let d = (ihh - &ihh_m).iter().fold(0.0f64, |a, v| a.max(v.abs()));
+                    assert!(d <= 1e-9 * scale, "{tag}: ihh {d:e}");
+                } else {
+                    assert!(m.hessian_mat.is_none() && hx(&s["hessian_mat"]).is_empty(), "{tag}: no OPG");
+                }
+            }
+            for (k, s) in c["mr_gstep"].as_array().unwrap().iter().enumerate() {
+                let tag = format!("{case} mr_gstep #{k}");
+                let bounds = Bounds { lb: hx(&s["lb"]), ub: hx(&s["ub"]) };
+                let h1 = hx(&s["h1"]);
+                let (f0, x, ig, fc) = mr_gstep(
+                    &obj,
+                    (!h1.is_empty()).then_some(&h1[..]),
+                    &hx(&s["x_in"]),
+                    &bounds,
+                    hx(&s["penalty"])[0],
+                    &hx(&s["htol0"]),
+                    false,
+                    hx(&s["gradient_epsilon"])[0],
+                    s["robust"].as_f64().unwrap() != 0.0,
+                    &names,
+                );
+                assert!(same(&[f0], &hx(&s["f0"])), "{tag}: f0");
+                assert!(same(&x, &hx(&s["x"])), "{tag}: x {x:?} vs {:?}", hx(&s["x"]));
+                let igr: Vec<bool> = s["ig"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() != 0.0).collect();
+                assert_eq!(ig, igr, "{tag}: ig");
+                assert_eq!(fc as u64, s["fcount"].as_u64().unwrap(), "{tag}: fcount");
+            }
+            for (k, s) in c["csminit1"].as_array().unwrap().iter().enumerate() {
+                let tag = format!("{case} csminit1 #{k}");
+                let x0 = hx(&s["x0"]);
+                let (fhat, xhat, fc, rc) = csminit1(
+                    &obj,
+                    &x0,
+                    hx(&s["penalty"])[0],
+                    hx(&s["f0"])[0],
+                    &hx(&s["g0"]),
+                    s["badg"].as_f64().unwrap() != 0.0,
+                    &hm(&s["H0"], x0.len()),
+                    false,
+                );
+                assert!(
+                    same(&[fhat], &hx(&s["fhat"])),
+                    "{tag}: fhat {fhat} vs {:?}, fcount {fc} vs {}",
+                    hx(&s["fhat"]),
+                    s["fcount"]
+                );
+                assert!(same(&xhat, &hx(&s["xhat"])), "{tag}: xhat {xhat:?} vs {:?}", hx(&s["xhat"]));
+                assert_eq!(fc as u64, s["fcount"].as_u64().unwrap(), "{tag}: fcount");
+                assert_eq!(rc as i64, s["retcode"].as_i64().unwrap(), "{tag}: retcode");
+            }
+        }
     }
 }

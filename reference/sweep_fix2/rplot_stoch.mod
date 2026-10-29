@@ -1,0 +1,20 @@
+// rplot after stoch_simul(periods=...) plots oo_.endo_simul and oo_.exo_simul
+var y a;
+varexo e;
+parameters rho;
+rho = 0.9;
+model;
+y = rho*y(-1) + a;
+a = 0.5*a(-1) + e;
+end;
+shocks;
+var e; stderr 0.01;
+end;
+steady;
+stoch_simul(order=1,irf=0,periods=200,nomoments);
+options_.rplottype=0;
+rplot y e;
+options_.rplottype=1;
+rplot y a;
+options_.rplottype=2;
+rplot y a e;

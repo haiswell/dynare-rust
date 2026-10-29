@@ -347,11 +347,29 @@ pub fn cmaes(
     let ccovmu = (1.0 - ccov1).min(2.0 * (mueff - 2.0 + 1.0 / mueff) / ((nf + 2.0).powi(2) + mueff));
     let damps = 1.0 + 2.0 * (((mueff - 1.0) / (nf + 1.0)).sqrt() - 1.0).max(0.0) + cs;
     if opts.verbose {
-        println!(
-            "  n={n}: ({mu},{lambda})-CMA-ES(mu_eff={mueff:.1}), {} evaluations per generation{}",
-            lambda,
-            if opts.parallel { " in parallel" } else { "" }
-        );
+        // cmaes.m: the weights as `strw`, then `mu_eff` and the objective's name
+        use crate::analysis::table::fmt_g;
+        let w100: Vec<f64> = weights.iter().map(|w| 100.0 * w).collect();
+        let strw = if mu == 1 {
+            "100".to_string()
+        } else if mu < 8 {
+            let mut s = format!("{:.0}", w100[0]);
+            for w in &w100[1..] {
+                s += &format!(" {w:.0}");
+            }
+            s
+        } else {
+            let g = |x: f64| fmt_g(x, 0, 2);
+            format!(
+                "{} {} {}... {} {}]%, ",
+                g(w100[0]),
+                g(w100[1]),
+                g(w100[2]),
+                g(w100[w100.len() - 2]),
+                g(w100[w100.len() - 1])
+            )
+        };
+        println!("  n={n}: ({mu},{lambda})-CMA-ES(w=[{strw}]%, mu_eff={mueff:.1}) on function dsge_likelihood");
     }
 
     let mut countiter: usize = 0;
@@ -663,16 +681,18 @@ pub fn cmaes(
                 }
                 let dmax = diag_d.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 let dmin = diag_d.iter().cloned().fold(f64::INFINITY, f64::min);
+                // num2str(x, '%.Ne'): C exponent (two digits), Inf and NaN as MATLAB prints them
+                let e = |x: f64, p: usize| crate::analysis::table::fmt_e(x, 0, p);
                 println!(
-                    "{countiter:>5} , {counteval:>6} : {:.13e} +({:.0e},{:.0e}) | {:4.2e} | {:>2}: {:.1e} {:>2}: {:.1e}",
-                    hist[0],
-                    med - hist[0],
-                    rs[lambda - 1] - hist[0],
-                    dmax / dmin,
+                    "{countiter:>5} , {counteval:>6} : {} +({},{}) | {} | {:>2}:{} {:>2}:{}",
+                    e(hist[0], 13),
+                    e(med - hist[0], 0),
+                    e(rs[lambda - 1] - hist[0], 0),
+                    e(dmax / dmin, 2),
                     mi + 1,
-                    sds[mi],
+                    e(sds[mi], 1),
                     ma + 1,
-                    sds[ma]
+                    e(sds[ma], 1)
                 );
             }
         }
@@ -696,7 +716,19 @@ pub fn cmaes(
     let message = stopflag.join(" ");
     if opts.verbose {
         println!("#Fevals:   f(returned x)   |    bestever.f     | stopflag");
-        println!("{:>6}: {:.11e} | {:.11e} | {message}", counteval + 1, best_f, best_f);
+        let e = |x: f64, p: usize| crate::analysis::table::fmt_e(x, 0, p);
+        let ce = counteval + 1;
+        let pad = (6 - (ce as f64).log10().floor() as i64).max(0) as usize;
+        println!("{:pad$}{ce}: {} | {} | {}", "", e(best_f, 11), e(best_f, 11), stopflag.join(""));
+        if n < 102 {
+            let sig = |x: f64| format!(" {}{}", if x < 0.0 { "-" } else { "+" }, e(x.abs(), 1));
+            println!("mean solution:{}", xmean.iter().map(|&x| sig(x)).collect::<String>());
+            println!(
+                "std deviation:{}",
+                diag_c.iter().map(|v| format!("  {}", e(sigma * v.sqrt(), 1))).collect::<String>()
+            );
+            println!("use plotcmaesdat.m for plotting the output at any time (option LogModulo must not be zero)");
+        }
     }
     Ok(OptimResult {
         x: best_x,

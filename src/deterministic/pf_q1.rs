@@ -45,7 +45,7 @@ pub struct PfQ1Options {
     pub robust_lin_solve: bool,
     pub allow_nonfinite_values: bool,
     pub check_jacobian_singularity: bool,
-    /// `homotopy_marginal_linearization_fallback` (0: off; the flag alone is 0.1).
+    /// `homotopy_marginal_linearization_fallback` (0: off; the flag alone is 0.01, as the preprocessor writes).
     pub homotopy_marginal_linearization_fallback: f64,
     /// `minimal_solving_periods` (stored, unused by Dynare 7.2).
     pub minimal_solving_periods: usize,
@@ -148,7 +148,7 @@ impl PfQ1Options {
             self.check_jacobian_singularity = b;
         }
         match opt(o, "homotopy_marginal_linearization_fallback") {
-            Some(OptValue::Flag) => self.homotopy_marginal_linearization_fallback = 0.1,
+            Some(OptValue::Flag) => self.homotopy_marginal_linearization_fallback = 0.01,
             Some(OptValue::Num(v)) => self.homotopy_marginal_linearization_fallback = *v,
             _ => {}
         }

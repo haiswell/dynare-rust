@@ -300,3 +300,31 @@ fn ivf_smoother() {
         assert!(d < 1e-9 && bad == 0);
     }
 }
+
+/// occbin_setup options that Dynare 7.2's +occbin/setup.m does not forward
+/// (smoother_max_check_ahead_periods, smoother_plot, smoother_first_period_occbin_update,
+/// smoother_max_number_of_iterations, posterior_importance_sampling*): nk_est.mod -DSETUP_OPTS
+/// sets them to values that would change the smoother; Dynare keeps the defaults
+/// (dump_occbin_setup_opts.m), and so does the port.
+#[test]
+fn occbin_setup_unforwarded_options() {
+    let r = reference().expect("reference/setup unavailable");
+    let want: Value = serde_json::from_str(&common::read_ref(dir().join("ref_occbin_setup_opts.json"))).unwrap();
+    assert_eq!(want["smoother"]["max_number_of_iterations"].as_f64(), Some(10.0));
+    assert_eq!(want["smoother"]["first_period_occbin_update"].as_f64(), Some(1.0));
+    assert!(want["smoother"]["max_check_ahead_periods"].is_null()); // Inf
+    assert_eq!(want["posterior_importance_sampling"]["status"].as_bool(), Some(false));
+    let x_init = vecf(&r["pkf"]["xparam_init"]);
+    let s = setup(&[("SETUP_OPTS", "1")], &x_init);
+    let d = dynare::occbin::estimation::SmootherOptions::default();
+    assert_eq!(s.occ.smoother.max_number_of_iterations, d.max_number_of_iterations);
+    assert_eq!(s.occ.smoother.first_period_occbin_update, d.first_period_occbin_update);
+    assert_eq!(s.occ.smoother.max_check_ahead_periods, None);
+    let pts = r["pkf"]["points"].as_array().unwrap();
+    for (k, (p, w)) in pts.iter().zip(want["points"].as_array().unwrap()).enumerate() {
+        let sm = dynare::occbin::smoother::occbin_smoother(&s.dsge, &s.data, &s.occ, &vecf(&p["x"])).unwrap();
+        assert_eq!(sm.iterations as f64, w["iterations"].as_f64().unwrap(), "point {k}: iterations");
+        assert_eq!(sm.error_flag as f64, w["error_flag"].as_f64().unwrap());
+        assert_eq!(regimes_match(&sm.regime_history, &w["regime"], &w["regimestart"]), 0, "point {k}: regimes");
+    }
+}

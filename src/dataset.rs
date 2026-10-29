@@ -71,6 +71,7 @@ pub fn data_command(o: &Options) -> Result<()> {
         last_obs: crate::dates::option(o, "last_obs")?,
         nobs: match opt(o, "nobs") {
             Some(OptValue::Num(v)) => Some(*v as usize),
+            Some(OptValue::Vec(v)) if v.len() == 1 => Some(v[0] as usize),
             None => None,
             Some(_) => bail!("data: nobs = [INTEGER1:INTEGER2] (recursive estimation) is not supported by dynare-rust"),
         },
@@ -268,6 +269,8 @@ impl Dataset {
             let nobs = match opt(o, "nobs") {
                 None => n0 - firstobs,
                 Some(OptValue::Num(v)) => *v as i64,
+                // nobs = [76]: one sample size is an ordinary estimation
+                Some(OptValue::Vec(v)) if v.len() == 1 => v[0] as i64,
                 Some(_) => bail!("nobs = [INTEGER1:INTEGER2] (recursive estimation) is not supported by dynare-rust"),
             };
             if firstobs > 0 {

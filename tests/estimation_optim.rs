@@ -255,3 +255,15 @@ fn penalty_on_failure() {
     assert!(res.x[0] <= 0.5 && res.fval.is_finite());
     assert!((res.x[0] - 0.5).abs() < 1e-2 && res.x[1].abs() < 0.1, "{:?}", res.x);
 }
+
+/// `optim=('Hessian',1,'robust',true)` (Dynare 7.2 tests/optimizers/fs2000_5.mod): MATLAB's
+/// logicals true/false are numeric option values 1/0.
+#[test]
+fn optim_logical_values_are_numbers() {
+    use dynare::estimation::optim::minimize::kv_num;
+    use dynare::modfile::OptValue;
+    assert_eq!(kv_num("robust", &OptValue::Str("true".into())).unwrap(), 1.0);
+    assert_eq!(kv_num("robust", &OptValue::Str("false".into())).unwrap(), 0.0);
+    assert_eq!(kv_num("TolFun", &OptValue::Str("1e-5".into())).unwrap(), 1e-5);
+    assert!(kv_num("robust", &OptValue::Str("yes".into())).is_err());
+}

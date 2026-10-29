@@ -537,7 +537,7 @@ impl<'a> SteadySolver<'a> {
                 .flat_map(|j| (0..self.n_het).map(move |i| (i, j)))
                 .fold(0.0f64, |m, (i, j)| m.max((new_pol[(i, j)] - self.old_pol[(i, j)]).abs()));
             if self.ti.verbosity == 2 {
-                println!("  Iter {iter:4}: ||Δpolicy|| = {diff:12.4e}, tol = {:12.4e}", self.ti.tol);
+                println!("  Iter {iter:4}: ||Δpolicy|| = {}, tol = {}", ee(diff, 12, 4), ee(self.ti.tol, 12, 4));
             }
             if diff > prev {
                 n_inc += 1;
@@ -726,14 +726,18 @@ impl<'a> SteadySolver<'a> {
             if iter % self.fwd.check_every == 0 || iter == self.fwd.max_iter {
                 diff = (0..n_om).map(|i| (dist[i] - next[i]).abs()).fold(0.0, f64::max);
                 if self.fwd.verbosity == 2 {
-                    println!("  Forward iter {iter:6}: ||ΔD|| = {diff:10.3e}, tol = {:10.3e}", self.fwd.tol);
+                    println!(
+                        "  Forward iter {iter:6}: ||ΔD|| = {}, tol = {}",
+                        ee(diff, 10, 3),
+                        ee(self.fwd.tol, 10, 3)
+                    );
                 }
                 if diff < self.fwd.tol {
                     out.converged = true;
                     out.iterations = iter;
                     out.residual_norm = diff;
                     if self.fwd.verbosity == 2 {
-                        println!("  Distribution converged in {iter} iterations (norm: {diff:10.3e})");
+                        println!("  Distribution converged in {iter} iterations (norm: {})", ee(diff, 10, 3));
                     }
                     dist.copy_from_slice(&next);
                     break;
@@ -746,8 +750,9 @@ impl<'a> SteadySolver<'a> {
             out.residual_norm = diff;
             if self.fwd.verbosity >= 1 {
                 println!(
-                    "    WARNING: Distribution did not converge after {} iterations (norm: {diff:10.3e})",
-                    self.fwd.max_iter
+                    "    WARNING: Distribution did not converge after {} iterations (norm: {})",
+                    self.fwd.max_iter,
+                    ee(diff, 10, 3)
                 );
             }
         }
@@ -773,9 +778,10 @@ impl<'a> SteadySolver<'a> {
             self.het.agg_residuals(self.model, &self.y, &self.ss.mat.x, &self.params, &yagg, &mut resid);
         }
         if self.cal_verbosity == 2 {
+            println!("  === Aggregate variables and residuals ===");
             println!("  Aggregate residuals:");
             for (i, r) in resid.iter().enumerate().take(self.model.orig_endo_nbr) {
-                println!("    {}: {:15.6e}", self.equation_name(i), r);
+                println!("    {}: {}", self.equation_name(i), ee(*r, 15, 6));
             }
         }
         Ok((dist, ix, resid))
@@ -819,7 +825,7 @@ pub fn calibrate(
         println!("=== Parameter Calibration (Broyden) ===");
         println!("  Initial parameter guesses:");
         for f in free {
-            println!("    {} = {:12.5e} (lb={:12.5e}, ub={:12.5e})", f.1, f.2, f.3, f.4);
+            println!("    {} = {} (lb={}, ub={})", f.1, ee(f.2, 12, 5), ee(f.3, 12, 5), ee(f.4, 12, 5));
         }
     }
     let lb: Vec<f64> = free.iter().map(|f| f.3).collect();
@@ -836,8 +842,11 @@ pub fn calibrate(
         };
         let res: Vec<f64> = targets.iter().map(|&t| r.2[t]).collect();
         if sv.cal_verbosity == 2 {
+            let max_norm = res.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            println!("  Max norm: {}, tol = {}", ee(max_norm, 15, 6), ee(cal.tolf, 15, 6));
+            println!("  Calibration iteration complete");
             for f in free {
-                println!("  {} = {:12.5e}", f.1, sv.params[f.0]);
+                println!("  {} = {}", f.1, ee(sv.params[f.0], 12, 5));
             }
         }
         *last.borrow_mut() = Some(r);
@@ -848,6 +857,12 @@ pub fn calibrate(
     if cal.verbosity == 2 {
         if out.converged {
             println!("Calibration converged successfully!");
+            println!("Calibrated parameters:");
+            for (k, f) in free.iter().enumerate() {
+                println!("  {} = {}", f.1, ee(x[k], 12, 5));
+            }
+            println!("Converged in {nfev:4} function evaluations");
+            println!("Calibration complete");
         } else {
             println!("Calibration failed to converge");
             println!(
@@ -912,6 +927,17 @@ where
                 nfev += 1;
                 for r in 0..n {
                     jac[(r, i)] = (df[r] - fvec[r]) / h;
+                }
+                if verbosity == 2 {
+                    println!(
+                        "    FD[{:2}]: x={}, h={}, f={}, f_pert={}",
+                        i + 1,
+                        ee(x[i], 12, 5),
+                        ee(h, 12, 5),
+                        ee(fvec[0], 12, 5),
+                        ee(df[0], 12, 5)
+                    );
+                    println!("           J={}", ee(jac[(0, i)], 12, 5));
                 }
             }
         }
@@ -1008,4 +1034,12 @@ fn solve_dense(a: &Mat, b: &[f64]) -> Option<Vec<f64>> {
         x[k] = s / m[(k, k)];
     }
     Some(x)
+}
+
+/// C `%W.PE` (as the solver prints it: `1.2345E+01`).
+fn ee(x: f64, width: usize, prec: usize) -> String {
+    if x.is_infinite() {
+        return format!("{:>width$}", if x > 0.0 { "Infinity" } else { "-Infinity" });
+    }
+    crate::analysis::table::fmt_e(x, width, prec).to_uppercase()
 }

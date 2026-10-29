@@ -32,6 +32,22 @@ impl Method {
 /// powers, leads/lags shifted so the largest is 0 and sorted in descending order; SMM: the
 /// original rows) and the 1-based indices of the removed duplicates.
 pub fn matched_moments_block(rows: &[MatchedMoment], method: Method) -> Result<(Vec<MatchedMoment>, Vec<usize>)> {
+    // the preprocessor hands over the factors of a product in its own canonical order (observed
+    // with `dynare-preprocessor`: by |lag|, then lag, then variable; equal factors keep the order
+    // written), which shows in the labels `E[io*io(-1)]` and decides which duplicates are found
+    let canon: Vec<MatchedMoment> = rows
+        .iter()
+        .map(|m| {
+            let mut idx: Vec<usize> = (0..m.vars.len()).collect();
+            idx.sort_by_key(|&i| (m.lags[i].abs(), m.lags[i], m.vars[i]));
+            MatchedMoment {
+                vars: idx.iter().map(|&i| m.vars[i]).collect(),
+                lags: idx.iter().map(|&i| m.lags[i]).collect(),
+                powers: idx.iter().map(|&i| m.powers[i]).collect(),
+            }
+        })
+        .collect();
+    let rows = &canon[..];
     let psum = |m: &MatchedMoment| m.powers.iter().map(|&p| p as usize).sum::<usize>();
     if method == Method::Gmm && rows.iter().any(|m| psum(m) > 2) {
         bail!(

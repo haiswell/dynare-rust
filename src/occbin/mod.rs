@@ -475,6 +475,7 @@ fn start_string(v: &[usize]) -> String {
     v.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("  ")
 }
 
+/// dynare-rust's one-line summary (Dynare prints nothing here): a progress note.
 fn print_summary(mf: &ModFile, r: &SimulResult) {
     let names: Vec<&str> = mf.occbin_constraints.iter().map(|c| c.name.as_str()).collect();
     let binding: Vec<usize> = r
@@ -484,7 +485,7 @@ fn print_summary(mf: &ModFile, r: &SimulResult) {
         .filter(|(_, h)| h.iter().any(|g| g.regime.iter().any(|&b| b)))
         .map(|(t, _)| t + 1)
         .collect();
-    println!(
+    crate::progress::note(format!(
         "\nOccBin: {} periods simulated ({} shock periods, constraint{} {}); a regime other than the baseline is expected after the shocks of {} period(s){}.",
         r.piecewise.nrows(),
         r.shocks_sequence.nrows(),
@@ -492,7 +493,7 @@ fn print_summary(mf: &ModFile, r: &SimulResult) {
         names.join(", "),
         binding.len(),
         if binding.is_empty() { String::new() } else { format!(": {}", compress(&binding)) }
-    );
+    ));
 }
 
 /// `[1 2 3 7 8]` -> "1-3, 7-8".

@@ -1,6 +1,6 @@
 [package]
 name = "dynare-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
 description = "A Rust port of Dynare 7.2: preprocessor, perturbation solvers, Kalman filtering, Bayesian estimation, simulations and analysis of DSGE models from .mod files"

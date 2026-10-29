@@ -102,6 +102,8 @@ pub fn dsmh(
     let lambda: Vec<f64> = (1..=o.h).map(|i| ((hh - i as f64) / (hh - 1.0) * lambda1.ln()).exp()).collect();
     // ---- smc_samplers_initialization: prior draws with a finite likelihood
     if o.verbose {
+        // smc_samplers_initialization.m
+        println!("Estimation:dsmh: Initialization...");
         println!("Estimation:dsmh: Searching for initial values...");
     }
     let t0 = std::time::Instant::now();
@@ -122,6 +124,7 @@ pub fn dsmh(
         .collect();
     if o.verbose {
         println!("Estimation:dsmh: Initial values found ({:.2}s)", t0.elapsed().as_secs_f64());
+        println!();
     }
     let mut param = Mat::from_fn(npar, np, |i, j| init[j].0[i]);
     let mut tlogpost: Vec<f64> = init.iter().map(|v| v.1).collect();
@@ -164,6 +167,11 @@ pub fn dsmh(
         let lower = (0.5 * (o.alpha0 + o.alpha1)).powi(5);
         let upper = (0.5 * (o.alpha0 + o.alpha1)).powf(0.2);
         let mut attempt = 0u64;
+        if o.verbose {
+            // disp_verbose(newline) prints two line feeds
+            println!("\n");
+            println!("Estimation:dsmh: Tuning c_i, initial value = {c:6.3}.");
+        }
         let acpt = loop {
             let mut rng = stream(o.seed, i as u64 + 1, 1 << 32 | attempt, 0);
             let idx = kitagawa(&w, rng.r#gen::<f64>(), o.g);
@@ -192,7 +200,13 @@ pub fn dsmh(
             let step = 1.0 / (o.g * o.k) as f64;
             let acpt = (0..acc).fold(0.0, |s, _| s + step);
             attempt += 1;
+            if o.verbose {
+                println!("Acceptation rate = {acpt:5.3}.");
+            }
             if o.alpha0 <= acpt && acpt <= o.alpha1 {
+                if o.verbose {
+                    println!("Tuning c_i done.");
+                }
                 break acpt;
             }
             c = if acpt < lower {
@@ -202,9 +216,16 @@ pub fn dsmh(
             } else {
                 5.0 * c
             };
+            if o.verbose {
+                println!("Trying with c_i  = {c:6.3}.");
+            }
             // (no cap on the attempts: dsmh.m loops until the rate is in [alpha0, alpha1])
         };
         // mutation_DSMH
+        if o.verbose {
+            println!("\n");
+            println!("Estimation:dsmh: Striated MH step...");
+        }
         let levels_idx: Vec<usize> = (1..o.m).map(|k| k * o.n * o.g / o.m).collect();
         let mut levels = vec![f64::NEG_INFINITY];
         levels.extend(levels_idx.iter().map(|&k| tlogpost[k - 1]));
@@ -280,11 +301,13 @@ pub fn dsmh(
         cs.push(c);
         accs.push(acpt);
         if o.verbose {
+            println!("Estimation:dsmh: Striated MH step done.");
+            println!("Iter \t lambda_i \t ESS           \t c_i    \t Acc. rate \t scale  \t sec.  ");
             println!(
-                "{:>4}  lambda {:6.4}  ESS {:11.5e}  c {:8.4}  acc. {:6.4}  log MDD {:+10.4}  {:6.2}s",
+                "{:4} \t {:5.4} \t {} \t {:5.4} \t {:5.4} \t {:+5.4} \t {:5.2}",
                 i + 1,
                 lambda[i],
-                ess[i],
+                crate::analysis::table::fmt_e(ess[i], 9, 5).to_uppercase(),
                 c,
                 acpt,
                 zhat,

@@ -98,6 +98,25 @@ fn var_simple_target() {
     check_params("pc3", &mf, &reference("pc3"));
 }
 
+/// `pac.bgp.set` (+pac/+bgp/set.m): `s` with a nonzero mean in the optimizing part enters the
+/// growth neutrality correction; numeric means of zero (`x`, `dx2`) leave it unchanged.
+#[test]
+fn bgp_set_growth_neutrality() {
+    let mf = run_commands("pc10");
+    check_params("pc10", &mf, &reference("pc10"));
+    let p = mf.varmodels.pac("pacman").unwrap();
+    let bgp = |g: &str, v: &str| p.bgp.iter().find(|t| t.group == g && t.var == v).map(|t| t.bgp);
+    use dynare::varmodels::pac::PacBgp;
+    assert_eq!(bgp("optim_additive", "s"), Some(PacBgp::Bool(true)));
+    assert_eq!(bgp("optim_additive", "dv"), Some(PacBgp::Bool(false)));
+    assert_eq!(bgp("non_optimizing_behaviour", "x"), Some(PacBgp::Num(0.0)));
+    assert_eq!(bgp("non_optimizing_behaviour", "y"), Some(PacBgp::Bool(false)));
+    assert_eq!(bgp("additive", "dx2"), Some(PacBgp::Num(0.0)));
+    assert_eq!(bgp("additive", "u"), Some(PacBgp::Bool(false)));
+    assert_eq!(bgp("additive", "ez"), Some(PacBgp::Bool(false)));
+    assert_eq!(p.bgp.len(), 7);
+}
+
 #[test]
 fn model_consistent_expectations_parameters() {
     let mf = run_commands("pc4");
@@ -225,8 +244,19 @@ fn simulated_data_satisfies_pac_equation() {
     equation_holds("pc3", 1e-9);
 }
 
-fn guess() -> Vec<(String, f64)> {
-    vec![("e_c_m".into(), 0.9), ("c_z_1".into(), 0.5), ("c_z_2".into(), 0.2)]
+/// Initial values of dump.m (pc6 also estimates the share of optimizing agents).
+fn guess(name: &str) -> Vec<(String, f64)> {
+    let mut g = vec![("e_c_m".into(), 0.9), ("c_z_1".into(), 0.5), ("c_z_2".into(), 0.2)];
+    if name == "pc6" {
+        g.push(("lambda".into(), 0.5));
+    }
+    if name == "pc8" {
+        g.extend([("c_z_s".into(), 0.9), ("c_z_dx2".into(), 0.1), ("lambda".into(), 0.7)]);
+    }
+    if name == "pc9" {
+        g.push(("c_z_dx2".into(), 0.5));
+    }
+    g
 }
 
 fn without_residual(mut d: PacData) -> PacData {
@@ -241,8 +271,8 @@ fn nls_matches(name: &str, tol: f64) {
     let mf = run_commands(name);
     let data = without_residual(sim_data(&r));
     let mut params = mf.model.params.clone();
-    let est =
-        estimate_nls(&mf.varmodels, "zpac", &mf.model.param_names, &mut params, &guess(), &data, range(&r)).unwrap();
+    let est = estimate_nls(&mf.varmodels, "zpac", &mf.model.param_names, &mut params, &guess(name), &data, range(&r))
+        .unwrap();
     let m = &r["nls"];
     assert_eq!(est.parnames, strings(&m["parnames"]));
     close(&est.estimator, &flat(&m["estimator"]), tol, &format!("{name}: NLS estimates"));
@@ -265,9 +295,16 @@ fn ols_matches(name: &str) {
     let mf = run_commands(name);
     let data = without_residual(sim_data(&r));
     let mut params = mf.model.params.clone();
-    let est =
-        estimate_iterative_ols(&mf.varmodels, "zpac", &mf.model.param_names, &mut params, &guess(), &data, range(&r))
-            .unwrap();
+    let est = estimate_iterative_ols(
+        &mf.varmodels,
+        "zpac",
+        &mf.model.param_names,
+        &mut params,
+        &guess(name),
+        &data,
+        range(&r),
+    )
+    .unwrap();
     let m = &r["ols"];
     assert_eq!(est.parnames, strings(&m["parnames"]));
     close(&est.estimator, &flat(&m["estimator"]), 1e-9, &format!("{name}: OLS estimates"));
@@ -298,13 +335,155 @@ fn iterative_ols_var_and_trend_component() {
 }
 
 #[test]
+fn share_of_optimizing_agents_parameters() {
+    // growth neutrality correction divided by the share (+pac/+update/parameters.m,
+    // +pac/+mce/parameters.m)
+    for name in ["pc5", "pc7"] {
+        let mf = run_commands(name);
+        check_params(name, &mf, &reference(name));
+    }
+}
+
+#[test]
+fn share_of_optimizing_agents_estimation() {
+    equation_holds("pc5", 1e-9);
+    nls_matches("pc5", 1e-7);
+    nls_matches("pc6", 1e-7);
+    ols_matches("pc5");
+    ols_matches("pc6");
+}
+
+/// Dynare 7.2 tests/pac/trend-component-22 and -25: estimated parameters of additive terms
+/// outside (pc9, calibrated share) and inside and outside (pc8, estimated share) the
+/// optimizing part (`M_.pac.<m>.additive` / `optim_additive` in iterative_ols.m).
+#[test]
+fn iterative_ols_additive_terms() {
+    equation_holds("pc8", 1e-9);
+    equation_holds("pc9", 1e-9);
+    ols_matches("pc9");
+    ols_matches("pc8");
+}
+
+#[test]
 fn errors_like_dynare() {
     let bad = |src: &str| dynare::modfile::parse_mod_str(src, &[]).err().map(|e| format!("{e:#}")).unwrap_or_default();
-    let head = "var y x z; varexo e ez; parameters a b c d beta; a=.5; b=.1; c=.2; d=.3; beta=.9;\nvar_model(model_name=m, eqtags=['e1']);\npac_model(auxiliary_model_name=m, discount=beta, model_name=p);\n";
+    let head = "var y x z; varexo e; parameters a b c d beta; a=.5; b=.1; c=.2; d=.3; beta=.9;\nvar_model(model_name=m, eqtags=['e1']);\npac_model(auxiliary_model_name=m, discount=beta, model_name=p);\n";
     // no equation uses pac_expectation(p)
     let e = bad(&format!("{head}model;\n[name='e1']\ny = a*y(-1) + e;\nx = y;\nz = x;\nend;"));
     assert!(e.contains("pac_expectation"), "{e}");
     // unknown PAC model in an equation
     let e = bad("var y z; varexo e; parameters a; a=.5;\nmodel;\ny = a*y(-1) + pac_expectation(zz) + e;\nz = y;\nend;");
     assert!(e.contains("unknown PAC model"), "{e}");
+}
+
+/// The decimal numbers of `text` (`0.0145990564819670`) and the text with each one replaced by `#`.
+fn split_numbers(text: &str) -> (String, Vec<f64>) {
+    let c: Vec<char> = text.chars().collect();
+    let (mut t, mut v, mut i) = (String::new(), Vec::new(), 0);
+    while i < c.len() {
+        let after_name = i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+        if c[i].is_ascii_digit() && !after_name {
+            let j = (i..c.len()).find(|&j| !(c[j].is_ascii_digit() || c[j] == '.')).unwrap_or(c.len());
+            let s: String = c[i..j].iter().collect();
+            if s.contains('.') {
+                v.push(s.parse().unwrap());
+                t.push('#');
+            } else {
+                t.push_str(&s);
+            }
+            i = j;
+        } else {
+            t.push(c[i]);
+            i += 1;
+        }
+    }
+    (t, v)
+}
+
+fn run_commands_in(dir: &Path, name: &str) -> ModFile {
+    let mut mf = parse_mod_file(&dir.join(format!("{name}.mod")), &[]).unwrap();
+    for ci in 0..mf.commands.len() {
+        if let Command::Other(n, o) = mf.commands[ci].clone()
+            && dynare::varmodels::handles(&n)
+            && n != "pac.print"
+        {
+            dynare::varmodels::run(&mut mf, &n, &o).unwrap();
+        }
+    }
+    mf
+}
+
+/// `pac.print`: the files written by print_expectations.m (reference/pac/print, from var-12 of
+/// Dynare's tests), but for the dates. example4: growth in pac_target_info (Dynare numbers the
+/// auxiliary variable of diff(x) after the nodes of the growth expressions, AUX_DIFF_11);
+/// example3: a component log(x) and a growth diff(log(x(-2))) (unary-op auxiliary variables).
+#[test]
+fn pac_print_files() {
+    let dir = refdir().join("print");
+    for name in ["example11", "example4", "example3"] {
+        let mf = run_commands_in(&dir, name);
+        let p = mf.varmodels.pac("pacman").unwrap();
+        let (files, console) = p.print(&mf.varmodels, &mf.model.param_names, &mf.model.params, name, true).unwrap();
+        assert!(console.contains(&format!(
+            "Parameters declarations and calibrations are saved in {name}/model/pac-expectations/pacman-parameters.inc."
+        )));
+        assert_eq!(files.len(), 4);
+        for (f, text) in files {
+            let base = Path::new(&f).file_name().unwrap().to_str().unwrap().to_string();
+            let want = std::fs::read_to_string(dir.join(name).join(&base)).unwrap();
+            let norm =
+                |s: &str| s.lines().filter(|l| !l.contains("generated by Dynare")).collect::<Vec<_>>().join("\n");
+            let (a, va) = split_numbers(&norm(&text));
+            let (b, vb) = split_numbers(&norm(&want));
+            assert_eq!(a, b, "{name}/{base}");
+            close(&va, &vb, 1e-13, &format!("{name}/{base}"));
+        }
+    }
+}
+
+/// Equal, or both NaN.
+fn close_nan(a: &[f64], b: &[f64], tol: f64, what: &str) {
+    assert_eq!(a.len(), b.len(), "{what}: length");
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        assert!((x.is_nan() && y.is_nan()) || (x - y).abs() <= tol * (1.0 + y.abs()), "{what}[{i}]: {x} vs {y}");
+    }
+}
+
+/// Row-major elements (MATLAB's jsonencode gives rows).
+fn rows(x: &dynare::linalg::Mat) -> Vec<f64> {
+    (0..x.nrows()).flat_map(|i| (0..x.ncols()).map(move |j| x[(i, j)])).collect()
+}
+
+/// Dynare's tests/trend-component-and-var-models/tcm6-8.mod (reference/pac/dump_tcm.m): the
+/// `trend_component_model` and `pac_model` declarations follow the model block, and the PAC
+/// equations have the left hand side `diff(log(x))`. Same auxiliary variables and parameters,
+/// `M_.params` after `pac.initialize` (NaN h parameters, as in MATLAB), the companion matrices
+/// and `trend_component_ar_a0` of both models.
+#[test]
+fn trend_component_declared_after_the_model_block() {
+    for name in ["tcm6c", "tcm7c", "tcm8c"] {
+        let r = reference(name);
+        let mf = run_commands(name);
+        assert_eq!(mf.model.endo_names.len(), r["endo_names"].as_array().unwrap().len(), "{name}: endo_nbr");
+        let rn = strings(&r["param_names"]);
+        assert_eq!(rn.len(), mf.model.param_names.len(), "{name}: number of parameters");
+        for (i, n) in rn.iter().enumerate() {
+            if !pac_param(n) {
+                assert_eq!(&mf.model.param_names[i], n, "{name}: parameter name");
+            }
+        }
+        close_nan(&mf.model.params, &flat(&r["params"]), 1e-10, &format!("{name}: M_.params"));
+        for m in ["toto", "titi"] {
+            let c = mf.varmodels.companion(m).unwrap();
+            close(&rows(&c.matrix), &flat(&r["trend_component"][m]["CompanionMatrix"]), 1e-13, &format!("{name} {m}"));
+            let ev =
+                |a: &dynare::modfile::Ast| dynare::varmodels::eval_coef(a, &mf.model.param_names, &mf.model.params);
+            let t = mf.varmodels.trend(m).unwrap().matrices(&ev).unwrap();
+            let ra = &r["ar_a0"][m];
+            assert_eq!(t.ar.len(), 1);
+            close(&rows(&t.ar[0]), &flat(&ra["AR"]), 1e-15, &format!("{name} {m} AR"));
+            close(&rows(&t.a0), &flat(&ra["A0"]), 1e-15, &format!("{name} {m} A0"));
+            close(&rows(&t.a0star), &flat(&ra["A0star"]), 1e-15, &format!("{name} {m} A0star"));
+        }
+    }
 }

@@ -1,0 +1,27 @@
+// the same after steady: a shocks block reads oo_.steady_state as the driver has it there
+var y c;
+varexo e u;
+parameters a;
+a = 0.5;
+model;
+c = 0.4*c(-1) + 1 + u;
+y = a*y(-1) + c + e;
+end;
+initval;
+y = 1;
+c = 2;
+e = 0;
+u = 0.5;
+end;
+shocks;
+var e; stderr y+1;
+var u; stderr c/10;
+corr e, u = y/10;
+end;
+steady;
+shocks;
+var e; stderr y/10;
+var u = c/100+u;
+corr e, u = c/10;
+end;
+stoch_simul(order=1, irf=0, noprint, nograph);

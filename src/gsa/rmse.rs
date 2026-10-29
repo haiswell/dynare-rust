@@ -35,9 +35,9 @@ pub fn likelihood_data(mf: &ModFile, dir: &Path, o: &Options, datafile: &str) ->
     let p = dir.join(datafile);
     let path = if p.exists() { p } else { dir.join(format!("{datafile}.csv")) };
     if !path.exists() {
-        bail!("datafile {} not found (only .csv files are supported)", dir.join(datafile).display());
+        bail!("datafile {} not found (csv, mat, xls(x) and m files are supported)", dir.join(datafile).display());
     }
-    let table = Table::read_csv(&path)?;
+    let table = Table::read(&path, &Default::default())?;
     let first_obs = num(o, "first_obs").unwrap_or(1.0) as usize;
     let sample = table.sample(&mf.varobs, first_obs, num(o, "nobs").map(|v| v as usize))?;
     let mut k = KalmanOptions {
@@ -59,7 +59,17 @@ pub fn likelihood_data(mf: &ModFile, dir: &Path, o: &Options, datafile: &str) ->
         k.riccati_tol = v;
     }
     k.qz_criterium = super::qz_criterium(o, true); // rmse always runs dynare_estimation_init
-    Ok(LikelihoodData::new(&sample, k))
+    crate::estimation::est_completion::kalman_options(o, &mut k); // use_univariate_*_if_singularity_is_detected
+    let mut sample = sample;
+    let flag = |key: &str| crate::estimation::est_completion::bool_opt(o, key).unwrap_or(false);
+    if flag("loglinear") && !flag("logdata") {
+        sample.iter_mut().for_each(|v| *v = v.ln()); // makedataset.m: dataset_.log()
+    }
+    let mut data = LikelihoodData::new(&sample, k);
+    if num(o, "prefilter").unwrap_or(0.0) == 1.0 {
+        data.prefilter(); // makedataset.m: dataset_.detrend()
+    }
+    Ok(data)
 }
 
 /// Per-draw output of `prior_posterior_statistics_core` that the RMSE mapping uses.
@@ -87,7 +97,7 @@ fn fit_at(
     let mf: Vec<usize> = dsge.varobs.iter().map(|&v| dr.inv_order_var[v]).collect();
     let mut y = data.y.clone();
     for (i, &v) in dsge.varobs.iter().enumerate() {
-        let c = res.steady_state[v];
+        let c = dsge.level_constant(v, &res.steady_state); // log with loglinear
         for j in 0..y.ncols() {
             y[(i, j)] -= c;
         }
@@ -101,13 +111,19 @@ fn fit_at(
     let mut r2 = Vec::with_capacity(vars.len());
     for &v in vars {
         let row = dr.inv_order_var[v];
+        // prefilter: prior_posterior_statistics_core.m adds the data mean back to the observed
+        // variables (yobs and y0 alike, so the RMSE is unchanged, the R2 denominator is not)
+        let shift = match (&data.prefilter_mean, dsge.varobs.iter().position(|&w| w == v)) {
+            (Some(m), Some(i)) => m[i],
+            _ => 0.0,
+        };
         let (mut se, mut so, mut n) = (0.0, 0.0, 0.0);
         for tt in istart - 1..gend {
             // y0(t) = aK(1, :, t) = filtered(:, t-1) (1-based); yobs(t) = updated(:, t)
             let y0 = out.filtered[(row, tt - 1)];
             let yo = out.ahat[(row, tt)];
             se += (yo - y0).powi(2);
-            so += yo * yo;
+            so += (yo + shift) * (yo + shift);
             n += 1.0;
         }
         rmse.push((se / n).sqrt());
@@ -133,6 +149,11 @@ pub fn run(
 ) -> Result<RmseResults> {
     let datafile = o.datafile.as_deref().ok_or_else(|| anyhow!("rmse needs a datafile"))?;
     let data = likelihood_data(mf, dir, eo, datafile)?;
+    if data.prefilter_mean.is_some()
+        && dsge.varobs.iter().any(|&v| dsge.level_constant(v, &dsge.ys_guess).abs() >= 1e-9)
+    {
+        bail!("The option \"prefilter\" is inconsistent with the non-zero mean measurement equations in the model.");
+    }
     let istart = o.istart_rmse.unwrap_or(data.kalman.presample + 1).max(2);
     let vnames = o.var_rmse.clone();
     let vars: Vec<usize> = vnames.iter().map(|n| super::endo_index(dsge, n)).collect::<Result<_>>()?;

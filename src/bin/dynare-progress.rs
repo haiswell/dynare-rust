@@ -3,8 +3,9 @@
 //! panel per path, refreshed every second (Dynare's waitbars, in a terminal).
 //!
 //! A path is a progress file (`<fname>/Output/<fname>_progress.json`, written by
-//! every dynare-rs run), a dynare-rs log (its console output redirected to a file:
-//! only chain 1 and the last optimizer line are shown), or a directory, which shows
+//! every dynare-rs run), a dynare-rs log (its console output redirected to a file, with
+//! `DYNARE_RS_VERBOSE=1` so that the progress notes, which are otherwise only written to a
+//! terminal, are in it: only chain 1 and the last optimizer line are shown), or a directory, which shows
 //! the most recently updated of those found in it and one level below.
 //! `--window` opens a small Terminal window (macOS) or a new console window (Windows)
 //! per path running this viewer.

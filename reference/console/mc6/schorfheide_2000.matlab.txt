@@ -1,0 +1,52 @@
+Prior distribution for parameter rho has unbounded density!
+Initial value of the log posterior (or likelihood): 983.0463
+
+==========================================================
+   Change in the posterior covariance matrix = 9.9995.
+   Change in the posterior mean = 0.021881.
+   Current mode = -1145.5972
+   Mode improvement = 162.5508
+   New value of jscale = 0.00041869
+==========================================================
+
+==========================================================
+   Change in the posterior covariance matrix = 0.00049997.
+   Change in the posterior mean = 0.0065245.
+   Current mode = -1163.6475
+   Mode improvement = 18.0503
+   New value of jscale = 0.064152
+==========================================================
+
+==========================================================
+   Change in the posterior covariance matrix = 0.0011682.
+   Change in the posterior mean = 0.67637.
+   Current mode = -1343.6795
+   Mode improvement = 180.032
+   New value of jscale = 0.71967
+==========================================================
+
+Optimal value of the scale parameter = 0.71967
+
+
+Final value of minus the log posterior (or likelihood):-1343.679474 
+
+RESULTS FROM POSTERIOR ESTIMATION
+parameters
+           prior mean     mode    s.d.  prior pstdev
+
+alp            0.3560   0.4035  0.0102   beta 0.0200 
+bet            0.9930   0.9909  0.0006   beta 0.0020 
+gam            0.0085   0.0046  0.0010   norm 0.0030 
+logmst         0.0002   0.0142  0.0013   norm 0.0070 
+rho            0.1290   0.8455  0.0348   beta 0.2230 
+phi            0.6500   0.6890  0.0072   beta 0.0500 
+del            0.0100   0.0017  0.0013   beta 0.0050 
+
+standard deviation of shocks
+           prior mean     mode    s.d.  prior pstdev
+
+e_a            0.0354   0.0136  0.0007   invg    Inf 
+e_m            0.0089   0.0033  0.0002   invg    Inf 
+
+
+Log data density [Laplace approximation] is 1292.295398.

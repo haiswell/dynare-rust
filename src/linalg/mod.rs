@@ -318,6 +318,86 @@ pub fn chol_upper(a: &Mat) -> Option<Mat> {
     Some(f)
 }
 
+/// MATLAB `A'*A`: MATLAB recognises the pattern and calls dsyrk (one triangle, mirrored),
+/// so the result is exactly symmetric and rounds as MATLAB's.
+pub fn syrk_t(a: &Mat) -> Mat {
+    let (k, n) = (a.nrows(), a.ncols());
+    let mut c = Mat::zeros(n, n);
+    if n == 0 || k == 0 {
+        return c;
+    }
+    unsafe {
+        lapack::dsyrk_(
+            &(b'U' as c_char),
+            &(b'T' as c_char),
+            &(n as c_int),
+            &(k as c_int),
+            &1.0,
+            a.as_ptr(),
+            &(k as c_int),
+            &0.0,
+            c.as_mut_ptr(),
+            &(n as c_int),
+        )
+    };
+    for j in 0..n {
+        for i in (j + 1)..n {
+            c[(i, j)] = c[(j, i)];
+        }
+    }
+    c
+}
+
+/// MATLAB `A\B` for a square, full `A`: Cholesky (dpotrf/dpotrs) when `A` is exactly
+/// symmetric with a positive diagonal and the factorisation succeeds, LU otherwise.
+/// None if `A` is exactly singular.
+pub fn mldivide_sq(a: &Mat, b: &Mat) -> Option<Mat> {
+    let n = a.nrows();
+    assert_eq!(n, a.ncols(), "mldivide_sq: square matrices only");
+    let sym = (0..n).all(|j| a[(j, j)] > 0.0 && (j + 1..n).all(|i| a[(i, j)] == a[(j, i)]));
+    if sym && n > 0 {
+        let mut f = a.clone();
+        let mut info: c_int = 0;
+        let ni = n as c_int;
+        unsafe { lapack::dpotrf_(&(b'U' as c_char), &ni, f.as_mut_ptr(), &ni, &mut info) };
+        if info == 0 {
+            let mut x = b.clone();
+            unsafe {
+                lapack::dpotrs_(
+                    &(b'U' as c_char),
+                    &ni,
+                    &(b.ncols() as c_int),
+                    f.as_ptr(),
+                    &ni,
+                    x.as_mut_ptr(),
+                    &(b.nrows().max(1) as c_int),
+                    &mut info,
+                )
+            };
+            return Some(x);
+        }
+    }
+    solve(a, b)
+}
+
+/// MATLAB `inv(A)` (dgetrf + dgetri). None if `A` is exactly singular.
+pub fn inv_lu(a: &Mat) -> Option<Mat> {
+    let n = a.nrows();
+    if n == 0 {
+        return Some(a.clone());
+    }
+    let (mut f, ipiv, info) = lu(a);
+    if info > 0 {
+        return None;
+    }
+    let ni = n as c_int;
+    let lwork = (64 * n) as c_int;
+    let mut work = vec![0.0; lwork as usize];
+    let mut info: c_int = 0;
+    unsafe { lapack::dgetri_(&ni, f.as_mut_ptr(), &ni, ipiv.as_ptr(), work.as_mut_ptr(), &lwork, &mut info) };
+    Some(f)
+}
+
 /// Symmetric eigen-decomposition (ascending eigenvalues, eigenvectors in columns).
 pub fn sym_eig(a: &Mat) -> (Vector, Mat) {
     let n = a.nrows() as c_int;

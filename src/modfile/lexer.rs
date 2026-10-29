@@ -36,6 +36,9 @@ pub struct Token {
     /// Source text of the token (used to rebuild unquoted option values such as paths).
     pub raw: String,
     pub loc: Loc,
+    /// 1-based first and last column of the token on its line (0 when synthesized); used for
+    /// the source locations of the preprocessor warnings.
+    pub col: (usize, usize),
 }
 
 impl Token {
@@ -53,9 +56,10 @@ impl Token {
     }
 }
 
-const PUNCT: [&str; 26] = [
-    "==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "^", "=", "(", ")", "[", "]", "{", "}", ",", ";", ":", "#",
-    "<", ">", "!", ".",
+/// `~` and `~=` only occur in MATLAB statements (`if ~isoctave`, see `parser_x`).
+const PUNCT: [&str; 28] = [
+    "==", "!=", "~=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "^", "=", "(", ")", "[", "]", "{", "}", ",", ";",
+    ":", "#", "<", ">", "!", "~", ".",
 ];
 
 /// Tokenizes the macro processor output. Comments (`//`, `%`, `/* */`) are removed here, as
@@ -75,8 +79,8 @@ pub fn tokenize(lines: &[SrcLine]) -> Result<Vec<Token>> {
             if t.starts_with("end") && t[3..].trim_start().starts_with(';') {
                 in_verbatim = false;
                 let src = std::mem::take(&mut verbatim_src);
-                out.push(Token { tok: Tok::Str(src.clone()), raw: src, loc: loc.clone() });
-                out.push(Token { tok: Tok::Punct(";"), raw: ";".into(), loc });
+                out.push(Token { tok: Tok::Str(src.clone()), raw: src, loc: loc.clone(), col: (0, 0) });
+                out.push(Token { tok: Tok::Punct(";"), raw: ";".into(), loc, col: (0, 0) });
             } else {
                 verbatim_src.push_str(&l.text);
                 verbatim_src.push('\n');
@@ -93,7 +97,7 @@ pub fn tokenize(lines: &[SrcLine]) -> Result<Vec<Token>> {
         let t = text.trim();
         if t.starts_with("verbatim") && t[8..].trim_start().starts_with(';') {
             in_verbatim = true;
-            out.push(Token { tok: Tok::Ident("verbatim".into()), raw: "verbatim".into(), loc });
+            out.push(Token { tok: Tok::Ident("verbatim".into()), raw: "verbatim".into(), loc, col: (0, 0) });
             continue;
         }
         lex_line(&text, &loc, &mut out)?;
@@ -147,8 +151,9 @@ fn strip_comments(s: &str, in_comment: &mut bool) -> String {
 fn lex_line(s: &str, loc: &Loc, out: &mut Vec<Token>) -> Result<()> {
     let b = s.as_bytes();
     let mut i = 0;
-    let push =
-        |out: &mut Vec<Token>, tok: Tok, raw: &str| out.push(Token { tok, raw: raw.to_string(), loc: loc.clone() });
+    let push = |out: &mut Vec<Token>, tok: Tok, raw: &str, st: usize, en: usize| {
+        out.push(Token { tok, raw: raw.to_string(), loc: loc.clone(), col: (st + 1, en) })
+    };
     'outer: while i < b.len() {
         let c = b[i] as char;
         if c.is_whitespace() {
@@ -183,13 +188,14 @@ fn lex_line(s: &str, loc: &Loc, out: &mut Vec<Token>) -> Result<()> {
                 Ok(v) => v,
                 Err(_) => bail!("{loc}: invalid number '{raw}'"),
             };
-            push(out, Tok::Num(v), raw);
+            push(out, Tok::Num(v), raw, st, i);
             continue;
         }
         // ---- the perpendicular symbol of complementarity conditions
         if s[i..].starts_with("_|_") || s[i..].starts_with('⟂') {
-            push(out, Tok::Punct("⟂"), if s[i..].starts_with('⟂') { "⟂" } else { "_|_" });
-            i += if s[i..].starts_with('⟂') { '⟂'.len_utf8() } else { 3 };
+            let n = if s[i..].starts_with('⟂') { '⟂'.len_utf8() } else { 3 };
+            push(out, Tok::Punct("⟂"), if n == 3 { "_|_" } else { "⟂" }, i, i + n);
+            i += n;
             continue;
         }
         if c.is_ascii_alphabetic() || c == '_' {
@@ -197,20 +203,27 @@ fn lex_line(s: &str, loc: &Loc, out: &mut Vec<Token>) -> Result<()> {
             while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                 i += 1;
             }
-            push(out, Tok::Ident(s[st..i].to_string()), &s[st..i]);
+            // on-the-fly declaration in a model block: `c|e` (endogenous), `e|x` (exogenous),
+            // `beta|p` (parameter); the identifier keeps the suffix in its raw text
+            let typed = b.get(i) == Some(&b'|')
+                && b.get(i + 1).is_some_and(|t| b"eExXpP".contains(t))
+                && !b.get(i + 2).is_some_and(|t| t.is_ascii_alphanumeric() || *t == b'_');
+            let en = if typed { i + 2 } else { i };
+            push(out, Tok::Ident(s[st..i].to_string()), &s[st..en], st, en);
+            i = en;
             continue;
         }
         if c == '\'' || c == '"' || c == '$' {
             let Some(end) = s[i + 1..].find(c) else { bail!("{loc}: unterminated string") };
             let body = &s[i + 1..i + 1 + end];
             let tok = if c == '$' { Tok::Tex(body.to_string()) } else { Tok::Str(body.to_string()) };
-            push(out, tok, &s[i..i + end + 2]);
+            push(out, tok, &s[i..i + end + 2], i, i + end + 2);
             i += end + 2;
             continue;
         }
         for p in PUNCT {
             if s[i..].starts_with(p) {
-                push(out, Tok::Punct(p), p);
+                push(out, Tok::Punct(p), p, i, i + p.len());
                 i += p.len();
                 continue 'outer;
             }

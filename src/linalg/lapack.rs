@@ -104,6 +104,15 @@ unsafe extern "C" {
         ldb: *const c_int,
         info: *mut c_int,
     );
+    pub fn dgetri_(
+        n: *const c_int,
+        a: *mut f64,
+        lda: *const c_int,
+        ipiv: *const c_int,
+        work: *mut f64,
+        lwork: *const c_int,
+        info: *mut c_int,
+    );
     pub fn dgecon_(
         norm: *const c_char,
         n: *const c_int,

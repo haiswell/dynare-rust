@@ -83,8 +83,9 @@ pub fn mcmc_after_mode(
     seed: u64,
     prefetch: usize,
     title: &str,
+    spec: &crate::driver::TableSpec,
 ) -> Result<Option<(PosteriorStats, Vec<crate::estimation::Chain>)>> {
-    mcmc_after_mode_js(obj, xmode, hh, priors, names, o, dir, dname, fname, seed, prefetch, title, &[])
+    mcmc_after_mode_js(obj, xmode, hh, priors, names, o, dir, dname, fname, seed, prefetch, title, spec, &[])
 }
 
 /// As [`mcmc_after_mode`] with the per-parameter `bayestopt_.jscale` of `estimated_params`
@@ -104,6 +105,7 @@ pub fn mcmc_after_mode_js(
     seed: u64,
     prefetch: usize,
     title: &str,
+    spec: &crate::driver::TableSpec,
     param_jscale: &[Option<f64>],
 ) -> Result<Option<(PosteriorStats, Vec<crate::estimation::Chain>)>> {
     let n = xmode.len();
@@ -145,13 +147,14 @@ pub fn mcmc_after_mode_js(
             &bounds,
             &TuneOptions { target, guess: Some(guess), seed, prefetch, ..Default::default() },
         )?;
-        println!("mh_tune_jscale: mh_jscale has been set equal to {jscale}.");
+        println!("mh_tune_jscale: mh_jscale has been set equal to {}.", crate::gsa::stats::num2str(jscale));
         // dynare_estimation_1.m: bayestopt_.jscale(:) = options_.mh_jscale
         per_param = vec![jscale; n];
     }
     mh.mh_jscale = jscale;
     mh.jscale = per_param;
-    println!("{title}::mcmc ({}): {} chains x {} draws.", sampler.title(), mh.nblocks, mh.replic);
+    crate::progress::note(format!("{title}::mcmc ({}): {} chains x {} draws.", sampler.title(), mh.nblocks, mh.replic));
+    let disp = format!("{title}::mcmc");
     let t = Instant::now();
     let res = mh_session::run(
         SessionInputs {
@@ -168,40 +171,27 @@ pub fn mcmc_after_mode_js(
             mh_drop,
             keep_all,
             progress: None,
+            disp: &disp,
         },
         &mfo,
     )?;
-    println!("{title}::mcmc: done in {:.1}s. Acceptance ratio per chain:", t.elapsed().as_secs_f64());
-    for (k, a) in res.acceptance.iter().enumerate() {
-        println!("{:>60}Chain {:2}: {:.4}%", "", k + 1, 100.0 * a);
-    }
+    crate::progress::note(format!("{title}::mcmc: done in {:.1}s.", t.elapsed().as_secs_f64()));
     let stats = posterior_stats(
         &res.chains,
         &PosteriorOptions { mh_drop, mh_conf_sig: num(o, "mh_conf_sig").unwrap_or(0.9), ..Default::default() },
     )?;
+    // mcmc_diagnostics (inefficiency factors, Geweke, Brooks-Gelman), marginal_density,
+    // GetPosteriorParametersStatistics
     if keep_all {
         let conv = ConvergenceOptions {
             last_file_lines: Some(res.record.last_line_number),
             ..ConvergenceOptions::from_options(o)
         };
-        if res.chains[0].total_draws > 2000 {
-            let g = crate::estimation::diagnostics::geweke(&res.chains, mh_drop, &conv.geweke);
-            if let Some(g) = g {
-                crate::estimation::diagnostics::print_geweke(&g, names, &conv.geweke);
-            }
-            if conv.raftery_lewis {
-                crate::estimation::convergence::raftery_lewis_chains(&res.chains, names, &conv);
-            }
-        } else {
-            println!(
-                "\nWARNING: MCMC convergence diagnostics are not computed because the total number of iterations is not bigger than 2000!"
-            );
-        }
+        crate::driver::print_ifac_names(&spec.ifac_names, &stats.ifac);
+        let gopts = crate::graphics::GraphOptions::from_options(o, dir, fname);
+        crate::estimation::plots::mcmc_diagnostics(&res.chains, names, mh_drop, fname, &gopts, &conv)?;
     }
-    println!("\nESTIMATION RESULTS\n\nLog data density (Modified Harmonic Mean) is {:.6}.", stats.mhm.log_marginal);
-    println!("\n{:<20} {:>10} {:>10} {:>10} {:>10}", "parameters", "prior mean", "post. mean", "hpd inf", "hpd sup");
-    for (k, p) in stats.params.iter().enumerate() {
-        println!("{:<20} {:>10.4} {:>10.4} {:>10.4} {:>10.4}", names[k], priors[k].mean, p.mean, p.hpd.0, p.hpd.1);
-    }
+    crate::driver::print_marginal_density_messages(&stats.mhm);
+    crate::driver::print_posterior_table_spec(spec, priors, num(o, "mh_conf_sig").unwrap_or(0.9), &stats);
     Ok(Some((stats, res.chains)))
 }

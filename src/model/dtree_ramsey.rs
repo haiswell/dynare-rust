@@ -12,14 +12,20 @@ use std::collections::{BTreeSet, HashMap};
 pub(crate) struct PlannerIn {
     pub objective: crate::modfile::Ast,
     pub nums: Vec<String>,
-    /// Number of declared endogenous variables (the FOCs are taken w.r.t. these).
-    pub orig_endo: usize,
-    /// Symbol ids of `MULT_1..`, one per model equation.
-    pub mults: Vec<u32>,
     /// Symbol id of `optimal_policy_discount_factor`.
     pub discount: u32,
     /// Symbol ids of the declared endogenous variables, by endogenous index.
     pub endo_symb: Vec<u32>,
+}
+
+/// What the Ramsey step adds to the model (`M_.ramsey_orig_endo_nbr`, `M_.ramsey_orig_eq_nbr`).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RamseyOut {
+    /// Number of FOCs: the declared variables plus the `diff` / `EXPECTATION` aux variables.
+    pub orig_endo: usize,
+    /// Equations the multipliers are attached to (model equations, then the `diff` /
+    /// `EXPECTATION` aux equations).
+    pub orig_eq: usize,
 }
 
 impl Tree {
@@ -209,23 +215,31 @@ impl Tree {
         })
     }
 
-    /// `computeRamseyPolicyFOCs`: puts the first-order conditions (w.r.t. every declared
-    /// endogenous variable) in front of the model equations, which become `lhs - rhs = 0`.
-    /// Returns the number of FOCs.
+    /// `computeRamseyPolicyFOCs`: creates the multipliers `MULT_1..` (aux variables of type 6,
+    /// one per equation) and puts the first-order conditions (w.r.t. every endogenous variable
+    /// existing at this point: the declared ones and the `diff` / `EXPECTATION` aux variables,
+    /// which are substituted before) in front of the equations, which become `lhs - rhs = 0`.
     ///
     /// The Lagrangian is `U + sum_i sum_s beta^s MULT_i(s) f_i(s)` where `f_i = lhs_i - rhs_i`
     /// and `f_i(s)` is `f_i` shifted by `s` periods, for the shifts `s = -l` of the leads/lags
     /// `l` that occur in equation `i`; the FOC of `y_j` is its derivative with respect to
     /// `y_j(0)`. The node creation order (power, multiplier, shifted equation; equation by
     /// equation, shifts in increasing order) reproduces the preprocessor's node indices.
-    pub(super) fn ramsey_focs(&mut self, p: &PlannerIn, lookup: &dyn Fn(&str) -> Option<u32>) -> Result<usize> {
-        let endo_symb = &p.endo_symb;
+    pub(super) fn ramsey_focs(&mut self, p: &PlannerIn, lookup: &dyn Fn(&str) -> Option<u32>) -> Result<RamseyOut> {
+        let mut endo_symb = p.endo_symb.clone();
+        endo_symb.extend(self.aux.iter().map(|a| a.symb));
         let mut it = p.nums.iter();
         let u = self.replay(&p.objective, &mut it, lookup)?;
         let pbeta = self.add_var(p.discount, 0);
         let n_eq = self.equations.len();
-        if n_eq != p.mults.len() {
-            bail!("internal error: {} multipliers for {n_eq} equations", p.mults.len());
+        let mut mults = Vec::with_capacity(n_eq);
+        for i in 0..n_eq {
+            let name = format!("MULT_{}", i + 1);
+            if lookup(&name).is_some() {
+                bail!("'{name}' is reserved for the Ramsey multipliers");
+            }
+            let z = self.zero;
+            mults.push(self.add_aux(name, 6, None, None, z));
         }
         let mut resid = Vec::with_capacity(n_eq);
         for k in 0..n_eq {
@@ -245,7 +259,7 @@ impl Tree {
                 } else {
                     self.one
                 };
-                let m = self.add_var(p.mults[i], s);
+                let m = self.add_var(mults[i], s);
                 let shifted = if s == 0 { f } else { self.decrease(f, -s) };
                 let term = self.add_times(m, shifted);
                 let term = if s != 0 { self.add_times(c, term) } else { term };
@@ -255,8 +269,8 @@ impl Tree {
         }
         let lagr = self.add_plus(u, lsum);
         let zero = self.zero;
-        let mut eqs = Vec::with_capacity(p.orig_endo);
-        for (j, &sj) in endo_symb[..p.orig_endo].iter().enumerate() {
+        let mut eqs = Vec::with_capacity(endo_symb.len());
+        for (j, &sj) in endo_symb.iter().enumerate() {
             let f = self.diff_node(lagr, (sj, 0), &mut HashMap::new())?;
             let e = self.add_equal(f, zero);
             let name = format!("Ramsey FOC w.r.t. {}", self.names[endo_symb[j] as usize]);
@@ -268,6 +282,6 @@ impl Tree {
         }
         eqs.append(&mut self.equations);
         self.equations = eqs;
-        Ok(n)
+        Ok(RamseyOut { orig_endo: n, orig_eq: n_eq })
     }
 }

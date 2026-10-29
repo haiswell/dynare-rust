@@ -1,0 +1,69 @@
+==== Method of Moments Estimation (GMM) ====
+
+Priors were specified, but the penalized_estimator-option was not set.
+Dynare sets penalized_estimator to 1. Conducting GMM with penalty.
+
+Non-normal priors specified. Penalized estimation uses a Laplace type of approximation:
+Only the prior mean and standard deviation are relevant, all other shape information, except for the parameter bounds, is ignored.
+
+Warning: Your prior allows for negative standard deviations for structural shocks. Due to working with variances, Dynare will be able to continue, but it is recommended to change your prior!
+Computing data moments. Note that NaN values in the moments (due to leads and lags or missing data) are replaced by the mean of the corresponding moment.
+Initial value of the moment objective function with 10.0 times identity weighting matrix: 11067.2107
+
+Time required to compute objective function once: 0.0639 seconds
+
+General method of moments with
+  - uncentered moments (prefilter=0)
+  - penalized estimation using deviation from prior mean and weighted with prior precision
+  - optimizer (mode_compute=4): csminwel
+  - stochastic simulations with perturbation order: 1
+  - standard errors: numerical derivatives
+  - number of matched moments: 12
+  - number of parameters: 3
+
+Estimation stage 1
+  - identity weighting matrix
+
+improvement < crit termination
+
+Stage 1 Iteration 1: Value of minimized moment distance objective function: 97.6473814217.
+Estimation stage 2
+  - diagonal of optimal weighting matrix (Bartlett kernel with 5 lags)
+    and using previous stage estimate of model-moments
+improvement < crit termination
+
+Stage 2 Iteration 1: Value of minimized moment distance objective function: 2.0472243402.
+
+Computing standard errors using numerical derivatives of moments
+
+RESULTS FROM GMM ESTIMATION
+parameters
+            Estimate    s.d. t-stat
+
+rho           0.9178  0.0097 94.1657
+psi           2.0240  0.0233 86.9958
+
+standard deviation of shocks
+            Estimate    s.d. t-stat
+
+ez            0.0103  0.0007 14.4100
+
+Value of J-test statistic: 21.023963
+p-value of J-test statistic: 0.012544
+
+Comparison of matched data moments and model moments (GMM)
+Moment                  Data         Model
+E[yo]             -0.6705090    -0.3673537
+E[co]             -0.4960917    -0.4634695
+E[io]             -1.0435797    -0.3673537
+E[yo*yo]          11.8209991    11.9321983
+E[co*co]           4.5772499     4.5881305
+E[io*io]         115.0865683   116.3971868
+E[yo*co]           6.1569554     5.8627405
+E[yo*io]          34.1724556    34.5499453
+E[co*io]          16.3933337    14.4994154
+E[yo*yo(-1)]      11.1524170    11.0498872
+E[co*co(-1)]       4.5104911     4.5344883
+E[io*io(-1)]     107.1759724   104.2004739
+
+==== Method of Moments Estimation (GMM) Completed ====

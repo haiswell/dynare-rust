@@ -302,7 +302,13 @@ pub fn solve_block_decomposed(
                 // evaluate / solve forward or backward: period by period (solve_one_boundary.m)
                 let range: Vec<usize> =
                     if forward { (ml..ml + periods).collect() } else { (ml..ml + periods).rev().collect() };
-                let nrec = nb - blk.mfs.min(nb);
+                // evaluate blocks: every equation in closed form (the block function with
+                // evaluate = true), whatever their mfs
+                let nrec = if matches!(blk.simulation_type, sim::EVALUATE_FORWARD | sim::EVALUATE_BACKWARD) {
+                    nb
+                } else {
+                    nb - blk.mfs.min(nb)
+                };
                 'periods: for c in range {
                     let x = exo_row(c);
                     let mut iter = 0;

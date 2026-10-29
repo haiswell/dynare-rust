@@ -89,6 +89,8 @@ fn setup(tag: &str) -> Option<Setup> {
         posterior_median: None,
         graphs,
         mean_forecast: None,
+        point_forecast: None,
+        forecast: None,
         smoothed_mean: None,
     };
     let iv = r["vars"].as_array().unwrap().iter().map(|v| mf.model.endo_index(v.as_str().unwrap()).unwrap()).collect();
@@ -101,7 +103,8 @@ fn paths(mf: &ModFile) -> ConstrainedPaths {
         .iter()
         .find_map(|c| if let Command::ConditionalForecastPaths(p) = c { Some(p.clone()) } else { None })
         .unwrap();
-    ConstrainedPaths::from_block(mf, &block).unwrap()
+    ConstrainedPaths::from_block(mf, &block, &|| Ok((vec![0.0; mf.model.n_endo()], vec![0.0; mf.model.n_exo()])))
+        .unwrap()
 }
 
 fn opts(kv: &[(&str, OptValue)]) -> Options {
@@ -534,4 +537,47 @@ fn scenario_through_the_driver() {
         names.iter().any(|n| n == "sw07_conditional_shock_decomposition_4step_ahead_forecast_86Y_posterior_mode.csv"),
         "{names:?}"
     );
+}
+
+/// `initial_condition_decomposition(write_xls, steadystate, colormap = hot)`: the workbook of
+/// WriteShockDecomp2Excel (one sheet per variable, with the SCREEN grouping of the many
+/// initial-value components): the "Smoot Var" column equals oo_.initval_decomposition's last
+/// row and the "Steady State" entry is oo_.dr.ys.
+#[test]
+fn initial_condition_decomposition_write_xls() {
+    use calamine::{Data, Reader, open_workbook_auto};
+    let su = setup("icd_xls").expect("reference/setup unavailable");
+    let vars: Vec<String> = su.r["vars"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    let mut sc = DecompositionState::default();
+    let out = su.dir.join("out_xls");
+    let o = opts(&[
+        ("write_xls", OptValue::Flag),
+        ("steadystate", OptValue::Flag),
+        ("colormap", s("hot")),
+        ("nograph", OptValue::Flag),
+    ]);
+    rtd::initial_condition_decomposition_command(&su.mf, Some(&su.st), &o, &vars, &mut sc, &su.dir, "t", &out).unwrap();
+    let z = &sc.initval.as_ref().unwrap().z;
+    let ys = sc.q4.ys.clone().unwrap();
+    let path = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|x| x == "xlsx"))
+        .expect("xlsx written");
+    let mut wb = open_workbook_auto(&path).unwrap();
+    let names = wb.sheet_names();
+    assert_eq!(names, vars);
+    for (k, n) in names.iter().enumerate() {
+        let v = su.mf.model.endo_names.iter().position(|e| e == n).unwrap();
+        let r = wb.worksheet_range(n).unwrap();
+        let rows: Vec<_> = r.rows().collect();
+        let nc = rows[0].len();
+        assert!(matches!(&rows[0][nc - 2], Data::String(s) if s == "Smoot Var"), "{n}");
+        for t in 0..z.t {
+            let Data::Float(f) = rows[t + 1][nc - 2] else { panic!("{n} {t}") };
+            assert!((f - z.at(v, z.c - 1, t)).abs() < 1e-9 * (1.0 + f.abs()), "{n} t={t}");
+        }
+        let Data::Float(ss) = rows[1][nc - 1] else { panic!("ss {k}") };
+        assert!((ss - ys[v]).abs() < 1e-12 * (1.0 + ss.abs()), "{n}: steady state {ss} vs {}", ys[v]);
+    }
 }

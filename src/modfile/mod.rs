@@ -14,7 +14,7 @@ pub use parser::{HeteroShock, Q3Decl};
 
 use crate::linalg::Mat;
 use crate::model::Model;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::path::Path;
 
 pub use parser::{Ast, SpecialOp, ast_to_node, parse_expression, special_to_node};
@@ -59,7 +59,13 @@ fn with_external_steadystate(
                         line: k + 1,
                         text,
                     }));
-                    return reparse(&all);
+                    // the preprocessor does not read the `_steadystate.m` file: its warnings
+                    // (unused parameters) come from the .mod file alone
+                    let warnings = mf.warnings.clone();
+                    return reparse(&all).map(|mut m| {
+                        m.warnings = warnings;
+                        m
+                    });
                 }
                 Err(e) => anyhow::bail!(
                     "{}: an external steady-state file is MATLAB code that dynare-rust only runs when it follows \
@@ -105,6 +111,12 @@ pub fn parse_mod_file_opts(path: &Path, o: &ParseOptions) -> Result<ModFile> {
     let flags = parser::q4_flags(o)?;
     let mf = parser::parse_with(toks, flags.clone())?;
     with_external_steadystate(path, mf, &lines, |l| parser::parse_with(lexer::tokenize(l)?, flags.clone()))
+}
+
+/// The preprocessor warnings emitted before the last failed parse (the real preprocessor
+/// prints them before its error message).
+pub fn take_error_warnings() -> Vec<String> {
+    parser::take_error_warnings()
 }
 
 /// Parses .mod source held in memory (no `@#include` relative to a file).
@@ -172,6 +184,8 @@ pub struct ModFile {
     pub homotopy_setup: Vec<(String, Option<f64>, f64)>,
     /// `homotopy_setup(from_initval_to_endval)` (`options_.homotopy_from_initval_to_endval`).
     pub homotopy_from_initval_to_endval: bool,
+    /// A `homotopy_setup` block is present (`options_.homotopy_values` exists, possibly empty).
+    pub homotopy_block: bool,
     /// Stream EP: `shocks(learnt_in=...)`, `endval(learnt_in=...)` (`M_.learnt_shocks`, `M_.learnt_endval`).
     pub ep: crate::ep::EpDecl,
     /// Number of commands before each `ep.controlled_paths` entry (`perfect_foresight_controlled_paths`
@@ -201,6 +215,8 @@ pub struct ModFile {
     /// file; the driver replays the blocks instead ([`ModFile::reset_state_blocks`],
     /// [`ModFile::run_state_blocks`]).
     pub state_blocks: Vec<(usize, StateBlock)>,
+    /// The preprocessor's `WARNING:` lines (printed by the driver before the run, in order).
+    pub warnings: Vec<String>,
     /// Dynare's global `options_` as left by the commands run so far (see [`GlobalOptions`]).
     pub options: GlobalOptions,
 }
@@ -231,13 +247,13 @@ pub enum ShockEntry {
     Var {
         me: bool,
         i: usize,
-        v: f64,
+        v: PathValue,
     },
     Cov {
         me: bool,
         i: usize,
         j: usize,
-        v: f64,
+        v: PathValue,
     },
     /// `corr`: `M_.Sigma_e(i,j) = r*sqrt(M_.Sigma_e(i,i)*M_.Sigma_e(j,j))` with the current
     /// variances, and `M_.Correlation_matrix(i,j) = r`.
@@ -245,7 +261,7 @@ pub enum ShockEntry {
         me: bool,
         i: usize,
         j: usize,
-        r: f64,
+        r: PathValue,
     },
 }
 
@@ -269,12 +285,17 @@ pub struct GlobalOptions {
     pub loglinear: bool,
     /// `options_.prior_trunc` / `options_.prior_interval` as last written.
     pub prior_trunc: Option<f64>,
+    /// The last command raised `prior_trunc` from 0 to 1e-10 for the slice sampler.
+    pub slice_prior_trunc_raised: bool,
     pub prior_interval: Option<f64>,
     /// A `steady` command has run (`oo_.steady_state` holds its result).
     pub steady_ran: bool,
     /// `options_.forecasts.conf_sig` as last written by `forecast` or `estimation(conf_sig=)`.
     pub forecast_conf_sig: Option<f64>,
 }
+
+/// The options that say where the data are.
+const DATA_OPTIONS: &[&str] = &["datafile", "first_obs", "nobs", "xls_sheet", "xls_range"];
 
 impl GlobalOptions {
     /// Writes the options of a command into `options_`, as the generated driver does before
@@ -291,7 +312,28 @@ impl GlobalOptions {
                 // the preprocessor writes options_.order = 1 for an estimation without `order`
                 self.estimation.retain(|(k, _)| k != "order");
                 merge(&mut self.estimation, o);
+                // and options_.steadystate.nocheck = true with diffuse_filter
+                if opt(o, "diffuse_filter").is_some() {
+                    merge(&mut self.steady, &vec![("nocheck".to_string(), OptValue::Flag)]);
+                }
                 o
+            }
+            // check(nocheck): options_.steadystate.nocheck = true
+            Command::Check(o) => {
+                if opt(o, "nocheck").is_some() {
+                    merge(&mut self.steady, &vec![("nocheck".to_string(), OptValue::Flag)]);
+                }
+                return;
+            }
+            // the data options of these commands stay in options_ for later commands
+            Command::ShockDecomposition(o, _)
+            | Command::RealtimeShockDecomposition(o, _)
+            | Command::CalibSmoother(o, _) => {
+                merge(
+                    &mut self.estimation,
+                    &o.iter().filter(|(k, _)| DATA_OPTIONS.contains(&k.as_str())).cloned().collect(),
+                );
+                return;
             }
             Command::Forecast(o, _) => {
                 if let Some(OptValue::Num(v)) = opt(o, "conf_sig") {
@@ -304,6 +346,26 @@ impl GlobalOptions {
                 o
             }
             Command::StochSimul(o, _) => o,
+            // `options_.solve_tolf = V;` and the like: the fields `steady(tolf=, tolx=, maxit=,
+            // solve_algo=)` write, read by every later steady-state computation
+            Command::Other(name, o) if name == OPTIONS_ASSIGNMENT => {
+                for (k, v) in o {
+                    let key = match k.as_str() {
+                        "solve_tolf" => "tolf",
+                        "solve_tolx" => "tolx",
+                        "steady.maxit" => "maxit",
+                        "solve_algo" => {
+                            if let OptValue::Num(v) = v {
+                                self.solve_algo = Some(*v);
+                            }
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    merge(&mut self.steady, &vec![(key.to_string(), v.clone())]);
+                }
+                return;
+            }
             // the preprocessor writes options_.solve_algo for the perfect-foresight commands too
             Command::Deterministic(_, o, _) => {
                 if let Some(OptValue::Num(v)) = opt(o, "solve_algo") {
@@ -328,10 +390,37 @@ impl GlobalOptions {
             if let Some(OptValue::Num(v)) = opt(o, "prior_trunc") {
                 self.prior_trunc = Some(*v);
             }
+            // dynare_estimation_init.m: slice requires bounded support (prior_trunc = 0 -> 1e-10)
+            self.slice_prior_trunc_raised = is_slice(o) && self.prior_trunc.unwrap_or(0.0) == 0.0;
+            if self.slice_prior_trunc_raised {
+                self.prior_trunc = Some(1e-10);
+            }
             if let Some(OptValue::Num(v)) = opt(o, "prior_interval") {
                 self.prior_interval = Some(*v);
             }
+            // dynare_estimation_init.m: the slice sampler needs bounded priors
+            let slice = matches!(opt(&self.estimation, "posterior_sampling_method"),
+                Some(OptValue::Str(s)) if s.eq_ignore_ascii_case("slice"));
+            if slice && self.prior_trunc.unwrap_or(0.0) == 0.0 {
+                println!(
+                    "\ndynare_estimation_init: slice requires bounded support. Setting options_.prior_trunc=1e-10."
+                );
+                self.prior_trunc = Some(1e-10);
+                merge(&mut self.estimation, &vec![("prior_trunc".to_string(), OptValue::Num(1e-10))]);
+            }
         }
+    }
+
+    /// `o` plus the data options earlier commands left in `options_` (`datafile` of a first
+    /// `shock_decomposition`, ...), for a command that reads the data without repeating them.
+    pub fn with_data_options(&self, o: &Options) -> Options {
+        let mut out = o.clone();
+        for (k, v) in &self.estimation {
+            if DATA_OPTIONS.contains(&k.as_str()) && opt(o, k).is_none() {
+                out.push((k.clone(), v.clone()));
+            }
+        }
+        out
     }
 
     /// The options an `estimation` command sees: those written by the earlier `estimation`
@@ -362,6 +451,9 @@ pub struct DetShock {
     /// 1-based simulation periods (0 = initial condition, allowed when the model has lags).
     pub periods: Vec<i64>,
     pub value: f64,
+    /// The value when it mentions endogenous / exogenous variables (their `oo_.steady_state` /
+    /// `oo_.exo_steady_state` when the block runs; `value` is then a placeholder).
+    pub expr: Option<Ast>,
     pub kind: DetShockKind,
     // ---- shocks/shock_paths ----
     /// `periods 2023Q1:2023Q4`: the periods are dates (`periods` is then empty); they map to
@@ -488,18 +580,37 @@ impl ModFile {
     /// Runs the blocks written before command `ci` that have not run yet (`next` is the
     /// first block not run); returns them, in file order, for the deterministic state
     /// (`initval` expressions read the current `oo_.steady_state`).
-    pub fn run_state_blocks(&mut self, ci: usize, next: &mut usize) -> Vec<StateBlock> {
+    /// `ss` is `oo_.steady_state` at that point, for the values that mention endogenous variables.
+    pub fn run_state_blocks(&mut self, ci: usize, next: &mut usize, ss: &mut [f64]) -> Result<Vec<StateBlock>> {
         let mut ran = Vec::new();
         while *next < self.state_blocks.len() && self.state_blocks[*next].0 <= ci {
             let b = self.state_blocks[*next].1.clone();
             *next += 1;
-            self.run_state_block(&b);
+            self.run_state_block(&b, ss)?;
             ran.push(b);
         }
-        ran
+        Ok(ran)
     }
 
-    fn run_state_block(&mut self, b: &StateBlock) {
+    /// Evaluates the `shocks(learnt_in=...)` / `endval(learnt_in=...)` values that mention
+    /// endogenous variables and stand before command `ci` (`oo_.steady_state` is `ss`).
+    pub fn resolve_learnt(&mut self, ci: usize, ss: &[f64]) -> Result<()> {
+        let x = self.exo_steady_state();
+        let m = &self.model;
+        for s in self.ep.learnt_shocks.iter_mut().filter(|s| s.pos <= ci) {
+            if let Some(e) = s.expr.take() {
+                s.value = eval_steady(m, &e, ss, &x)?;
+            }
+        }
+        for s in self.ep.learnt_endval.iter_mut().filter(|s| s.pos <= ci) {
+            if let Some(e) = s.expr.take() {
+                s.value = eval_steady(m, &e, ss, &x)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_state_block(&mut self, b: &StateBlock, ss: &mut [f64]) -> Result<()> {
         match b {
             StateBlock::Shocks { overwrite, entries, reset_det, det } => {
                 if *overwrite {
@@ -512,18 +623,22 @@ impl ModFile {
                 if *reset_det {
                     self.det_shocks.clear();
                 }
+                let x = self.exo_steady_state();
                 for e in entries {
                     match *e {
-                        ShockEntry::Var { me, i, v } => {
+                        ShockEntry::Var { me, i, ref v } => {
+                            let v = v.eval(&self.model, ss, &x)?;
                             let m = if me { &mut self.h } else { &mut self.sigma_e };
                             m[(i, i)] = v;
                         }
-                        ShockEntry::Cov { me, i, j, v } => {
+                        ShockEntry::Cov { me, i, j, ref v } => {
+                            let v = v.eval(&self.model, ss, &x)?;
                             let m = if me { &mut self.h } else { &mut self.sigma_e };
                             m[(i, j)] = v;
                             m[(j, i)] = v;
                         }
-                        ShockEntry::Corr { me, i, j, r } => {
+                        ShockEntry::Corr { me, i, j, ref r } => {
+                            let r = r.eval(&self.model, ss, &x)?;
                             let (m, c) = if me {
                                 (&mut self.h, &mut self.corr_h)
                             } else {
@@ -537,9 +652,28 @@ impl ModFile {
                         }
                     }
                 }
-                self.det_shocks.extend(det.iter().cloned());
+                for d in det {
+                    let mut d = d.clone();
+                    if let Some(e) = d.expr.take() {
+                        d.value = eval_steady(&self.model, &e, ss, &x)?;
+                    }
+                    self.det_shocks.push(d);
+                }
             }
-            StateBlock::Initval { endo, exo, .. } => {
+            StateBlock::Initval { endo, exo, sources } => {
+                // oo_.steady_state as the later `shocks` blocks read it
+                if sources.is_empty() {
+                    for &(i, v) in endo {
+                        ss[i] = v;
+                    }
+                }
+                for (name, src) in sources {
+                    let e = self.model.compile_expr(src).map_err(|e| anyhow!("initval: {name} = {src}: {e}"))?;
+                    let v = e.eval(ss, &self.exo_steady_state(), &self.model.params);
+                    if let Some(j) = self.model.endo_index(name) {
+                        ss[j] = v;
+                    }
+                }
                 for &(i, v) in endo {
                     self.initval.retain(|(j, _)| *j != i);
                     self.initval.push((i, v));
@@ -551,6 +685,7 @@ impl ModFile {
             }
             StateBlock::Histval(entries) => self.histval = entries.clone(),
         }
+        Ok(())
     }
 
     /// `oo_.exo_steady_state` as the stochastic commands see it: the exogenous values of the
@@ -570,6 +705,47 @@ impl ModFile {
         let name = &self.model.endo_names[endo];
         self.varobs.iter().position(|v| v == name)
     }
+}
+
+/// A value of `conditional_forecast_paths`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PathValue {
+    Num(f64),
+    /// An expression with endogenous variables (their steady-state values), parameters bound.
+    Steady(Ast),
+}
+
+impl PathValue {
+    /// The value; an expression with endogenous variables reads `ss` (`oo_.steady_state`) and
+    /// `exo` (`oo_.exo_steady_state`).
+    pub fn eval(&self, model: &Model, ss: &[f64], exo: &[f64]) -> Result<f64> {
+        match self {
+            PathValue::Num(x) => Ok(*x),
+            PathValue::Steady(e) => eval_steady(model, e, ss, exo),
+        }
+    }
+
+    /// The value of a constant; 0 for an expression (the placeholder of the file's final state).
+    pub fn num(&self) -> f64 {
+        match self {
+            PathValue::Num(x) => *x,
+            PathValue::Steady(_) => 0.0,
+        }
+    }
+}
+
+/// An expression with parameters bound, endogenous variables (`oo_.steady_state(i)`) and
+/// exogenous variables (`oo_.exo_steady_state(k)`).
+pub fn eval_steady(model: &Model, e: &Ast, ss: &[f64], exo: &[f64]) -> Result<f64> {
+    eval_ast(e, &|n, _, loc| {
+        if let Some(k) = model.endo_index(n) {
+            Ok(ss[k])
+        } else if let Some(k) = model.exo_index(n) {
+            Ok(exo[k])
+        } else {
+            Err(anyhow!("{loc}: unknown variable '{n}'"))
+        }
+    })
 }
 
 /// A command (statement with options) of the .mod file.
@@ -596,7 +772,7 @@ pub enum Command {
     // ---- stream C ----
     /// `conditional_forecast_paths; var v; periods ...; values ...; end;`: per constrained
     /// variable (in block order), its (first period, last period, value) ranges, 1-based.
-    ConditionalForecastPaths(Vec<(String, Vec<(usize, usize, f64)>)>),
+    ConditionalForecastPaths(Vec<(String, Vec<(usize, usize, PathValue)>)>),
     /// `conditional_forecast(options);`
     ConditionalForecast(Options),
     /// `plot_conditional_forecast(periods=) varlist;`
@@ -677,7 +853,8 @@ pub enum PriorShape {
 
 impl PriorShape {
     pub fn from_keyword(s: &str) -> Option<Self> {
-        Some(match s {
+        // Dynare's keywords are case-insensitive (`NORMAL_PDF`, `beta_PDF`)
+        Some(match s.to_ascii_lowercase().as_str() {
             "beta_pdf" => Self::Beta,
             "gamma_pdf" => Self::Gamma,
             "normal_pdf" => Self::Normal,
@@ -727,4 +904,9 @@ pub struct EstimatedParam {
 pub struct EstimatedParamInit {
     pub kind: EstimatedKind,
     pub value: f64,
+}
+
+/// `posterior_sampling_method = 'slice'` on an estimation command.
+pub fn is_slice(o: &Options) -> bool {
+    matches!(opt(o, "posterior_sampling_method"), Some(OptValue::Str(m)) if m.trim_matches(|c| c == '\'' || c == '"') == "slice")
 }

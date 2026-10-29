@@ -151,8 +151,50 @@ pub fn var_list(mf: &ModFile, o: &Options, var_list: &[String]) -> Result<Vec<St
         Some("all_endogenous_variables") => Ok(mf.model.endo_names[..mf.model.orig_endo_nbr].to_vec()),
         Some("all_endogenous_and_auxiliary_variables") => Ok(mf.model.endo_names.clone()),
         Some(_) => Ok(mf.varobs.clone()),
-        None => Ok(var_list.to_vec()),
+        None => {
+            if var_list.is_empty() {
+                print_no_variables_message(mf, o);
+            }
+            Ok(var_list.to_vec())
+        }
     }
+}
+
+/// `check_list_of_variables.m` with an empty list (non-interactive: all the endogenous
+/// variables of the model are used): the message of what will be computed for them.
+fn print_no_variables_message(mf: &ModFile, o: &Options) {
+    println!();
+    println!("You did not declare endogenous variables after the estimation/calib_smoother command.");
+    let mut cas: Vec<&str> = Vec::new();
+    if flag(o, "bayesian_irf") {
+        cas.push("Posterior IRFs");
+    }
+    if flag(o, "moments_varendo") {
+        cas.push(if cas.is_empty() { "Posterior moments" } else { ", posterior moments" });
+    }
+    if flag(o, "smoother") {
+        cas.push(if cas.is_empty() { "Smoothed variables" } else { ", smoothed variables" });
+    }
+    if !steps(o).is_empty() {
+        cas.push(if cas.is_empty() { "k-step ahead filtered variables" } else { ", k-step ahead filtered variables" });
+    }
+    if num(o, "forecast").is_some_and(|f| f > 0.0) {
+        cas.push(if cas.is_empty() { "Forecasts" } else { " and forecasts" });
+    }
+    if cas.is_empty() {
+        return;
+    }
+    let text = format!(
+        "{} will be computed for the {} endogenous variables of your model, this can take a long time ....",
+        cas.concat(),
+        mf.model.orig_endo_nbr
+    );
+    // format_text(str, 10): ten words per line
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for line in words.chunks(10) {
+        println!("{}", line.join(" "));
+    }
+    println!();
 }
 
 fn steps(o: &Options) -> Vec<usize> {
@@ -354,9 +396,17 @@ pub fn initial_conditions(mf: &ModFile, o: &Options) -> Result<usize> {
 }
 
 /// `heteroskedastic_filter` (dynare_estimation_init.m): `M_.heteroskedastic_shocks`
-/// for the sample of `data`, which starts at `first_obs` (1-based, of the original dataset).
-pub fn attach(mf: &ModFile, o: &Options, data: &mut LikelihoodData, first_obs: usize) -> Result<()> {
+/// for the sample of `data`, which starts at `first_obs` (1-based, of the original dataset)
+/// on the date `init` (`dataset_.dates(1)`).
+pub fn attach(
+    mf: &ModFile,
+    o: &Options,
+    data: &mut LikelihoodData,
+    first_obs: usize,
+    init: crate::dates::Date,
+) -> Result<()> {
     data.filter_initial_state = filter_initial_state(mf)?;
+    data.filter_initial_state_expr = filter_initial_state_exprs(mf);
     if flag(o, "heteroskedastic_filter") {
         if flag(o, "analytic_derivation") {
             bail!("estimation option conflict: analytic_derivation isn't available for heteroskedastic_filter");
@@ -367,6 +417,7 @@ pub fn attach(mf: &ModFile, o: &Options, data: &mut LikelihoodData, first_obs: u
             first_obs,
             data.y.ncols(),
             &mf.model.exo_names,
+            init,
         )?);
     }
     // ---- estimation completion: kalman_algo = 5 (likelihood and smoother) ----
@@ -405,7 +456,7 @@ pub fn filter_initial_state(mf: &ModFile) -> Result<Vec<(usize, f64)>> {
     mf.q3
         .filter_initial_state
         .iter()
-        .map(|&(e, lag, v)| {
+        .map(|&(e, lag, v, _)| {
             if lag == 0 {
                 return Ok((e, v));
             }
@@ -422,6 +473,13 @@ pub fn filter_initial_state(mf: &ModFile) -> Result<Vec<(usize, f64)>> {
                 })
         })
         .collect()
+}
+
+/// The `filter_initial_state` expressions, compiled over the parameters
+/// (set_Kalman_starting_values.m evaluates `M_.filter_initial_state{i,2}` with the current
+/// `M_.params`); `None` (the calibrated value is kept) when one does not compile.
+pub fn filter_initial_state_exprs(mf: &ModFile) -> Vec<Option<crate::model::CompiledExpr>> {
+    mf.q3.filter_initial_state.iter().map(|(_, _, _, src)| mf.model.compile_expr(src).ok()).collect()
 }
 
 /// The objectives of the stream that replace `dsge_likelihood.m` (dynare_estimation_1.m's

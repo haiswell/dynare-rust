@@ -1,0 +1,64 @@
+==== Method of Moments Estimation (GMM) ====
+
+Computing data moments. Note that NaN values in the moments (due to leads and lags or missing data) are replaced by the mean of the corresponding moment.
+Initial value of the moment objective function with  1.0 times identity weighting matrix: 990.0867
+
+Time required to compute objective function once: 0.0795 seconds
+
+General method of moments with
+  - uncentered moments (prefilter=0)
+  - optimizer (mode_compute=5): newrat
+  - stochastic simulations with perturbation order: 1
+  - standard errors: numerical derivatives
+  - number of matched moments: 12
+  - number of parameters: 4
+
+Estimation stage 1
+  - diagonal of optimal weighting matrix (Bartlett kernel with 20 lags)
+    and using data-moments as initial estimate of model-moments
+
+Try diagonal Hessian
+
+Stage 1 Iteration 1: Value of minimized moment distance objective function: 0.2058726637.
+Estimation stage 2
+  - optimal weighting matrix (Bartlett kernel with 20 lags)
+    and using previous stage estimate of model-moments
+
+Try diagonal Hessian
+
+Stage 2 Iteration 1: Value of minimized moment distance objective function: 0.0139789611.
+
+Computing standard errors using numerical derivatives of moments
+
+RESULTS FROM GMM ESTIMATION
+parameters
+            Estimate    s.d. t-stat
+
+rho           0.9280  0.0071 131.5186
+psi           2.0205  0.0133 151.9372
+
+standard deviation of shocks
+            Estimate    s.d. t-stat
+
+ez            0.0094  0.0004 22.4927
+eg            0.0053  0.0004 12.2162
+
+Value of J-test statistic: 5.591584
+p-value of J-test statistic: 0.692873
+
+Comparison of matched data moments and model moments (GMM)
+Moment                  Data         Model
+E[yo]             -0.6705090    -0.3147610
+E[co]             -0.4960917    -0.3970889
+E[io]             -1.0435797    -0.3147610
+E[yo*yo]          11.8209991    10.8664743
+E[co*co]           4.5772499     4.6050436
+E[io*io]         115.0865683   100.1136468
+E[yo*co]           6.1569554     5.7217805
+E[yo*io]          34.1724556    30.2339794
+E[co*io]          16.3933337    14.0362356
+E[yo*yo(-1)]      11.1524170    10.1642392
+E[co*co(-1)]       4.5104911     4.5527330
+E[io*io(-1)]     107.1759724    90.6255410
+
+==== Method of Moments Estimation (GMM) Completed ====

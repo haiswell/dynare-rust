@@ -1,0 +1,10 @@
+var y c;
+varexo e u;
+parameters a b;
+a=0.9; b=0.5;
+model;
+y = a*y(-1) + e;
+c = b*c(-1) + u;
+end;
+shocks; var e=1; var u=1; end;
+stoch_simul(order=1, irf=0);

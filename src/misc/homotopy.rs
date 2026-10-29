@@ -203,7 +203,7 @@ fn homotopy(
 /// the deterministic state when there is one (it holds `oo_`), else on the `initval` values.
 /// `M_.params` (both copies), `oo_.steady_state` and `oo_.exo_steady_state` are updated.
 pub fn before_steady(mf: &mut ModFile, det: Option<&mut DetState>, o: &Options) -> Result<()> {
-    if mf.homotopy_setup.is_empty() {
+    if !mf.homotopy_block {
         bail!("STEADY: a homotopy_setup block must be present when the homotopy_mode option is specified");
     }
     let num = |k: &str| match opt(o, k) {

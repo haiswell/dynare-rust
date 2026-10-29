@@ -19,7 +19,10 @@ pub(crate) use init::stein_quasi_triangular; // used by analysis::moments (lyapu
 pub use init::{
     compute_pinf_pstar, compute_pinf_pstar_with_schur, lyapunov_solver, lyapunov_symm, try_compute_pinf_pstar,
 };
-pub use smoother::{SmootherOutput, SmootherRequest, StepAhead, smoother, smoother_heteroskedastic, smoother_request};
+pub use smoother::{
+    QUIET as SMOOTHER_QUIET, SmootherOutput, SmootherRequest, StepAhead, smoother, smoother_heteroskedastic,
+    smoother_request,
+};
 pub mod hetero; // heteroskedastic_filter
 pub mod lyapunov; // lyapunov = fixed_point, doubling, square_root_solver
 pub mod skewed; // pruned skewed Kalman filter (kalman_algo = 5)

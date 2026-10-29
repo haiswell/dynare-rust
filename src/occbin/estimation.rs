@@ -115,6 +115,10 @@ impl Default for FilterOptions {
 
 /// One non-`simul_` option of `occbin_setup`, as `+occbin/setup.m` forwards it; false if
 /// setup.m does not forward it (the preprocessor accepts more options than setup.m uses).
+/// Among them are `particle_filtering`, `filter_init_periods_using_particles` and every
+/// `filter_particle_*` option: `options_.occbin.filter.particle` keeps its defaults, so the
+/// particle path of the PKF (`occbin.ppf.engine`) is never entered in Dynare 7.2
+/// (tests/occbin_particle_options.rs).
 pub fn setup_option(s: &mut Session, k: &str, v: &OptValue) -> Result<bool> {
     let l = &mut s.likelihood;
     let m = &mut s.smoother;
@@ -136,6 +140,28 @@ pub fn setup_option(s: &mut Session, k: &str, v: &OptValue) -> Result<bool> {
         "smoother_inversion_filter" => m.inversion_filter = boolean(v),
         "smoother_piecewise_kalman_filter" => m.inversion_filter = !boolean(v),
         "filter_use_relaxation" => s.filter.use_relaxation = boolean(v),
+        // The preprocessor writes these into options_occbin_, but +occbin/setup.m does not
+        // copy them to options_.occbin, so DSGE_smoother keeps its defaults (checked against
+        // Dynare 7.2: reference/occbin_est/dump_occbin_setup_opts.m)
+        "smoother_max_check_ahead_periods"
+        | "smoother_plot"
+        | "smoother_first_period_occbin_update"
+        | "smoother_max_number_of_iterations" => {
+            let _ = num(v);
+            println!("WARNING: occbin_setup: option `{k}` is not forwarded by Dynare 7.2's occbin.setup; ignored.");
+        }
+        // occbin.posterior_importance_sampling (reweighting MCMC draws with another filter's
+        // likelihood) is never called by Dynare 7.2 and setup.m does not forward these options
+        "posterior_importance_sampling"
+        | "posterior_importance_sampling_filter"
+        | "posterior_importance_sampling_orig_filter"
+        | "posterior_importance_sampling_sub_draws"
+        | "posterior_importance_sampling_orig_dname"
+        | "posterior_importance_sampling_orig_fname" => {
+            println!(
+                "WARNING: occbin_setup: option `{k}` has no effect in Dynare 7.2 (occbin.setup does not forward it and occbin.posterior_importance_sampling is never called); ignored."
+            );
+        }
         _ => {
             let _ = num(v);
             return Ok(false);
@@ -370,7 +396,7 @@ impl OccbinPosterior<'_> {
         }
         // initial condition of the Kalman filter: a = set_Kalman_starting_values(...),
         // a_0_given_tm1 = T*a, except with lik_init = 2 (first_period_occbin_update = 1)
-        let a = kalman_starting_values(&res, idx, &self.data.filter_initial_state);
+        let a = kalman_starting_values(&res, idx, &self.data.filter_initial_state_at(&res.params));
         let (a_0_given_tm1, pstar) = match opts.lik_init {
             1 => {
                 let p = lyapunov_solver_opts(&res.t, &res.r, &res.q, opts)

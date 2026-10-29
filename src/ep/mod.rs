@@ -449,16 +449,19 @@ pub fn extended_path(m: &EpModel, opts: &EpOptions, init: &[f64], shocks: &Mat) 
         );
     }
     let h = if order > 0 && o.hybrid_order > 1 {
-        if o.hybrid_order != 2 {
-            bail!(
-                "extended_path: hybrid={} is not supported (only the second-order constant, hybrid=2)",
-                o.hybrid_order
-            );
-        }
-        let dr2 =
-            crate::solver::korder::solve_model(model, m.steady_state, m.params, m.sigma_e, 2, Default::default())?;
-        let iov = &dr2.first.inv_order_var;
-        Some((0..ny).map(|v| 0.5 * dr2.ghs2[(iov[v], 0)]).collect::<Vec<f64>>())
+        // extended_path_initialization: resol at order = hybrid_order; the correction is
+        // 0.5*ghs2 at order 2, the constant g_0 of the k-order rule above
+        let drh = crate::solver::korder::solve_model(
+            model,
+            m.steady_state,
+            m.params,
+            m.sigma_e,
+            o.hybrid_order,
+            Default::default(),
+        )?;
+        let iov = &drh.first.inv_order_var;
+        let g0 = if o.hybrid_order == 2 { drh.ghs2.clone() * 0.5 } else { drh.g_k(0) };
+        Some((0..ny).map(|v| g0[(iov[v], 0)]).collect::<Vec<f64>>())
     } else if order > 0 && o.hybrid_order == 1 {
         Some(vec![0.0; ny])
     } else {
@@ -502,6 +505,12 @@ pub fn extended_path(m: &EpModel, opts: &EpOptions, init: &[f64], shocks: &Mat) 
         } else {
             Mat::from_fn(ny, periods + 2, |v, c| if c == 0 { paths[(v, t - 1)] } else { ss[v] })
         };
+        if !maximum_lead && !o.lmmcp {
+            // sim1_purely_backward: the guess is the previous period's value
+            for v in 0..ny {
+                endo[(v, 1)] = endo[(v, 0)];
+            }
+        }
         let (mut ok, it) = if order == 0 {
             solver.pf_core(&mut endo, &spfm)
         } else {

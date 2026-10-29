@@ -168,7 +168,6 @@ pub fn run(
         return Ok(());
     }
     let draws = crate::analysis::posterior::posterior_subsample(chains, b, seed)?;
-    println!("Estimation::mcmc: Posterior (bvar-dsge) IRFs...");
     let stock = posterior_irf_draws(post, &draws, periods, seed)?;
     let shocks = crate::analysis::irf::irf_shock_indices(&model.exo_names, o.irf_shocks.as_deref())?;
     std::fs::create_dir_all(out_dir)?;
@@ -197,10 +196,10 @@ pub fn run(
         }
         std::fs::write(out_dir.join(format!("{fname}_Bayesian_IRF_BVAR-DSGE_{}.csv", model.exo_names[s])), w)?;
     }
-    println!(
-        "Estimation::mcmc: Posterior (bvar-dsge) IRFs, done! ({b} draws, {:.1}s; {fname}_Bayesian_IRF_BVAR-DSGE_<shock>.csv in {})",
+    crate::progress::note(format!(
+        "Posterior (bvar-dsge) IRFs: {b} draws, {:.1}s; {fname}_Bayesian_IRF_BVAR-DSGE_<shock>.csv in {}",
         t0.elapsed().as_secs_f64(),
         out_dir.display()
-    );
+    ));
     Ok(())
 }

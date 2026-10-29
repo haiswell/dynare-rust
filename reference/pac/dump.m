@@ -1,5 +1,5 @@
 % Run from a private copy of reference/pac, ONE fresh MATLAB session per model:
-%   for m in pc1 pc2 pc3 pc4; do PAC_NAME=$m /Applications/MATLAB_R2025b.app/bin/matlab -batch "run('dump.m')" > log_$m.txt 2>&1; done
+%   for m in pc1 pc2 pc3 pc4 pc5 pc6 pc7 pc8 pc9; do PAC_NAME=$m /Applications/MATLAB_R2025b.app/bin/matlab -batch "run('dump.m')" > log_$m.txt 2>&1; done
 ver = getenv('DYNARE_VERSION'); if isempty(ver), ver = '7.2'; end % DYNARE_VERSION=7.1 for the 7.1 baseline
 droot = getenv('DYNARE_ROOT'); if isempty(droot), droot = sprintf('/Applications/Dynare/%s-arm64', ver); end;
 addpath(fullfile(droot, 'matlab'));
@@ -19,7 +19,14 @@ if isfield(oo_, 'dr') && isfield(oo_.dr, 'ghx')
     r.state_var = M_.state_var;
     r.irfs = oo_.irfs;
 end
-if ~strcmp(name, 'pc4')
+% pc6: the share of optimizing agents (lambda) is estimated too; pc8, pc9: additive terms
+% (pc8: the share too, initial values of tests/pac/trend-component-25 and -22)
+share = {};
+if strcmp(name, 'pc6'), share = {'lambda'}; end
+extra = {};
+if strcmp(name, 'pc8'), extra = {'c_z_s', .9, 'c_z_dx2', .1, 'lambda', .7}; end
+if strcmp(name, 'pc9'), extra = {'c_z_dx2', .5}; end
+if ~ismember(name, {'pc4', 'pc7'})
     rng(1234);
     T = 600;
     initialconditions = dseries(zeros(10, M_.endo_nbr+M_.exo_nbr), dates('2000Q1'), vertcat(M_.endo_names, M_.exo_names));
@@ -37,6 +44,8 @@ if ~strcmp(name, 'pc4')
     eparams.e_c_m = .9;
     eparams.c_z_1 = .5;
     eparams.c_z_2 = .2;
+    if ~isempty(share), eparams.(share{1}) = .5; end
+    for k = 1:2:numel(extra), eparams.(extra{k}) = extra{k+1}; end
     edata = TrueData;
     edata.ez = dseries(NaN, dates('2000Q1'));
     params_before = M_.params;
@@ -50,6 +59,8 @@ if ~strcmp(name, 'pc4')
     eparams.e_c_m = .9;
     eparams.c_z_1 = .5;
     eparams.c_z_2 = .2;
+    if ~isempty(share), eparams.(share{1}) = .5; end
+    for k = 1:2:numel(extra), eparams.(extra{k}) = extra{k+1}; end
     try  % iterative_ols does not support composite targets (no h_param_indices)
         pac.estimate.iterative_ols('zpac', eparams, edata, rg);
         p = oo_.pac.pacman;

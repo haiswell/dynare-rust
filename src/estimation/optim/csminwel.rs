@@ -29,8 +29,11 @@ pub struct CsminwelOptions {
     pub verbose: bool,
     /// Evaluate gradient coordinates in parallel.
     pub parallel: bool,
-    /// Seed of the `rand` used to perturb the search direction on cliffs.
-    pub seed: u64,
+    /// The `rand` that perturbs the search direction on cliffs: `None` draws from MATLAB's
+    /// global stream (mt19937ar, [`crate::gsa::rng::with_global`]), which carries over between
+    /// calls as in Dynare; `Some(seed)` a private ChaCha8 stream (TaRB blocks inside MCMC
+    /// chains, whose draws cannot follow MATLAB's anyway).
+    pub seed: Option<u64>,
     /// ---- estimation completion ---- `analytic_derivation` or the method of moments'
     /// `analytic_jacobian` (`analytic_grad = 1`): the gradient is the objective's analytic one
     /// (`penalty_objective_function`'s third output).
@@ -47,8 +50,8 @@ impl Default for CsminwelOptions {
             h0: None,
             h0_scalar: None,
             verbose: true,
+            seed: None,
             parallel: true,
-            seed: 0,
             analytic: false,
         }
     }
@@ -72,9 +75,9 @@ fn message(rc: i32) -> &'static str {
 /// `dynare_minimize_objective.m` for `mode_compute = 4`. The returned
 /// `hessian` is `inv(H)` (as Dynare's `hessian_mat`), `inv_hessian` is `H`.
 pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> OptimResult {
+    let mut rng = opts.seed.map(ChaCha8Rng::seed_from_u64);
     let nx = x0.len();
     let verbose = opts.verbose;
-    let mut rng = ChaCha8Rng::seed_from_u64(opts.seed);
     let crit = opts.crit;
     let grad = |f0: f64, x: &[f64], penalty: f64| {
         numgrad(obj, opts.gradient_method, f0, x, penalty, opts.gradient_epsilon, opts.parallel)
@@ -168,8 +171,11 @@ pub fn csminwel(obj: &dyn Objective, x0: &[f64], opts: &CsminwelOptions) -> Opti
                     Some(s) => Mat::from_element(nx, nx, s),
                     None => h.clone(),
                 };
-                for i in 0..nx {
-                    let r: f64 = rng.r#gen();
+                let r: Vec<f64> = match rng.as_mut() {
+                    Some(rng) => (0..nx).map(|_| rng.r#gen()).collect(),
+                    None => crate::gsa::rng::with_global(|g| g.rand_vec(nx)),
+                };
+                for (i, r) in r.into_iter().enumerate() {
                     hcliff[(i, i)] += h[(i, i)] * r;
                 }
                 if verbose {

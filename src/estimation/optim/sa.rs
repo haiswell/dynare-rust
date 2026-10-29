@@ -42,6 +42,8 @@ pub struct SaOptions {
     pub initial_step_length: f64,
     pub seed: u64,
     pub stream: u64,
+    /// Parameter names for the start table printed by `dynare_minimize_objective.m`.
+    pub names: Vec<String>,
 }
 
 impl Default for SaOptions {
@@ -60,6 +62,7 @@ impl Default for SaOptions {
             initial_step_length: 1.0,
             seed: 0,
             stream: 0,
+            names: Vec::new(),
         }
     }
 }
@@ -121,6 +124,12 @@ pub fn simulated_annealing(
             "Initial step length(vm): {:4.3}; step_length_c: {:4.3}",
             opts.initial_step_length, opts.step_length_c
         );
+        if opts.names.len() == n {
+            println!("{:<20}  {:<6}    {:<6}    {:<6}", "Name:", "LB;", "Start;", "UB;");
+            for i in 0..n {
+                println!("{:<20}  {:6.4};   {:6.4};  {:6.4};", opts.names[i], lb[i], x0[i], ub[i]);
+            }
+        }
     }
     if t <= 0.0 {
         let m = "The initial temperature is not positive. Reset the variable t";
@@ -230,14 +239,23 @@ pub fn simulated_annealing(
         if opts.verbosity >= 1 {
             let label = |a: &str, b: &str| if opts.maximizer_indicator { a.to_string() } else { b.to_string() };
             println!("\nIntermediate results before next temperature reduction");
-            println!("current temperature         {t}");
-            println!("{}   {}", label("Max function value so far", "Min function value so far"), sign * fopt);
+            println!("current temperature         {}", num2str(&[t]));
+            println!(
+                "{}   {}",
+                label("Max function value so far", "Min function value so far"),
+                num2str(&[sign * fopt])
+            );
             println!("Total moves                 {}", nup + ndown + nrej);
             println!("{}{nup}", label("Uphill                      ", "Downhill                    "));
             println!("{}{ndown}", label("Accepted downhill           ", "Accepted uphill             "));
             println!("{}{nrej}", label("Rejected downhill           ", "Rejected uphill             "));
             println!("Trials out of bounds        {lnobds}");
             println!("{}{nnew}", label("New maxima this temperature ", "New minima this temperature "));
+            let half = (xopt.len() as f64 / 2.0).round() as usize;
+            println!("Current optimal x1           {}", num2str(&xopt[..half]));
+            println!("Current optimal x2           {}", num2str(&xopt[half..]));
+            println!("Strength(vm)                {}", num2str(&vm));
+            println!();
         }
         // Termination criteria.
         let mut quit = false;
@@ -262,4 +280,25 @@ pub fn simulated_annealing(
         f = fopt;
         x.copy_from_slice(&xopt);
     }
+}
+
+/// MATLAB `num2str` of a real row vector: integers as `%{w}d` columns, otherwise
+/// `%{ndgt+7+any(x<0)}.{ndgt}g` with `ndgt = max(floor(log10(max|x|)) + 5, 5)`, blanks trimmed.
+fn num2str(x: &[f64]) -> String {
+    use crate::analysis::table::fmt_g;
+    if x.is_empty() {
+        return String::new();
+    }
+    let neg = x.iter().any(|&v| v < 0.0) as usize;
+    if x.iter().all(|v| v.is_finite() && v.fract() == 0.0) {
+        let mx = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let ndgt = if mx == 0.0 { 1 } else { (mx.log10().floor() as usize) + 1 };
+        let w = ndgt + 2 + neg;
+        return x.iter().map(|v| format!("{:>w$}", *v as i64)).collect::<String>().trim().to_string();
+    }
+    let mx = x.iter().filter(|v| !v.is_infinite()).fold(0.0f64, |m, v| m.max(v.abs()));
+    let mut ndgt = if mx == 0.0 || !mx.is_finite() { 0 } else { mx.log10().floor() as i64 };
+    ndgt = (ndgt + 5).clamp(5, 16);
+    let w = ndgt as usize + 7 + neg;
+    x.iter().map(|&v| fmt_g(v, w, ndgt as usize)).collect::<String>().trim().to_string()
 }

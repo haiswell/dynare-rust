@@ -425,7 +425,7 @@ impl DetState {
             initial_exo_steady_state: None,
             endo_simul: None,
             exo_simul: None,
-            steady_opts: SteadyOptions { linear: m.linear, ..Default::default() },
+            steady_opts: SteadyOptions { linear: m.linear, randomize_initial_guess: true, ..Default::default() },
             fsolve_overrides: Vec::new(),
             steady_non_zero: false,
             eq_names: Vec::new(),
@@ -516,10 +516,20 @@ impl DetState {
             Err(e) => {
                 if !noprint {
                     // steady.m: display_static_residuals (with options_.steady.non_zero)
-                    let r = steady::static_residuals(model, &self.steady_state, &self.exo_steady_state, &self.params);
+                    let mut r =
+                        steady::static_residuals(model, &self.steady_state, &self.exo_steady_state, &self.params);
+                    let disp =
+                        crate::misc::mcp_residuals(model, &self.steady_state, &self.params, sopts.solve_algo, &mut r);
                     print!(
                         "{}",
-                        crate::misc::residuals_text(model, &r, &self.eq_names, sopts.tolf, self.steady_non_zero)
+                        crate::misc::residuals_text_disp(
+                            model,
+                            &r,
+                            &self.eq_names,
+                            sopts.tolf,
+                            self.steady_non_zero,
+                            disp
+                        )
                     );
                 }
                 bail!("steady: {e}")
@@ -1220,12 +1230,12 @@ impl DetState {
         if ssa > 10 {
             bail!("PERFECT_FORESIGHT_SOLVER: stack_solve_algo must be between 0 and 10");
         }
-        if !block && matches!(ssa, 4 | 5) {
+        if !block && !model.bytecode && matches!(ssa, 4 | 5) {
             bail!(
                 "PERFECT_FORESIGHT_SOLVER: you must use stack_solve_algo={{0,1,2,3,6,7,8,9,10}} when not using block nor bytecode option"
             );
         }
-        if block && ssa == 5 {
+        if block && !model.bytecode && ssa == 5 {
             bail!("PERFECT_FORESIGHT_SOLVER: you can't use stack_solve_algo = 5 without bytecode option");
         }
         let ncols = self.maximum_lag + periods + self.maximum_lead;
@@ -1605,6 +1615,15 @@ impl DetState {
         if let Some(bs) = block {
             return Ok(block_solve::solve_block_decomposed(model, bs, o, endo, exo, &params, self.maximum_lag));
         }
+        // ---- model(bytecode) without block: bytecode('dynamic', ...), the MEX's Newton iterations
+        // on the stacked model with a sparse Gaussian elimination, i.e. those of sim1 (the MEX does
+        // not take the linear shortcut)
+        if model.bytecode && !matches!(stack, 1 | 6) {
+            if matches!(stack, 8..=10) {
+                bail!("perfect_foresight_solver: bytecode is not compatible with stack_solve_algo={stack}");
+            }
+            return Ok(sim1(model, o, endo, exo, &params, self.maximum_lag));
+        }
         // ---- stream EP: perfect_foresight_controlled_paths (sim1 / sim1_linear / sim1_lbj /
         // solve_stacked_problem with a controlled_paths_by_period)
         if let Some(cp) = cp {
@@ -1708,41 +1727,106 @@ impl DetState {
         Ok(())
     }
 
-    /// `rplot.m` (rplottype 0: all variables in one panel), as a `graphics::Figure`.
+    /// `rplot.m` as `graphics::Figure`s: `options_.rplottype` 0 (all variables in one panel,
+    /// default), 1 (one figure per variable) or 2 (subplots with the steady state in red).
     fn rplot(&self, model: &Model, o: &Options, vars: &[String], dir: &Path, fname: &str) -> Result<()> {
         let e = self.endo_simul.as_ref().ok_or_else(|| anyhow!("rplot: oo_.endo_simul is empty."))?;
         let ml = self.maximum_lag as i64;
         let first = (ml - 1).max(0) as usize; // max(1, maximum_lag), 0-based
         let xs: Vec<f64> = (first..e.ncols()).map(|c| (c as i64 + 1 - ml) as f64).collect();
-        let mut panel = Panel {
-            title: if vars.len() == 1 { format!("Plot of {}", vars[0]) } else { format!("Plot of {}", vars.join(" ")) },
-            x_label: Some("Periods".into()),
-            legend: vars.len() > 1,
-            ..Default::default()
-        };
-        for (k, v) in vars.iter().enumerate() {
-            let y: Vec<f64> = if let Some(j) = model.endo_index(v) {
-                (first..e.ncols()).map(|c| e[(j, c)]).collect()
+        // (values, steady state) of each variable
+        let mut ys: Vec<(Vec<f64>, f64)> = Vec::new();
+        for v in vars {
+            ys.push(if let Some(j) = model.endo_index(v) {
+                ((first..e.ncols()).map(|c| e[(j, c)]).collect(), self.steady_state.get(j).copied().unwrap_or(0.0))
             } else if let (Some(kx), Some(x)) = (model.exo_index(v), &self.exo_simul) {
-                (first..x.nrows()).map(|r| x[(r, kx)]).collect()
+                (
+                    (first..x.nrows()).map(|r| x[(r, kx)]).collect(),
+                    self.exo_steady_state.get(kx).copied().unwrap_or(0.0),
+                )
             } else {
                 bail!("rplot: One of the variables specified does not exist");
-            };
-            panel.series.push(Series::Line {
-                x: xs.clone(),
-                y,
-                color: Color::Palette(k),
-                style: LineStyle::Solid,
-                width: 1.0,
-                label: Some(v.clone()),
             });
         }
-        let fig = Figure {
-            name: format!("SimulatedTrajectory_{}", vars.first().map(String::as_str).unwrap_or("")),
-            title: "Simulated Trajectory".into(),
-            rows: 1,
-            cols: 1,
-            panels: vec![panel],
+        let line = |k: usize, y: &[f64], v: &str| Series::Line {
+            x: xs.clone(),
+            y: y.to_vec(),
+            color: Color::Palette(k),
+            style: LineStyle::Solid,
+            width: 1.0,
+            label: Some(v.to_string()),
+        };
+        let panel_of = |title: String, series: Vec<Series>, legend: bool| Panel {
+            title,
+            x_label: Some("Periods".into()),
+            legend,
+            series,
+            ..Default::default()
+        };
+        let rplottype = match opt(o, "rplottype") {
+            Some(OptValue::Num(v)) => *v as i64,
+            _ => 0,
+        };
+        let name_of = |v: &str| format!("SimulatedTrajectory_{v}");
+        let first_var = vars.first().map(String::as_str).unwrap_or("");
+        let figs: Vec<Figure> = match rplottype {
+            1 => vars
+                .iter()
+                .zip(&ys)
+                .map(|(v, (y, _))| Figure {
+                    name: name_of(v),
+                    title: "Simulated Trajectory".into(),
+                    rows: 1,
+                    cols: 1,
+                    panels: vec![panel_of(format!("Plot of {v}"), vec![line(0, y, v)], false)],
+                })
+                .collect(),
+            2 => {
+                let n = vars.len();
+                let nl = (n / 4).max(1);
+                let nc = n.div_ceil(nl);
+                let panels = vars
+                    .iter()
+                    .zip(&ys)
+                    .map(|(v, (y, ss))| {
+                        let mut p = panel_of(
+                            format!("Plot of {v}"),
+                            vec![
+                                line(0, y, v),
+                                Series::Line {
+                                    x: xs.clone(),
+                                    y: vec![*ss; xs.len()],
+                                    color: Color::Red,
+                                    style: LineStyle::Dotted,
+                                    width: 1.0,
+                                    label: None,
+                                },
+                            ],
+                            false,
+                        );
+                        p.y_label = Some(v.clone());
+                        p
+                    })
+                    .collect();
+                vec![Figure {
+                    name: name_of(first_var),
+                    title: "Simulated Trajectory".into(),
+                    rows: nl,
+                    cols: nc,
+                    panels,
+                }]
+            }
+            _ => {
+                let series = vars.iter().zip(&ys).enumerate().map(|(k, (v, (y, _)))| line(k, y, v)).collect();
+                let title = format!("Plot of {}", vars.join(" "));
+                vec![Figure {
+                    name: name_of(first_var),
+                    title: "Simulated Trajectory".into(),
+                    rows: 1,
+                    cols: 1,
+                    panels: vec![panel_of(title, series, vars.len() > 1)],
+                }]
+            }
         };
         let formats = match opt(o, "graph_format") {
             Some(OptValue::Str(s)) => GraphFormat::parse(s).into_iter().collect(),
@@ -1756,7 +1840,9 @@ impl DetState {
             formats,
             dir: graphics::graph_dir(dir, fname),
         };
-        graphics::save(&fig, fname, &gopts)?;
+        for fig in &figs {
+            graphics::save(fig, fname, &gopts)?;
+        }
         Ok(())
     }
 }

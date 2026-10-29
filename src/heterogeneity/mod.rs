@@ -28,6 +28,7 @@ pub mod rouwenhorst;
 pub mod simulate;
 pub mod solve;
 pub mod steady;
+pub mod tex;
 pub mod time_iteration;
 
 pub use check::{CheckOptions, Indices, Sizes, SteadyStateData, SteadyStateInput, check_steady_state_input};

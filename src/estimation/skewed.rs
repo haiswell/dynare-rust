@@ -238,10 +238,11 @@ impl SkewedPosterior<'_> {
         // restricted state space, written into the unrestricted vector
         let mut a0 = Vector::zeros(mm);
         if !self.data.filter_initial_state.is_empty() {
+            let fis = self.data.filter_initial_state_at(&res.params);
             let idx = &self.dsge.ss_index;
             for &pos in &idx.restrict_columns {
                 let endo = res.dr.order_var[idx.restrict_var_list[pos]];
-                if let Some(v) = initial_value(self.dsge, &res, &self.data.filter_initial_state, endo) {
+                if let Some(v) = initial_value(self.dsge, &res, &fis, endo) {
                     a0[pos] = v;
                 }
             }
@@ -330,9 +331,10 @@ pub fn smoother(
     };
     let mm = t.nrows();
     let mut a0 = Vector::zeros(mm);
+    let fis = data.filter_initial_state_at(&res.params);
     for pos in res.dr.nstatic..res.dr.nstatic + res.dr.nspred {
         // set_Kalman_smoother_starting_values: dr.restrict_columns of the full state space
-        if let Some(v) = initial_value(dsge, res, &data.filter_initial_state, res.dr.order_var[pos]) {
+        if let Some(v) = initial_value(dsge, res, &fis, res.dr.order_var[pos]) {
             a0[pos] = v;
         }
     }

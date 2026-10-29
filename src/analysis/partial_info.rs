@@ -600,19 +600,7 @@ pub fn stoch_simul_pi(
     point: Option<&[f64]>,
 ) -> Result<Option<StochSimulResults>> {
     let model = &mf.model;
-    if model.n_exo() == 0 {
-        bail!(
-            "stoch_simul:: does not support having no varexo in the model. As a workaround you could define a dummy exogenous variable."
-        );
-    }
-    if o.order != 1 && !model.linear {
-        if model.dynamic_derivatives(2).hessian_eq_zero() {
-            println!("Warning: stoch_simul: using order = 1 because Hessian is equal to zero");
-        } else {
-            println!("Warning: stoch_simul:: forcing order=1 since you are using partial_information");
-        }
-    }
-    let ivar = super::var_indices(model, var_list)?;
+    stoch_simul_pi_prologue(model, o)?;
     // PCL_resol: the steady state, then dr1_PI
     let (ys, params, sigma_e) = match point {
         None => (super::calibrated_steady_state(mf, &model.params)?, model.params.clone(), mf.sigma_e.clone()),
@@ -627,6 +615,39 @@ pub fn stoch_simul_pi(
             }
         }
     };
+    stoch_simul_pi_at(mf, o, var_list, ctx, ys, params, sigma_e)
+}
+
+/// The checks of `stoch_simul.m` that come before `PCL_resol.m` (order forced to 1).
+pub fn stoch_simul_pi_prologue(model: &crate::model::Model, o: &StochSimulOptions) -> Result<()> {
+    if model.n_exo() == 0 {
+        bail!(
+            "stoch_simul:: does not support having no varexo in the model. As a workaround you could define a dummy exogenous variable."
+        );
+    }
+    if o.order != 1 && !model.linear {
+        if model.dynamic_derivatives(2).hessian_eq_zero() {
+            println!("Warning: stoch_simul: using order = 1 because Hessian is equal to zero");
+        } else {
+            println!("Warning: stoch_simul:: forcing order=1 since you are using partial_information");
+        }
+    }
+    Ok(())
+}
+
+/// [`stoch_simul_pi`] after `PCL_resol.m`'s `evaluate_steady_state`, at the steady state `ys`
+/// and parameters `params` it returned (a Ramsey model's come from `dyn_ramsey_static.m`).
+pub fn stoch_simul_pi_at(
+    mf: &ModFile,
+    o: &StochSimulOptions,
+    var_list: &[String],
+    ctx: &OutputContext,
+    ys: Vec<f64>,
+    params: Vec<f64>,
+    sigma_e: Mat,
+) -> Result<Option<StochSimulResults>> {
+    let model = &mf.model;
+    let ivar = super::var_indices(model, var_list)?;
     let pi = match dr1_pi(model, &ys, &params, o)? {
         Ok(p) => p,
         Err(e) => {
@@ -741,7 +762,7 @@ pub fn stoch_simul_pi(
             res.irfs.push(irf::ShockIrf { shock: i, y: yv });
         }
     }
-    write_json(model, &res, moments.as_ref(), ctx)?;
+    write_json(model, &pi, &res, moments.as_ref(), ctx)?;
     if o.spectral_density {
         // UnivariateSpectralDensity.m reads oo_.dr.order_var, which dr1_PI does not set
         bail!("Unrecognized field name \"order_var\".");
@@ -752,13 +773,16 @@ pub fn stoch_simul_pi(
 /// `<out_dir>/<fname>_stoch_simul.json` of a partial-information run.
 fn write_json(
     model: &crate::model::Model,
+    pi: &PiSolution,
     r: &StochSimulResults,
     m: Option<&PclMoments>,
     ctx: &OutputContext,
 ) -> Result<()> {
     let names: Vec<&String> = r.ivar.iter().map(|&i| &model.endo_names[i]).collect();
     let m2v = |m: &Mat| -> Vec<Vec<f64>> { (0..m.nrows()).map(|i| m.row(i).iter().copied().collect()).collect() };
-    let mut j = json!({ "var_list": names, "exo_names": model.exo_names, "partial_information": true });
+    // dr1_PI.m: oo_.dr.ghx = G1pi, oo_.dr.ghu = impact (the PCL state space, not Dynare's dr)
+    let dr = json!({ "ghx": m2v(&pi.ghx), "ghu": m2v(&pi.ghu) });
+    let mut j = json!({ "var_list": names, "exo_names": model.exo_names, "partial_information": true, "dr": dr });
     if !r.irfs.is_empty() {
         let mut irfs = serde_json::Map::new();
         for s in &r.irfs {

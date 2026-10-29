@@ -36,9 +36,11 @@ pub struct Q4Decl {
 pub struct Session {}
 
 impl Session {
-    /// Start of a run: clears Dynare's global `options_.dataset` / `options_.initial_period`.
+    /// Start of a run: clears Dynare's global `options_.dataset` / `options_.initial_period`
+    /// and installs the default global random stream (`set_dynare_seed('default')`).
     pub fn start() -> Session {
         crate::dataset::reset();
+        crate::gsa::rng::reset_global(0);
         Session {}
     }
 }

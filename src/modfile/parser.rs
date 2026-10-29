@@ -6,7 +6,7 @@ use super::lexer::{Loc, Tok, Token};
 use super::macro_proc::SrcLine;
 use super::{
     Command, DetShock, DetShockKind, EstimatedKind, EstimatedParam, EstimatedParamInit, ModFile, OptValue, Options,
-    OriginalModel, PolicyDecl, PriorShape, RAW_ARGS_KEY, ShockEntry, StateBlock, SymbolLabels, lexer, opt,
+    OriginalModel, PathValue, PolicyDecl, PriorShape, RAW_ARGS_KEY, ShockEntry, StateBlock, SymbolLabels, lexer, opt,
 };
 use crate::linalg::Mat;
 use crate::model::expr::{BinaryOp, Dag, NodeId, UnaryOp};
@@ -22,6 +22,8 @@ pub use q1::SET_SHOCK_STDERR;
 #[path = "parser_shocks.rs"]
 mod shk;
 // ---- stream X: misc statements (parser_x.rs) ----
+#[path = "parser_matlab.rs"]
+mod ml;
 #[path = "parser_x.rs"]
 mod x;
 pub use x::{MATLAB_STATEMENT, OPTIONS_ASSIGNMENT, SET_PARAM};
@@ -237,6 +239,9 @@ struct Cursor<'a> {
     depth: usize,
     /// inside a `model` block: `pow` / `power` are not Dynare functions there
     in_model_block: bool,
+    /// End (exclusive) of the native MATLAB statement being parsed when it ends with its line
+    /// instead of a ';': the next [`Cursor::statement`] stops there.
+    native_end: Option<usize>,
 }
 
 /// Deepest expression nesting accepted (the later passes over the expression tree are
@@ -245,7 +250,16 @@ const MAX_EXPR_NESTING: usize = 10_000;
 
 impl<'a> Cursor<'a> {
     fn new(t: &'a [Token]) -> Self {
-        Cursor { t, i: 0, nums: Vec::new(), het_dim: false, sums: Vec::new(), depth: 0, in_model_block: false }
+        Cursor {
+            t,
+            i: 0,
+            nums: Vec::new(),
+            het_dim: false,
+            sums: Vec::new(),
+            depth: 0,
+            in_model_block: false,
+            native_end: None,
+        }
     }
     fn peek(&self) -> Option<&'a Token> {
         self.t.get(self.i)
@@ -302,6 +316,10 @@ impl<'a> Cursor<'a> {
     /// Tokens up to (excluding) the next `;` at bracket depth 0; consumes the `;`.
     fn statement(&mut self) -> Result<&'a [Token]> {
         let st = self.i;
+        if let Some(e) = self.native_end.take() {
+            self.i = e;
+            return Ok(&self.t[st..e]);
+        }
         let mut depth = 0i32;
         while let Some(t) = self.peek() {
             if t.is("(") || t.is("[") || t.is("{") {
@@ -317,6 +335,30 @@ impl<'a> Cursor<'a> {
         }
         let at = self.t.get(st).map(|t| t.loc.to_string()).unwrap_or_default();
         bail!("{at}: statement not terminated by ';'")
+    }
+    /// Where a native MATLAB statement starting here ends when its line has no ';' (Dynare's
+    /// lexer ends a native statement with its line): the index of the first token of the next
+    /// line, brackets and `...` continuations followed. `None` when a ';' ends it first.
+    fn native_line_end(&self) -> Option<usize> {
+        let mut depth = 0i32;
+        let mut k = self.i;
+        while let Some(t) = self.t.get(k) {
+            if k > self.i && depth <= 0 && t.loc != self.t[k - 1].loc {
+                let continued = k >= self.i + 3 && self.t[k - 3..k].iter().all(|p| p.is("."));
+                if !continued {
+                    return Some(k);
+                }
+            }
+            if t.is("(") || t.is("[") || t.is("{") {
+                depth += 1;
+            } else if t.is(")") || t.is("]") || t.is("}") {
+                depth -= 1;
+            } else if t.is(";") && depth <= 0 {
+                return None;
+            }
+            k += 1;
+        }
+        Some(k)
     }
     /// Skips a balanced `( ... )` group if present.
     fn skip_parens(&mut self) -> Result<()> {
@@ -561,7 +603,10 @@ impl<'a> Cursor<'a> {
                 let k = self.next()?;
                 let lag = match k.tok {
                     Tok::Num(v) if v.fract() == 0.0 && v.abs() < 1e6 => sign * v as i32,
-                    _ => bail!("{}: '{name}(' is neither a known function nor a lead/lag", t.loc),
+                    _ => bail!(
+                        "{}: '{name}(' is neither a known function nor a lead/lag; calls to MATLAB functions (e.g. a helper .m file using fsolve/fzero) cannot be run by dynare-rust: compute the value in the .mod file instead",
+                        t.loc
+                    ),
                 };
                 self.expect(")")?;
                 Ok(Ast::Var { name: name.clone(), lag, loc: t.loc.clone() })
@@ -572,7 +617,7 @@ impl<'a> Cursor<'a> {
 }
 
 /// stream PP: `tag_pair_list_for_selection` of `model_remove(...)` / `model_replace(...)`:
-/// `'name1', [tag1='v1', tag2='v2'], ...` (a bare string selects `name='...'`).
+/// `'name1', tag='v', [tag1='v1', tag2='v2'], ...` (a bare string selects `name='...'`).
 fn tag_selection(toks: &[Token]) -> Result<Vec<Vec<(String, String)>>> {
     let inner = match toks {
         [o, inner @ .., c] if o.is("(") && c.is(")") => inner,
@@ -584,6 +629,11 @@ fn tag_selection(toks: &[Token]) -> Result<Vec<Vec<(String, String)>>> {
             [t] if matches!(t.tok, Tok::Str(_)) => {
                 let Tok::Str(s) = &t.tok else { unreachable!() };
                 out.push(vec![("name".to_string(), s.clone())]);
+            }
+            // `tag = 'value'`
+            [k, eq, v] if eq.is("=") && k.ident().is_some() && matches!(v.tok, Tok::Str(_)) => {
+                let Tok::Str(s) = &v.tok else { unreachable!() };
+                out.push(vec![(k.raw.to_ascii_lowercase(), s.clone())]);
             }
             [o, pairs @ .., c] if o.is("[") && c.is("]") => {
                 let mut sel = Vec::new();
@@ -625,6 +675,28 @@ fn slice_expr(toks: &[Token]) -> Result<Ast> {
         bail!("{}: unexpected '{}' in expression", t.loc, t.raw);
     }
     Ok(a)
+}
+
+/// The expression with 0 instead of the operators of the VAR / PAC models (placeholder
+/// variables), which only the transform pass replaces.
+fn strip_placeholders(a: &Ast) -> Ast {
+    match a {
+        Ast::Var { name, .. } if name.starts_with('\u{1}') => Ast::Num(0.0),
+        Ast::Un(o, x) => Ast::Un(*o, Box::new(strip_placeholders(x))),
+        Ast::Bin(o, x, y) => Ast::Bin(*o, Box::new(strip_placeholders(x)), Box::new(strip_placeholders(y))),
+        Ast::Op(o, v) => Ast::Op(*o, v.iter().map(strip_placeholders).collect()),
+        _ => a.clone(),
+    }
+}
+
+/// [`slice_expr`] with the text of its numerical constants (stream PP, see `Cursor::nums`).
+fn slice_expr_nums(toks: &[Token]) -> Result<(Ast, Vec<String>)> {
+    let mut c = Cursor::new(toks);
+    let a = c.expr()?;
+    if let Some(t) = c.peek() {
+        bail!("{}: unexpected '{}' in expression", t.loc, t.raw);
+    }
+    Ok((a, c.nums))
 }
 
 /// Splits a token slice at top-level commas (empty fields are kept).
@@ -708,15 +780,236 @@ enum Tgt {
     Endo(usize),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ShockStmt {
-    Var(Tgt, f64),
-    Std(Tgt, f64),
-    Cov(Tgt, Tgt, f64),
-    Corr(Tgt, Tgt, f64),
+    Var(Tgt, PathValue),
+    Std(Tgt, PathValue),
+    Cov(Tgt, Tgt, PathValue),
+    Corr(Tgt, Tgt, PathValue),
+}
+
+/// `file: line L, cols a-b` (Dynare's `Location`, printed by `WarningConsolidation`) of the
+/// tokens `a` ..= `b`.
+pub(super) fn span_text(a: &Token, b: &Token) -> String {
+    let file = std::path::Path::new(&*a.loc.file)
+        .file_name()
+        .map_or_else(|| a.loc.file.to_string(), |f| f.to_string_lossy().into_owned());
+    let (c1, c2) = (a.col.0, b.col.1);
+    if a.loc.line == b.loc.line {
+        if c1 == c2 {
+            format!("{file}: line {}, col {c1}", a.loc.line)
+        } else {
+            format!("{file}: line {}, cols {c1}-{c2}", a.loc.line)
+        }
+    } else {
+        format!("{file}: line {}, col {c1} - line {}, col {c2}", a.loc.line, b.loc.line)
+    }
+}
+
+/// The warnings of Dynare's preprocessor (`ModFile::checkPass` and the parser actions), in its
+/// order: those of the parsing pass, then the `osr_params` repeat, the `bytecode` option, the
+/// unsuitable operators of a stochastic model and the unused parameters.
+fn pp_warnings(pp: &PpNotes, toks: &[Token], params: &[String]) -> Vec<String> {
+    let mut w = pp.warn.clone();
+    if pp.osr_params_stmts > 1 {
+        w.push("WARNING: You have more than one osr_params statement in the .mod file.".into());
+    }
+    if pp.bytecode {
+        w.push(
+            "WARNING: the 'bytecode' option is deprecated and will be removed in a future release of Dynare.".into(),
+        );
+    }
+    let model: Vec<&[Token]> = pp
+        .model_rng
+        .iter()
+        .map(|&(a, b)| (a, b))
+        .chain(pp.eqs.iter().map(|&(_, a, b)| (a, b)))
+        .filter_map(|(a, b)| toks.get(a..b.min(toks.len())))
+        .collect();
+    if pp.stoch {
+        let bad = model.iter().any(|r| {
+            r.iter().enumerate().any(|(k, t)| match &t.tok {
+                Tok::Ident(n) => {
+                    matches!(n.as_str(), "max" | "min" | "abs" | "sign") && r.get(k + 1).is_some_and(|x| x.is("("))
+                }
+                Tok::Punct(p) => matches!(*p, "<" | ">" | "<=" | ">=" | "==" | "!="),
+                _ => false,
+            })
+        });
+        if bad {
+            w.push("WARNING: you are using a function (max, min, abs, sign) or an operator (<, >, <=, >=, ==, !=) which is unsuitable for a stochastic context; see the reference manual, section about \"Expressions\", for more details.".into());
+        }
+    }
+    // used: the identifiers of the model (see [`model_idents`]) and every identifier of the
+    // steady_state_model blocks
+    let mut used = model_idents(pp, toks);
+    for &(a, b) in &pp.ssm_rng {
+        used.extend(toks.get(a..b.min(toks.len())).unwrap_or(&[]).iter().filter_map(|t| t.ident()));
+    }
+    // only the parameters of `parameters` statements (not those the preprocessor adds: PAC,
+    // var_expectation_model, occbin, ...)
+    let mut declared: Vec<&str> = Vec::new();
+    for (k, t) in toks.iter().enumerate() {
+        if t.is_ident("parameters") && (k == 0 || toks[k - 1].is(";") || toks[k - 1].is_ident("end")) {
+            let mut depth = 0;
+            for t in &toks[k + 1..] {
+                if t.is(";") {
+                    break;
+                }
+                if t.is("(") {
+                    depth += 1;
+                } else if t.is(")") {
+                    depth -= 1;
+                } else if let (0, Some(n)) = (depth, t.ident()) {
+                    declared.push(n);
+                }
+            }
+        }
+    }
+    let mut unused: Vec<&str> = declared.into_iter().filter(|p| !used.contains(p)).collect();
+    if !unused.is_empty() && params.iter().any(|p| p == "optimal_policy_discount_factor") {
+        unused.push("optimal_policy_discount_factor");
+    }
+    if !unused.is_empty() {
+        w.push(format!("WARNING: Parameter(s) {}  not used in the model", unused.join(" ")));
+    }
+    w
+}
+
+/// The identifiers of the model blocks' equations (`model`, `ramsey_constraints`, heterogeneous
+/// `model`) and those of the model-local variables they use (transitively).
+fn model_idents<'t>(pp: &PpNotes, toks: &'t [Token]) -> std::collections::HashSet<&'t str> {
+    use std::collections::{HashMap, HashSet};
+    let model: Vec<&[Token]> = pp
+        .model_rng
+        .iter()
+        .map(|&(a, b)| (a, b))
+        .chain(pp.eqs.iter().map(|&(_, a, b)| (a, b)))
+        .filter_map(|(a, b)| toks.get(a..b.min(toks.len())))
+        .collect();
+    let mut used: HashSet<&str> = HashSet::new();
+    let mut locals: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in &model {
+        for st in r.split(|t| t.is(";")) {
+            let mut st = st;
+            if st.first().is_some_and(|t| t.is("[")) {
+                let close = st.iter().position(|t| t.is("]")).map_or(st.len(), |k| k + 1);
+                st = &st[close..];
+            }
+            if st.first().is_some_and(|t| t.is("#")) {
+                if let Some(name) = st.get(1).and_then(|t| t.ident()) {
+                    locals.insert(name, idents(st.get(3..).unwrap_or(&[])));
+                }
+            } else {
+                used.extend(idents(st));
+            }
+        }
+    }
+    loop {
+        let before = used.len();
+        let add: Vec<&str> =
+            locals.iter().filter(|(k, _)| used.contains(*k)).flat_map(|(_, v)| v.iter().copied()).collect();
+        used.extend(add);
+        if used.len() == before {
+            break;
+        }
+    }
+    used
+}
+
+/// `ModFile::checkPass` (Dynare issue #841): an exogenous variable of a `varexo` statement that
+/// no model equation uses is an error, a warning with the `nostrict` option (which removes it in
+/// Dynare; dynare-rs keeps it).
+fn unused_exo_check(pp: &PpNotes, toks: &[Token], exo: &[String], nostrict: bool) -> Result<Option<String>> {
+    let mut used = model_idents(pp, toks);
+    // `DynamicModel::findUnusedExogenous` skips the observed exogenous variables (`varexobs`), and
+    // the check runs after `pac_expectation` is substituted, which brings in the `growth` of the
+    // `pac_model` statements
+    for (k, t) in toks.iter().enumerate() {
+        let start = k == 0 || toks[k - 1].is(";") || toks[k - 1].is_ident("end");
+        if !start {
+            continue;
+        }
+        let stmt = toks[k + 1..].split(|t| t.is(";")).next().unwrap_or(&[]);
+        if t.is_ident("varexobs") {
+            used.extend(stmt.iter().filter_map(|t| t.ident()));
+        } else if t.is_ident("pac_model") {
+            let mut depth = 0;
+            let mut growth = false;
+            for (j, t) in stmt.iter().enumerate() {
+                if t.is("(") {
+                    depth += 1;
+                } else if t.is(")") {
+                    depth -= 1;
+                } else if depth == 1 && t.is(",") {
+                    growth = false;
+                } else if depth == 1 && t.is_ident("growth") && stmt.get(j + 1).is_some_and(|x| x.is("=")) {
+                    growth = true;
+                } else if growth {
+                    used.extend(t.ident());
+                }
+            }
+        }
+    }
+    let mut unused: Vec<&str> = Vec::new();
+    for (k, t) in toks.iter().enumerate() {
+        let start = k == 0 || toks[k - 1].is(";") || toks[k - 1].is_ident("end");
+        // `varexo(heterogeneity_dimension = ...)` declares heterogeneous exogenous variables
+        if !(start && t.is_ident("varexo")) || toks.get(k + 1).is_some_and(|x| x.is("(")) {
+            continue;
+        }
+        let mut depth = 0;
+        for t in &toks[k + 1..] {
+            if t.is(";") {
+                break;
+            }
+            if t.is("(") {
+                depth += 1;
+            } else if t.is(")") {
+                depth -= 1;
+            } else if let (0, Some(n)) = (depth, t.ident()) {
+                // `var_remove` drops a symbol
+                if !used.contains(n) && !unused.contains(&n) && exo.iter().any(|e| e == n) {
+                    unused.push(n);
+                }
+            }
+        }
+    }
+    if unused.is_empty() {
+        return Ok(None);
+    }
+    let names: String = unused.iter().map(|n| format!("{n} ")).collect();
+    if nostrict {
+        return Ok(Some(format!("WARNING: {names}not used in model block, removed by nostrict command-line option")));
+    }
+    bail!(
+        "{names}not used in model block. To bypass this error, use the `nostrict` option. This may lead to crashes or unexpected behavior."
+    )
+}
+
+/// What the preprocessor's warnings are computed from (see [`pp_warnings`]).
+#[derive(Default)]
+struct PpNotes {
+    /// Warnings of the parsing pass (deprecated statements and options), in file order.
+    warn: Vec<String>,
+    /// Token ranges of the `ramsey_constraints` and heterogeneous `model` blocks.
+    model_rng: Vec<(usize, usize)>,
+    /// Token range of each equation of the `model` blocks (tags included, `;` last) with its
+    /// tags, and of each model-local variable definition (`# x = ...;`); equations removed by
+    /// `model_remove` / `model_replace` leave the list.
+    eqs: Vec<(Vec<(String, String)>, usize, usize)>,
+    /// Token ranges of the `steady_state_model` blocks.
+    ssm_rng: Vec<(usize, usize)>,
+    bytecode: bool,
+    osr_params_stmts: usize,
+    /// A command that triggers the stochastic-context warning was seen.
+    stoch: bool,
+    /// Parameters of the stochastic `shocks` values (indices).
+    shock_params: Vec<usize>,
 }
 
 struct Parser<'a> {
+    pp: PpNotes,
     c: Cursor<'a>,
     b: ModelBuilder,
     initval: Vec<(usize, f64)>,
@@ -733,6 +1026,8 @@ struct Parser<'a> {
     occbin_constraints: Vec<crate::occbin::OccbinConstraint>,
     // stream D (deterministic simulations)
     initval_exo: Vec<(usize, f64)>,
+    /// A plain `endval` block was parsed (InitValStatement::checkPass rejects a later `initval`).
+    endval_seen: bool,
     det_shocks: Vec<DetShock>,
     histval: Vec<(bool, usize, i32, f64)>,
     steady_state_model: Vec<(String, String)>,
@@ -743,6 +1038,8 @@ struct Parser<'a> {
     policy: PolicyDecl,
     /// [stream X]
     x: x::XParse,
+    /// `if isoctave`, `load`, `fieldnames`, `for ... set_param_value` (see `parser_matlab`)
+    ml: ml::MatlabState,
     // ---- stream EP: shocks(learnt_in=...), endval(learnt_in=...)
     ep: crate::ep::EpDecl,
     /// Number of commands before each `ep.controlled_paths` entry ([`ModFile::controlled_paths_pos`]).
@@ -780,15 +1077,34 @@ enum RawStateBlock {
     Histval(Vec<(bool, usize, i32, f64)>),
 }
 
+thread_local! {
+    static ERROR_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn set_error_warnings(w: Vec<String>) {
+    ERROR_WARNINGS.with(|c| *c.borrow_mut() = w);
+}
+
+/// The preprocessor warnings collected before the last parse failed (taken, not copied).
+pub(super) fn take_error_warnings() -> Vec<String> {
+    ERROR_WARNINGS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
 pub(super) fn parse(toks: Vec<Token>) -> Result<ModFile> {
     parse_with(toks, q4::Q4Flags::default())
 }
 
 /// [`parse`] with the command-line flags that change the preprocessing
 /// (`stochastic`, `nostrict`, `exclude_eqs`, `include_eqs`).
+fn idents(s: &[Token]) -> Vec<&str> {
+    s.iter().filter_map(|t| t.ident()).collect()
+}
+
 pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModFile> {
     crate::model::external::clear_declared();
+    set_error_warnings(Vec::new());
     let mut p = Parser {
+        pp: PpNotes::default(),
         c: Cursor::new(&toks),
         b: ModelBuilder::new(),
         initval: Vec::new(),
@@ -804,6 +1120,7 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         model_seen: false,
         occbin_constraints: Vec::new(),
         initval_exo: Vec::new(),
+        endval_seen: false,
         det_shocks: Vec::new(),
         histval: Vec::new(),
         steady_state_model: Vec::new(),
@@ -813,6 +1130,7 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         original: OriginalModel::default(),
         policy: PolicyDecl::default(),
         x: x::XParse::default(),
+        ml: ml::MatlabState::default(),
         ep: Default::default(),
         controlled_paths_pos: Vec::new(),
         mf_locals: Default::default(),
@@ -828,8 +1146,41 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         state_blocks: Vec::new(),
     };
     while let Some(t) = p.c.peek() {
-        p.statement(t)?;
+        if let Err(e) = p.statement(t) {
+            set_error_warnings(p.pp.warn.clone()); // the preprocessor printed these before the error
+            return Err(e);
+        }
     }
+    // these checkPass errors come before its warnings (unused parameters, ...)
+    set_error_warnings(p.pp.warn.clone());
+    // (a model without equations fails later with its own error; include_eqs / exclude_eqs
+    // drop the equations of the excluded exogenous variables without the check)
+    let flags = &p.q4_flags;
+    let unused_exo_warning = if p.b.n_equations() == 0 || flags.selects_equations() {
+        None
+    } else {
+        unused_exo_check(&p.pp, &toks, &p.b.exo_names, flags.nostrict)?
+    };
+    // ModFile::checkPass (#634): an estimated parameter may not enter the shocks' covariance
+    let mut in_shocks: Vec<usize> = p
+        .est
+        .iter()
+        .filter_map(|e| match e.kind {
+            EstimatedKind::Param(i) if p.pp.shock_params.contains(&i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    if !in_shocks.is_empty() {
+        in_shocks.sort_unstable();
+        in_shocks.dedup();
+        let names: Vec<&str> = in_shocks.iter().map(|&i| p.b.param_names[i].as_str()).collect();
+        bail!(
+            "some estimated parameters ({}) also appear in the expressions defining the variance/covariance matrix of shocks; this is not allowed.",
+            names.join(", ")
+        );
+    }
+    // checkPass warnings (unused parameters, ...) precede the errors of the later passes
+    set_error_warnings(pp_warnings(&p.pp, &toks, &p.b.param_names));
     p.het_finish_equations()?; // ---- heterogeneity ----
     p.q1_exo_det_view()?;
     let mut varmodels = p.vm_finish()?; // ---- var models ----
@@ -875,19 +1226,16 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
             (Tgt::Endo(i), Tgt::Endo(j)) => (&mut h, obs_pos(i)?, obs_pos(j)?),
             _ => bail!("shocks: cannot mix an exogenous shock and a measurement error in one covariance entry"),
         };
-        match *s {
-            ShockStmt::Var(_, v) => mat[(i, i)] = v,
-            ShockStmt::Std(_, v) => mat[(i, i)] = v * v,
+        match s {
+            ShockStmt::Var(_, v) => mat[(i, i)] = v.num(),
+            ShockStmt::Std(_, v) => mat[(i, i)] = v.num() * v.num(),
             ShockStmt::Cov(_, _, v) => {
-                mat[(i, j)] = v;
-                mat[(j, i)] = v;
+                mat[(i, j)] = v.num();
+                mat[(j, i)] = v.num();
             }
             ShockStmt::Corr(_, _, v) => {
-                if matches!(a, Tgt::Exo(_)) {
-                    corrs.push((i, j, v))
-                } else {
-                    corrs_me.push((i, j, v))
-                }
+                let v = v.num();
+                if matches!(a, Tgt::Exo(_)) { corrs.push((i, j, v)) } else { corrs_me.push((i, j, v)) }
             }
         }
     }
@@ -933,7 +1281,16 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
                         };
                         match s {
                             ShockStmt::Var(_, v) => entries.push(ShockEntry::Var { me, i, v }),
-                            ShockStmt::Std(_, v) => entries.push(ShockEntry::Var { me, i, v: v * v }),
+                            ShockStmt::Std(_, v) => entries.push(ShockEntry::Var {
+                                me,
+                                i,
+                                v: match v {
+                                    PathValue::Num(x) => PathValue::Num(x * x),
+                                    PathValue::Steady(e) => {
+                                        PathValue::Steady(Ast::Bin(BinaryOp::Pow, Box::new(e), Box::new(Ast::Num(2.0))))
+                                    }
+                                },
+                            }),
                             ShockStmt::Cov(_, _, v) => cross.push(ShockEntry::Cov { me, i, j, v }),
                             ShockStmt::Corr(_, _, r) => cross.push(ShockEntry::Corr { me, i, j, r }),
                         }
@@ -959,12 +1316,15 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
     p.block_opts.final_params = p.b.params.clone(); // model_info: every assignment of the file
     p.b.bvar_present = p.commands.iter().any(|c| matches!(c, Command::Other(n, _) if crate::model::is_bvar_command(n)));
     let mut model = p.b.build(p.stochastic || p.q4_flags.stochastic)?;
-    vm::rename_aux_diff(&mut varmodels, &mut model); // var_expectation_model parameters of a diff(z) VAR variable
+    vm::resolve_names(&mut varmodels, &mut model); // the auxiliary variables of the VAR-model variables
     let het = p.het.het_build(&mut model)?; // ---- heterogeneity ----
     // [stream X] parameter assignments after a command run at their place (SET_PARAM).
     if let Some(snap) = &p.x.params_snapshot {
         model.params[..snap.len()].copy_from_slice(snap);
     }
+    let mut warnings = pp_warnings(&p.pp, &toks, &model.param_names);
+    warnings.extend(unused_exo_warning);
+    let bytecode = p.pp.bytecode;
     let mut mf = ModFile {
         model,
         estimated_params_history: p.est_history,
@@ -992,6 +1352,7 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         observation_trends: p.x.observation_trends,
         homotopy_setup: p.x.homotopy_setup,
         homotopy_from_initval_to_endval: p.x.homotopy_from_initval_to_endval,
+        homotopy_block: p.x.homotopy_block,
         ep: p.ep,
         controlled_paths_pos: p.controlled_paths_pos,
         q4: p.q4,
@@ -1008,8 +1369,20 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
         het,                      // ---- heterogeneity ----
         verbatim_workspace: p.verbatim_ws.vars.iter().map(|(k, v)| (k.clone(), v.to_mat())).collect(),
         state_blocks,
+        warnings,
         options: Default::default(),
     };
+    // ramsey_constraints: the preprocessor writes them as complementarity conditions of the
+    // Ramsey FOCs (`dynamic_complementarity_conditions`, the FOC w.r.t. the j-th variable being
+    // equation j: identity `M_.dynamic_mcp_equations_reordering`), read by the perfect foresight
+    // solver with solve_algo = 10 (dyn_ramsey_static.m ignores them)
+    if !mf.policy.ramsey_constraints.is_empty() && mf.model.planner().is_some_and(|p| p.ramsey.is_some()) {
+        let cs = crate::policy::ramsey::parse_constraints(&mf.model, &mf.policy.ramsey_constraints)?;
+        for (c, l) in cs.iter().zip(&mf.policy.ramsey_constraints) {
+            mf.model.mcp.push((c.var, l.trim().trim_end_matches(';').trim().to_string()));
+        }
+    }
+    mf.model.bytecode = bytecode;
     if mf.block_opts.block {
         // model(block): the block-wise solvers use the decompositions
         let statik = crate::misc::model_info::static_block_structure(&mf);
@@ -1024,36 +1397,191 @@ pub(super) fn parse_with(toks: Vec<Token>, q4_flags: q4::Q4Flags) -> Result<ModF
 /// Dynare's lexer, they end at the end of their line even without ';'.
 const NATIVE_LINE_FUNCTIONS: &[&str] = &[
     "figure", "subplot", "plot", "title", "xlabel", "ylabel", "legend", "hold", "grid", "axis", "drawnow", "close",
-    "clf", "disp", "fprintf",
+    "clf", "disp", "fprintf", "box", "clc", "format",
 ];
+
+/// MATLAB keywords and functions called with the command syntax (`save f.mat a b`) starting a
+/// native statement: one line each (the body of an `if`, `for`, ... is parsed line by line, as
+/// by Dynare's lexer).
+const MATLAB_KEYWORDS: &[&str] = &[
+    "if",
+    "elseif",
+    "else",
+    "end",
+    "for",
+    "parfor",
+    "while",
+    "switch",
+    "case",
+    "otherwise",
+    "try",
+    "catch",
+    "function",
+    "return",
+    "break",
+    "continue",
+    "global",
+    "persistent",
+    "save",
+    "load",
+    "delete",
+    "clc",
+    "format",
+    "addpath",
+    "rmpath",
+    "cd",
+    "diary",
+    "more",
+    "tic",
+    "toc",
+    "keyboard",
+    "dbstop",
+    "pause",
+];
+
+/// Dynare statements that may continue on the next line after a first line of the form `kw`
+/// or `kw(options)` (a variable or symbol list follows): never native MATLAB statements.
+const MULTILINE_KEYWORDS: &[&str] = &[
+    "var",
+    "varexo",
+    "varexo_det",
+    "parameters",
+    "predetermined_variables",
+    "trend_var",
+    "log_trend_var",
+    "varobs",
+    "varexobs",
+    "stoch_simul",
+    "estimation",
+    "forecast",
+    "shock_decomposition",
+    "realtime_shock_decomposition",
+    "plot_shock_decomposition",
+    "initial_condition_decomposition",
+    "squeeze_shock_decomposition",
+    "calib_smoother",
+    "osr",
+    "osr_params",
+    "ramsey_model",
+    "ramsey_policy",
+    "discretionary_policy",
+    "evaluate_planner_objective",
+    "planner_objective",
+    "identification",
+    "dynare_sensitivity",
+    "method_of_moments",
+    "conditional_forecast",
+    "plot_conditional_forecast",
+    "simul",
+    "extended_path",
+    "perfect_foresight_setup",
+    "perfect_foresight_solver",
+    "smoother2histval",
+    "sbvar",
+    "bvar_density",
+    "bvar_forecast",
+    "bvar_irf",
+    "model_comparison",
+    "ms_estimation",
+    "ms_simulation",
+    "ms_compute_mdd",
+    "ms_compute_probabilities",
+    "ms_irf",
+    "ms_forecast",
+    "ms_variance_decomposition",
+    "steady",
+    "check",
+    "model_diagnostics",
+    "write_latex_dynamic_model",
+    "write_latex_static_model",
+    "write_latex_original_model",
+    "write_latex_steady_state_model",
+    "dsample",
+    "save_params_and_steady_state",
+    "load_params_and_steady_state",
+    "irf_calibration",
+    "moment_calibration",
+    "histval_file",
+    "initval_file",
+    "model_info",
+    "generate_trace_plots",
+    "prior",
+    "occbin_setup",
+    "occbin_solver",
+    "occbin_graph",
+    "occbin_write_regimes",
+    "estimated_params",
+    "estimated_params_init",
+    "estimated_params_bounds",
+];
+
+/// MATLAB functions that dynare-rust runs when written as native statements (in Dynare they
+/// are MATLAB functions, not statements of the .mod language).
+const NATIVE_RUN_FUNCTIONS: &[&str] = &["datatomfile", "set_dynare_seed", "set_param_value"];
+
+/// Block statements, with [`MULTILINE_KEYWORDS`] the keywords [`statement_keyword`] knows.
+const BLOCK_KEYWORDS: &[&str] = &[
+    "model",
+    "initval",
+    "endval",
+    "histval",
+    "shocks",
+    "mshocks",
+    "steady_state_model",
+    "observation_trends",
+    "optim_weights",
+    "conditional_forecast_paths",
+    "heteroskedastic_shocks",
+    "matched_moments",
+    "verbatim",
+];
+
+/// The lower-case keyword of a statement written in another case (`Var`, `MODEL`): Dynare's
+/// lexer matches its keywords case-insensitively.
+fn statement_keyword(kw: &str) -> &str {
+    if !kw.bytes().any(|b| b.is_ascii_uppercase()) {
+        return kw;
+    }
+    MULTILINE_KEYWORDS.iter().chain(BLOCK_KEYWORDS).find(|k| k.eq_ignore_ascii_case(kw)).copied().unwrap_or(kw)
+}
 
 impl<'a> Parser<'a> {
     /// A native MATLAB statement ending at ';' or at the end of its line (outside brackets),
     /// kept as a [`MATLAB_STATEMENT`] for the run-time warning.
     fn native_line_statement(&mut self) -> Result<()> {
-        let st = self.c.i;
-        let mut depth = 0i32;
-        let mut line = self.c.peek().map(|t| t.loc.line).unwrap_or(0);
-        let mut end = None;
-        while let Some(t) = self.c.peek() {
-            if depth <= 0 && t.loc.line != line && self.c.i > st {
-                break;
-            }
-            line = t.loc.line;
-            if t.is("(") || t.is("[") || t.is("{") {
-                depth += 1;
-            } else if t.is(")") || t.is("]") || t.is("}") {
-                depth -= 1;
-            } else if t.is(";") && depth <= 0 {
-                end = Some(self.c.i);
-                self.c.i += 1;
-                break;
-            }
-            self.c.i += 1;
-        }
-        let toks = &self.c.t[st..end.unwrap_or(self.c.i)];
+        self.c.native_end = self.c.native_line_end();
+        let toks = self.c.statement()?;
         self.commands.push(Command::Other(MATLAB_STATEMENT.into(), vec![(x::raw_join_spaced(toks), OptValue::Flag)]));
         Ok(())
+    }
+
+    /// Whether the statement starting with `kw` is a native MATLAB statement ending with its
+    /// line: a MATLAB keyword, or a first line `kw`, `kw(...)` without ';' that no Dynare
+    /// statement continues (`Simulated_time_series(2000Q3:2050Q2)`, `cmdout`).
+    fn native_line_ahead(&self, kw: &str) -> bool {
+        if MATLAB_KEYWORDS.contains(&kw) {
+            return true;
+        }
+        if MULTILINE_KEYWORDS.iter().chain(BLOCK_KEYWORDS).any(|k| k.eq_ignore_ascii_case(kw))
+            || self.b.symbol(kw).is_some()
+        {
+            return false;
+        }
+        let Some(end) = self.c.native_line_end() else { return false };
+        // the line is `kw` or `kw(...)`
+        let rest = &self.c.t[self.c.i + 1..end];
+        rest.is_empty()
+            || (rest[0].is("(") && rest[rest.len() - 1].is(")") && {
+                let mut depth = 0;
+                rest.iter().enumerate().all(|(k, t)| {
+                    if t.is("(") {
+                        depth += 1;
+                    } else if t.is(")") {
+                        depth -= 1;
+                    }
+                    depth > 0 || k == rest.len() - 1
+                })
+            })
     }
 
     fn statement(&mut self, t: &'a Token) -> Result<()> {
@@ -1069,6 +1597,10 @@ impl<'a> Parser<'a> {
                 .push(Command::Other(MATLAB_STATEMENT.into(), vec![(x::raw_join_spaced(toks), OptValue::Flag)]));
             return Ok(());
         }
+        if let Some(e) = self.vm_hoisted_end() {
+            self.c.i = e; // ---- var models: read before the model block
+            return Ok(());
+        }
         let Some(kw) = t.ident() else { bail!("{}: unexpected '{}' at the start of a statement", t.loc, t.raw) };
         self.pac_note_dseries();
         if self.bw_assign_ahead() {
@@ -1077,19 +1609,39 @@ impl<'a> Parser<'a> {
         if self.pac_assign_ahead() {
             return self.pac_assign(); // ---- pac.estimate setup
         }
+        if self.ml_statement(kw)? {
+            return Ok(()); // `if isoctave`, `load`, `fieldnames`, `for`
+        }
         if self.c.peek_at(1).is_some_and(|n| n.is("=")) {
             return self.calibration();
+        }
+        if self.ws_indexed_assignment_ahead(kw) {
+            return self.ws_indexed_assignment();
         }
         if NATIVE_LINE_FUNCTIONS.contains(&kw) {
             return self.native_line_statement();
         }
+        if self.native_line_ahead(kw) {
+            if !NATIVE_RUN_FUNCTIONS.contains(&kw) {
+                return self.native_line_statement();
+            }
+            // `datatomfile('f', {'y'})` without ';': its arguments end with the line
+            self.c.native_end = self.c.native_line_end();
+        }
+        // Dynare's keywords are case-insensitive (`Var`, `VAREXO`, `Stoch_Simul`)
+        let kw = statement_keyword(kw);
         match kw {
             // ---- heterogeneity ----
             "heterogeneity_dimension" => self.het_dimension(),
             "var" if self.het_header().is_some() => self.het_declaration(het::HetKind::Endo),
             "varexo" if self.het_header().is_some() => self.het_declaration(het::HetKind::Exo),
             "parameters" if self.het_header().is_some() => self.het_declaration(het::HetKind::Param),
-            "model" if self.het_header().is_some() => self.het_model_block(),
+            "model" if self.het_header().is_some() => {
+                let st = self.c.i;
+                let r = self.het_model_block();
+                self.pp.model_rng.push((st, self.c.i));
+                r
+            }
             // ---- end heterogeneity ----
             "var" => self.declaration(SymbolKind::Endo),
             "trend_var" => self.q1_trend_var(false),
@@ -1133,11 +1685,13 @@ impl<'a> Parser<'a> {
                     match &t.tok {
                         Tok::Str(s) if in_cell => cur.push(OptValue::Str(s.clone())),
                         Tok::Str(s) if file.is_none() => file = Some(s.clone()),
-                        Tok::Punct("{") => in_cell = true,
-                        Tok::Punct("}") => {
+                        // `[]`: all the variables (an empty list); `{'y'; 'c'}`: a column cell
+                        Tok::Punct("{" | "[") => in_cell = true,
+                        Tok::Punct("}" | "]") => {
                             in_cell = false;
                             groups.push(OptValue::List(std::mem::take(&mut cur)));
                         }
+                        Tok::Punct(";") if in_cell => {}
                         Tok::Punct("(" | ")" | ",") => {}
                         _ => bail!("{}: datatomfile: only string and cell-of-string arguments are supported", t.loc),
                     }
@@ -1220,7 +1774,12 @@ impl<'a> Parser<'a> {
             }
             // ---- end stream PP
             "histval" => self.histval_block(),
-            "steady_state_model" => self.steady_state_model_block(),
+            "steady_state_model" => {
+                let st = self.c.i;
+                let r = self.steady_state_model_block();
+                self.pp.ssm_rng.push((st, self.c.i));
+                r
+            }
             "verbatim" => self.verbatim_block(),
             "mshocks" => self.shocks_block_kind(true),
             // ---- stream EP
@@ -1234,7 +1793,12 @@ impl<'a> Parser<'a> {
             "occbin_constraints" => self.occbin_constraints_block(),
             // [stream P] optimal policy
             "planner_objective" | "optim_weights" | "osr_params_bounds" | "ramsey_constraints" => {
-                self.policy_statement(kw)
+                let st = self.c.i;
+                let r = self.policy_statement(kw);
+                if kw == "ramsey_constraints" {
+                    self.pp.model_rng.push((st, self.c.i));
+                }
+                r
             }
             _ if self.vm_handles(kw) => self.vm_statement(kw), // ---- var models ----
             _ if self.pac_handles(kw) => self.pac_statement(kw), // ---- pac ----
@@ -1333,9 +1897,73 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `ast` with the parameters and mod-file locals replaced by their values; the endogenous
+    /// and exogenous variables stay (the preprocessor compiles them to `oo_.steady_state(i)` /
+    /// `oo_.exo_steady_state(k)`, read when the statement runs). `found` tells whether there was one.
+    fn bind_steady(&self, ast: &Ast, found: &mut bool) -> Result<Ast> {
+        Ok(match ast {
+            Ast::Num(_) => ast.clone(),
+            Ast::Var { name, lag, loc } => match self.b.symbol(name) {
+                Some(s) if matches!(s.kind, SymbolKind::Endo | SymbolKind::Exo) => {
+                    if *lag != 0 {
+                        bail!("{loc}: variable '{name}' cannot have a lead/lag in this expression");
+                    }
+                    *found = true;
+                    ast.clone()
+                }
+                _ => Ast::Num(self.lookup_param(name, *lag, loc)?),
+            },
+            Ast::Un(op, a) => Ast::Un(*op, Box::new(self.bind_steady(a, found)?)),
+            Ast::Bin(op, a, b) => {
+                Ast::Bin(*op, Box::new(self.bind_steady(a, found)?), Box::new(self.bind_steady(b, found)?))
+            }
+            Ast::Op(op, args) => Ast::Op(*op, args.iter().map(|a| self.bind_steady(a, found)).collect::<Result<_>>()?),
+        })
+    }
+
+    /// The expression of a value item that mentions an endogenous variable, bound by
+    /// [`Self::bind_steady`]; `None` when it does not.
+    fn steady_expr(&self, toks: &[Token]) -> Result<Option<Ast>> {
+        let endo = toks.iter().any(|t| {
+            t.ident()
+                .and_then(|n| self.b.symbol(n))
+                .is_some_and(|s| matches!(s.kind, SymbolKind::Endo | SymbolKind::Exo))
+        });
+        if !endo {
+            return Ok(None);
+        }
+        let mut found = false;
+        let ast = self.bind_steady(&slice_expr(toks)?, &mut found)?;
+        Ok(found.then_some(ast))
+    }
+
+    /// A value of a `shocks` / `endval(learnt_in)` statement: a number, or an expression with
+    /// endogenous / exogenous variables kept for the run.
+    fn shock_value(&self, toks: &[Token]) -> Result<PathValue> {
+        Ok(match self.steady_expr(toks)? {
+            Some(e) => PathValue::Steady(e),
+            None => PathValue::Num(self.eval_tokens(toks)?),
+        })
+    }
+
     fn eval_tokens(&self, toks: &[Token]) -> Result<f64> {
         let ast = slice_expr(toks)?;
         eval_ast(&ast, &|n, l, loc| self.lookup_param(n, l, loc))
+    }
+
+    /// [`src_join`] with the mod-file local variables (`betabar = ...;` of an undeclared name, a
+    /// MATLAB variable for Dynare) replaced by their values: the source is compiled again at
+    /// run time against the model's symbols only.
+    fn src_join_locals(&self, toks: &[Token]) -> String {
+        let mut out = Vec::with_capacity(toks.len());
+        for (k, t) in toks.iter().enumerate() {
+            let local = t.ident().filter(|n| self.b.symbol(n).is_none()).and_then(|n| self.mf_locals.get(n));
+            match local {
+                Some(v) if !toks.get(k + 1).is_some_and(|n| n.is("(")) => out.push(format!("({v:?})")),
+                _ => out.push(src_join(std::slice::from_ref(t))),
+            }
+        }
+        out.join(" ")
     }
 
     fn eval_opt(&self, toks: &[Token]) -> Result<Option<f64>> {
@@ -1344,8 +1972,15 @@ impl<'a> Parser<'a> {
 
     /// `param = expr;`
     fn calibration(&mut self) -> Result<()> {
+        // a name that is not a Dynare symbol starts a native MATLAB statement, which ends with
+        // its line when no ';' ends it first (`aaa = 8343553 / 3737 * 90`)
+        let native_end = match self.c.peek().and_then(|t| t.ident()) {
+            Some(n) if self.b.symbol(n).is_none() => self.c.native_line_end(),
+            _ => None,
+        };
         let (name, loc) = self.c.ident()?;
         self.c.expect("=")?;
+        self.c.native_end = native_end;
         let toks = self.c.statement()?;
         // ---- shocks/shock_paths: MATLAB workspace values (vectors, dseries, tables)
         let v = match self.eval_tokens(toks) {
@@ -1439,6 +2074,9 @@ impl<'a> Parser<'a> {
                 | "parallel_local_files"
                 | "linear_decomposition" => {
                     // ---- model_info: options of the block decomposition
+                    if k == "bytecode" {
+                        self.pp.bytecode = true;
+                    }
                     let num = || if let OptValue::Num(x) = v { Some(*x) } else { None };
                     match k.as_str() {
                         "block" => self.block_opts.block = true,
@@ -1460,16 +2098,127 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// On-the-fly declarations of a model block (`c|e`, `e|x`, `beta|p`, `[endogenous='c']`):
+    /// the preprocessor creates the symbols of the equations in order of first appearance and
+    /// gives them their type afterwards (an undeclared name typed further down keeps its rank;
+    /// with `nostrict`, a name never typed is exogenous). Nothing is done in a block without
+    /// such declarations.
+    fn on_the_fly_declarations(&mut self) -> Result<()> {
+        use std::collections::{HashMap, HashSet};
+        let t = self.c.t;
+        let mut end = self.c.i;
+        while end + 1 < t.len() && !(t[end].is_ident("end") && t[end + 1].is(";")) {
+            end += 1;
+        }
+        let blk = &t[self.c.i..end.min(t.len())];
+        let mut kinds: HashMap<&str, SymbolKind> = HashMap::new();
+        let mut tagged = false;
+        for (k, tok) in blk.iter().enumerate() {
+            if let Some(n) = tok.ident() {
+                let kind = match tok.raw.get(n.len()..) {
+                    Some("|e" | "|E") => Some(SymbolKind::Endo),
+                    Some("|x" | "|X") => Some(SymbolKind::Exo),
+                    Some("|p" | "|P") => Some(SymbolKind::Param),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    kinds.entry(n).or_insert(kind);
+                }
+                // `[endogenous='c']`
+                let tag = match n.to_ascii_lowercase().as_str() {
+                    "endogenous" => Some(SymbolKind::Endo),
+                    "exogenous" => Some(SymbolKind::Exo),
+                    "parameter" => Some(SymbolKind::Param),
+                    _ => None,
+                };
+                if let (Some(kind), Some(eq), Some(v)) = (tag, blk.get(k + 1), blk.get(k + 2))
+                    && eq.is("=")
+                    && let Tok::Str(s) = &v.tok
+                {
+                    tagged = true;
+                    kinds.entry(s.as_str()).or_insert(kind);
+                }
+            }
+        }
+        if kinds.is_empty() && !tagged {
+            return Ok(());
+        }
+        let skip_after = ["pac_expectation", "var_expectation", "pac_target_nonstationary"];
+        let mut locals: HashSet<&str> = HashSet::new();
+        let mut depth_tag = 0;
+        let mut stmt_start = true;
+        for (k, tok) in blk.iter().enumerate() {
+            if stmt_start && tok.is("[") {
+                depth_tag += 1;
+            }
+            if depth_tag > 0 {
+                if tok.is("]") {
+                    depth_tag -= 1;
+                }
+                continue;
+            }
+            if tok.is(";") {
+                stmt_start = true;
+                continue;
+            }
+            let first = stmt_start;
+            stmt_start = false;
+            if first && tok.is("#") {
+                if let Some(n) = blk.get(k + 1).and_then(|x| x.ident()) {
+                    locals.insert(n);
+                }
+                continue;
+            }
+            let Some(n) = tok.ident() else { continue };
+            if locals.contains(n)
+                || self.b.symbol(n).is_some()
+                || builtin_const(n).is_some()
+                || (k >= 2 && blk[k - 1].is("(") && blk[k - 2].ident().is_some_and(|f| skip_after.contains(&f)))
+            {
+                continue;
+            }
+            let kind = match kinds.get(n) {
+                Some(&kind) => kind,
+                None => {
+                    // a function call unless `name(lead/lag)`
+                    if blk.get(k + 1).is_some_and(|x| x.is("(")) {
+                        let lag = match (blk.get(k + 2), blk.get(k + 3), blk.get(k + 4)) {
+                            (Some(a), Some(b), _) if matches!(a.tok, Tok::Num(_)) && b.is(")") => true,
+                            (Some(s), Some(a), Some(b)) => {
+                                (s.is("+") || s.is("-")) && matches!(a.tok, Tok::Num(_)) && b.is(")")
+                            }
+                            _ => false,
+                        };
+                        if !lag {
+                            continue;
+                        }
+                    }
+                    if !self.q4_flags.nostrict {
+                        continue; // "Unknown symbol" when the equation is read
+                    }
+                    println!("WARNING: Unknown symbol '{n}' in the model block: declared exogenous (nostrict).");
+                    SymbolKind::Exo
+                }
+            };
+            self.b.declare(n, kind).map_err(|e| anyhow!("{}: {e}", tok.loc))?;
+            self.labels.push(kind, n.replace('_', "\\_"), n.to_string());
+        }
+        Ok(())
+    }
+
     /// Model equations up to `end;` (model block, model_replace).
     fn model_body(&mut self) -> Result<()> {
+        self.vm_hoist()?; // ---- var models ----
         self.vm_prepass()?; // ---- var models ----
+        self.on_the_fly_declarations()?;
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
-                self.pac_flush()?; // ---- pac ----
                 return Ok(());
             }
             let mut tags = Vec::new();
+            let tag_start = self.c.i;
+            let stmt_start = self.c.i;
             if self.c.eat("[") {
                 loop {
                     if self.c.eat("]") {
@@ -1487,6 +2236,20 @@ impl<'a> Parser<'a> {
                             _ => v.raw.clone(),
                         };
                     }
+                    // on-the-fly declaration: `[endogenous='c']` declares `c` if needed
+                    let kind = match key.as_str() {
+                        "endogenous" => Some(SymbolKind::Endo),
+                        "exogenous" => Some(SymbolKind::Exo),
+                        "parameter" => Some(SymbolKind::Param),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind
+                        && self.b.symbol(&val).is_none()
+                    {
+                        let loc = &self.c.t[self.c.i - 1].loc;
+                        self.b.declare(&val, kind).map_err(|e| anyhow!("{loc}: {e}"))?;
+                        self.labels.push(kind, val.replace('_', "\\_"), val.clone());
+                    }
                     tags.push((key, val));
                 }
             }
@@ -1496,6 +2259,7 @@ impl<'a> Parser<'a> {
                 self.c.expect("=")?;
                 let ast = self.c.expr()?;
                 self.c.expect(";")?;
+                self.pp.eqs.push((Vec::new(), stmt_start, self.c.i));
                 let node = self.resolve_ast(&ast)?;
                 self.b.add_local(name, node).map_err(|e| anyhow!("{nloc}: {e}"))?;
                 // stream PP: replayed by model::dtree
@@ -1507,13 +2271,12 @@ impl<'a> Parser<'a> {
                 continue;
             }
             self.q1.eq_line = self.c.peek().map_or(0, |t| t.loc.line);
+            // ---- var models / pac: the var_expectation, pac_expectation and
+            // pac_target_nonstationary operators are replaced in the transform pass
+            // (model::dtree::pac); the direct model gets 0 in their place
             let lhs = self.c.expr()?;
-            let lhs = self.vm_expand(lhs)?; // ---- var models ----
-            let lhs = self.pac_expand(lhs)?; // ---- pac ----
             let has_rhs = self.c.eat("=");
             let rhs = if has_rhs { self.c.expr()? } else { Ast::Num(0.0) };
-            let rhs = self.vm_expand(rhs)?; // ---- var models ----
-            let rhs = self.pac_expand(rhs)?; // ---- pac ----
             self.het_register_sums()?; // ---- heterogeneity ----
             // ---- `eq ⟂ x > lb;` / `eq _|_ x < ub;` (complementarity condition)
             if self.c.eat("⟂") {
@@ -1524,6 +2287,14 @@ impl<'a> Parser<'a> {
                 tags.push((crate::model::MCP_TAG.to_string(), src_join(&self.c.t[st..self.c.i])));
             }
             self.c.expect(";")?;
+            self.pp.eqs.push((tags.clone(), stmt_start, self.c.i));
+            if tags.iter().any(|(k, _)| k == "mcp") && tag_start < self.c.i {
+                let (a, b) = (&self.c.t[tag_start], &self.c.t[self.c.i - 1]);
+                self.pp.warn.push(format!(
+                    "WARNING: {}: Specifying complementarity conditions with the 'mcp' tag is obsolete. Please consider switching to the new syntax using the perpendicular symbol.",
+                    span_text(a, b)
+                ));
+            }
             // ---- stream PP: replayed by model::dtree
             {
                 let nums = std::mem::take(&mut self.c.nums);
@@ -1538,6 +2309,7 @@ impl<'a> Parser<'a> {
                 };
                 self.b.items.push(item);
             }
+            let (lhs, rhs) = (strip_placeholders(&lhs), strip_placeholders(&rhs));
             if tags.iter().any(|(k, _)| k == "static") {
                 // [static] equations only enter the static model (model::dtree)
                 self.original.equations.push((lhs, rhs, tags.clone())); // stream B
@@ -1560,6 +2332,7 @@ impl<'a> Parser<'a> {
             sel.iter().any(|s| s.iter().all(|(k, v)| tags.iter().any(|(a, b)| a == k && b == v)))
         };
         self.original.equations.retain(|(_, _, t)| !m(t));
+        self.pp.eqs.retain(|(t, _, _)| t.is_empty() || !m(t));
     }
 
     /// stream PP: `var_remove` / variables excluded by `model_remove`. Indices held by the
@@ -1690,14 +2463,25 @@ impl<'a> Parser<'a> {
                 return self.learnt_endval_block(li);
             }
         }
+        if initval && self.endval_seen {
+            bail!("an 'initval' block cannot appear after an 'endval' block");
+        }
         let mut sources = Vec::new();
         let mut endo_vals = self.initval.clone();
         let mut exo_vals = self.initval_exo.clone();
         let (endo_st, exo_st) = (endo_vals.len(), exo_vals.len());
+        let avr = opt(&opts, "all_values_required").is_some();
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
+                if avr {
+                    let name = if initval { "initval" } else { "endval" };
+                    let endo: Vec<usize> = endo_vals[endo_st..].iter().map(|x| x.0).collect();
+                    let exo: Vec<usize> = exo_vals[exo_st..].iter().map(|x| x.0).collect();
+                    self.check_all_values(name, name, &endo, &exo)?;
+                }
                 if !initval {
+                    self.endval_seen = true;
                     self.commands.push(Command::Endval(sources));
                 } else {
                     let block = RawStateBlock::Initval {
@@ -1726,7 +2510,7 @@ impl<'a> Parser<'a> {
             }
             self.c.expect("=")?;
             let toks = self.c.statement()?;
-            sources.push((name.to_string(), src_join(toks)));
+            sources.push((name.to_string(), self.src_join_locals(toks)));
             let v = self.eval_with_values(toks, &endo_vals, &exo_vals)?;
             match self.b.symbol(name) {
                 Some(s) if s.kind == SymbolKind::Endo => endo_vals.push((s.index, v)),
@@ -1781,7 +2565,7 @@ impl<'a> Parser<'a> {
             let exo = self.exo_index(a, &la)?;
             self.c.expect(";")?;
             let mut periods: Vec<shk::PGroup> = Vec::new();
-            let mut values: Vec<Vec<f64>> = Vec::new();
+            let mut values: Vec<Vec<PathValue>> = Vec::new();
             let mut kind = match (multiplicative, relative_to_initval) {
                 (false, _) => LearntKind::Level,
                 (true, false) => LearntKind::MultiplySteadyState,
@@ -1808,7 +2592,7 @@ impl<'a> Parser<'a> {
                             _ => LearntKind::Level,
                         };
                     }
-                    values = self.shocks_values(toks)?;
+                    values = self.shocks_values_x(toks)?;
                 }
             }
             for (g, v) in self.shocks_pair(periods, values, &format!("{la}: shocks(learnt_in={learnt_in}) on '{a}'"))? {
@@ -1819,12 +2603,18 @@ impl<'a> Parser<'a> {
                     );
                 }
                 // (the 7.2 preprocessor checks integer periods only)
+                let (value, expr) = match v {
+                    PathValue::Num(x) => (x, None),
+                    PathValue::Steady(e) => (0.0, Some(e)),
+                };
                 self.ep.learnt_shocks.push(LearntShock {
                     learnt_in: li.0,
                     exo,
                     periods: p,
                     kind,
-                    value: v,
+                    value,
+                    expr,
+                    pos: self.commands.len(),
                     learnt_in_date: li.1,
                     dates,
                 });
@@ -1852,13 +2642,18 @@ impl<'a> Parser<'a> {
             };
             self.c.expect("=")?;
             let toks = self.c.statement()?;
-            let value = self.eval_tokens(toks)?;
+            let (value, expr) = match self.shock_value(toks)? {
+                PathValue::Num(x) => (x, None),
+                PathValue::Steady(e) => (0.0, Some(e)),
+            };
             match self.b.symbol(name) {
                 Some(s) if s.kind == SymbolKind::Exo => self.ep.learnt_endval.push(LearntEndval {
                     learnt_in: li.0,
                     exo: s.index,
                     kind,
                     value,
+                    expr,
+                    pos: self.commands.len(),
                     learnt_in_date: li.1,
                 }),
                 Some(s) if s.kind == SymbolKind::Endo => {
@@ -1937,14 +2732,48 @@ impl<'a> Parser<'a> {
     // ---- end stream EP ----
 
     /// `histval; x(0) = 1; x(-1) = expr; end;` (stream D).
+    /// `all_values_required` (the preprocessor's checkPass of Init/End/HistValStatement): every
+    /// endogenous variable and every non-deterministic exogenous one must be set. `exo_label`
+    /// is the block name of the exogenous message (the 7.2 histval check says "endval").
+    fn check_all_values(&self, endo_label: &str, exo_label: &str, endo: &[usize], exo: &[usize]) -> Result<()> {
+        let miss_endo: Vec<&str> = (0..self.b.endo_names.len())
+            .filter(|j| !endo.contains(j) && !self.b.endo_names[*j].starts_with("AUX_"))
+            .map(|j| self.b.endo_names[j].as_str())
+            .collect();
+        let miss_exo: Vec<&str> = (0..self.b.exo_names.len())
+            .filter(|j| !exo.contains(j) && !self.exo_det.contains(j))
+            .map(|j| self.b.exo_names[j].as_str())
+            .collect();
+        let mut msg = Vec::new();
+        if !miss_endo.is_empty() {
+            msg.push(format!(
+                "You have not set the following endogenous variables in {endo_label}: {}",
+                miss_endo.join(" ")
+            ));
+        }
+        if !miss_exo.is_empty() {
+            msg.push(format!(
+                "You have not set the following exogenous variables in {exo_label}: {}",
+                miss_exo.join(" ")
+            ));
+        }
+        if msg.is_empty() { Ok(()) } else { bail!("{}", msg.join("\nERROR: ")) }
+    }
+
     fn histval_block(&mut self) -> Result<()> {
         self.c.i += 1;
-        self.header_options()?;
+        let hopts = self.header_options()?;
+        let avr = opt(&hopts, "all_values_required").is_some();
         // HistValStatement: each block rebuilds M_.endo_histval / M_.exo_histval from zeros
         self.histval.clear();
         loop {
             if self.c.at_end() {
                 self.c.i += 2;
+                if avr {
+                    let endo: Vec<usize> = self.histval.iter().filter(|h| h.0).map(|h| h.1).collect();
+                    let exo: Vec<usize> = self.histval.iter().filter(|h| !h.0).map(|h| h.1).collect();
+                    self.check_all_values("histval", "endval", &endo, &exo)?;
+                }
                 self.state_blocks.push((self.commands.len(), RawStateBlock::Histval(self.histval.clone())));
                 return Ok(());
             }
@@ -2073,6 +2902,19 @@ impl<'a> Parser<'a> {
         self.shocks_block_kind(false)
     }
 
+    /// The parameters of a variance / covariance / correlation expression of a `shocks` block
+    /// (`ShocksStatement::checkPass`: `parameters_within_shocks_values`).
+    fn note_shock_params(&mut self, toks: &[Token]) {
+        for n in toks.iter().filter_map(|t| t.ident()) {
+            if let Some(s) = self.b.symbol(n)
+                && s.kind == SymbolKind::Param
+                && !self.pp.shock_params.contains(&s.index)
+            {
+                self.pp.shock_params.push(s.index);
+            }
+        }
+    }
+
     /// `shocks` (or `mshocks` when `multiplicative`).
     fn shocks_block_kind(&mut self, multiplicative: bool) -> Result<()> {
         self.c.i += 1;
@@ -2143,7 +2985,8 @@ impl<'a> Parser<'a> {
                 if self.c.eat("=") {
                     self.q1_check_exo_det_moment(if b.is_some() { "covariance" } else { "variance" }, a, b)?;
                     let toks = self.c.statement()?;
-                    let v = self.eval_tokens(toks)?;
+                    self.note_shock_params(toks);
+                    let v = self.shock_value(toks)?;
                     self.shocks.push(match b {
                         None => ShockStmt::Var(a, v),
                         Some(b) => ShockStmt::Cov(a, b, v),
@@ -2155,7 +2998,8 @@ impl<'a> Parser<'a> {
                     self.c.i += 1;
                     self.q1_check_exo_det_moment("standard error", a, None)?;
                     let toks = self.c.statement()?;
-                    let v = self.eval_tokens(toks)?;
+                    self.note_shock_params(toks);
+                    let v = self.shock_value(toks)?;
                     self.shocks.push(ShockStmt::Std(a, v));
                 } else {
                     // deterministic shocks: `periods ...; values ...;`
@@ -2163,7 +3007,7 @@ impl<'a> Parser<'a> {
                         bail!("{la}: deterministic shocks (periods/values) must be on an exogenous variable")
                     };
                     let mut periods: Vec<shk::PGroup> = Vec::new();
-                    let mut values: Vec<Vec<f64>> = Vec::new();
+                    let mut values: Vec<Vec<PathValue>> = Vec::new();
                     while self.c.at_ident("periods") || self.c.at_ident("values") {
                         let is_periods = self.c.at_ident("periods");
                         let loc = self.c.next()?.loc.clone();
@@ -2171,13 +3015,17 @@ impl<'a> Parser<'a> {
                         if is_periods {
                             periods = shk::sim_period_list(toks).map_err(|e| anyhow!("{loc}: {e}"))?;
                         } else {
-                            values = self.shocks_values(toks)?;
+                            values = self.shocks_values_x(toks)?;
                         }
                     }
                     let what = format!("{la}: shocks on '{}'", self.b.exo_names[a]);
                     for (g, v) in self.shocks_pair(periods, values, &what)? {
                         let (p, dates) = g.split();
-                        self.det_shocks.push(DetShock { exo: a, periods: p, value: v, kind, dates });
+                        let (value, expr) = match v {
+                            PathValue::Num(x) => (x, None),
+                            PathValue::Steady(e) => (0.0, Some(e)),
+                        };
+                        self.det_shocks.push(DetShock { exo: a, periods: p, value, expr, kind, dates });
                     }
                 }
             } else if self.c.at_ident("corr") {
@@ -2194,7 +3042,8 @@ impl<'a> Parser<'a> {
                 self.q1_check_exo_det_moment("correlation", a, Some(b))?;
                 self.c.expect("=")?;
                 let toks = self.c.statement()?;
-                let v = self.eval_tokens(toks)?;
+                self.note_shock_params(toks);
+                let v = self.shock_value(toks)?;
                 self.shocks.push(ShockStmt::Corr(a, b, v));
             } else if self.c.at_ident("skew") {
                 self.c.i += 1;
@@ -2378,10 +3227,93 @@ impl<'a> Parser<'a> {
     }
 
     /// Generic `name(options) varlist;` command.
+    /// The option checks of the preprocessor's parser actions and `checkPass` of the
+    /// `extended_path` and `estimation` statements, with its error texts.
+    fn statement_checks(&self, name: &str, toks: &[Token], opts: &Options) -> Result<()> {
+        let has = |k: &str| opts.iter().any(|(o, _)| o == k);
+        let word = |k: &str| match opt(opts, k) {
+            Some(OptValue::Str(s)) => s.to_lowercase(),
+            _ => String::new(),
+        };
+        match name {
+            "extended_path" => {
+                if let Some(OptValue::Num(x)) = opt(opts, "hybrid")
+                    && x % 2.0 != 0.0
+                {
+                    let k = toks.iter().position(|t| t.is_ident("hybrid")).unwrap_or(0);
+                    let end = toks.get(k + 2).unwrap_or(&toks[k]);
+                    bail!(
+                        "{}: The 'hybrid' option in stochastic extended path must be an even integer",
+                        span_text(&toks[k], end)
+                    );
+                }
+            }
+            "estimation" => {
+                if has("mh_tune_jscale") && has("mh_jscale") {
+                    bail!("The mh_tune_jscale and mh_jscale options of the estimation statement are incompatible.");
+                }
+                if !has("mh_tune_jscale") && has("mh_tune_guess") {
+                    bail!(
+                        "The option mh_tune_guess in estimation statement cannot be used without option mh_tune_jscale."
+                    );
+                }
+                if word("filter_algorithm") == "gmf" {
+                    if word("proposal_approximation") == "montecarlo" {
+                        bail!(
+                            "The filter_algorithm=gmf option is incompatible with proposal_approximation=montecarlo in the estimation statement."
+                        );
+                    }
+                    if word("distribution_approximation") == "montecarlo" {
+                        bail!(
+                            "The filter_algorithm=gmf option is incompatible with distribution_approximation=montecarlo in the estimation statement."
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn command(&mut self, name: &'a str) -> Result<()> {
         let loc = self.c.loc();
+        let first = self.c.i;
         self.c.i += 1;
         let toks = self.c.statement()?;
+        match name {
+            "simul" => self.pp.warn.push(format!(
+                "WARNING: {}: The 'simul' statement is deprecated. Please use 'perfect_foresight_setup' and 'perfect_foresight_solver' instead.",
+                span_text(&self.c.t[first], &self.c.t[self.c.i - 1])
+            )),
+            "ramsey_policy" => self.pp.warn.push(format!(
+                "WARNING: {}: The 'ramsey_policy' statement is deprecated. Please use 'ramsey_model', 'stoch_simul', and 'evaluate_planner_objective' instead.",
+                span_text(&self.c.t[first], &self.c.t[self.c.i - 1])
+            )),
+            "osr_params" => self.pp.osr_params_stmts += 1,
+            _ => {}
+        }
+        if matches!(
+            name,
+            "stoch_simul"
+                | "estimation"
+                | "osr"
+                | "identification"
+                | "calib_smoother"
+                | "method_of_moments"
+                | "discretionary_policy"
+                | "ramsey_policy"
+                | "extended_path"
+        ) {
+            self.pp.stoch = true;
+        }
+        if toks.first().is_some_and(|t| t.is("(")) {
+            for t in toks.iter().filter(|t| t.is_ident("aim_solver")) {
+                self.pp.warn.push(format!(
+                    "WARNING: {}: The 'aim_solver' option is deprecated. It has been superseded by the 'dr=aim' option.",
+                    span_text(t, t)
+                ));
+            }
+        }
         let (opts, rest) = if toks.first().is_some_and(|t| t.is("(")) {
             let mut depth = 0;
             let mut close = toks.len();
@@ -2418,7 +3350,8 @@ impl<'a> Parser<'a> {
         // (`bvar_density 4;`, `model_comparison m1(0.7) m2(0.3);`) keep their raw tokens.
         let mut opts = opts;
         self.x_global_options(name, &mut opts); // [stream X] options_.X = V defaults
-        super::option_check::check_options(&opts).map_err(|e| anyhow!("{loc}: {name}: {e}"))?;
+        super::option_check::check_options(name, &opts).map_err(|e| anyhow!("{loc}: {name}: {e}"))?;
+        self.statement_checks(name, toks, &opts)?;
         if RAW_ARG_COMMANDS.contains(&name) {
             opts.push((
                 RAW_ARGS_KEY.to_string(),
@@ -2523,8 +3456,8 @@ impl<'a> Parser<'a> {
     /// (the preprocessor's ConditionalForecastPathsStatement): one value expression per period
     /// group, groups and values separated by commas or blanks.
     #[allow(clippy::type_complexity)]
-    fn conditional_forecast_paths(&mut self) -> Result<Vec<(String, Vec<(usize, usize, f64)>)>> {
-        let mut out: Vec<(String, Vec<(usize, usize, f64)>)> = Vec::new();
+    fn conditional_forecast_paths(&mut self) -> Result<Vec<(String, Vec<(usize, usize, PathValue)>)>> {
+        let mut out: Vec<(String, Vec<(usize, usize, PathValue)>)> = Vec::new();
         let mut periods: Vec<(usize, usize)> = Vec::new();
         loop {
             if self.c.at_end() {
@@ -2582,15 +3515,10 @@ impl<'a> Parser<'a> {
                     let Some((_, ranges)) = out.last_mut() else {
                         bail!("{}: conditional_forecast_paths: 'values' before 'var'", first.loc)
                     };
-                    let mut c = Cursor::new(&st[1..]);
-                    let mut vals = Vec::new();
-                    while c.peek().is_some() {
-                        if c.eat(",") {
-                            continue;
-                        }
-                        let ast = c.expr()?;
-                        vals.push(eval_ast(&ast, &|n, l, loc| self.lookup_param(n, l, loc))?);
-                    }
+                    // signed numbers and parenthesized expressions (`values 0.01 -0.02 0;` has
+                    // three values, as in Dynare's grammar); `(xx)` a workspace vector
+                    // an endogenous variable in a value is its steady state (`gy_obs+0.01`)
+                    let vals = self.shocks_values_x(&st[1..])?;
                     if vals.len() != periods.len() {
                         bail!(
                             "{}: conditional_forecast_paths: {} period group(s) but {} value(s)",
@@ -2599,7 +3527,19 @@ impl<'a> Parser<'a> {
                             vals.len()
                         );
                     }
-                    ranges.extend(periods.iter().zip(&vals).map(|(&(a, b), &v)| (a, b, v)));
+                    for (&(a, b), v) in periods.iter().zip(&vals) {
+                        match v.as_slice() {
+                            [v] => ranges.push((a, b, v.clone())),
+                            // constrained_paths_(i, a:b) = xx
+                            v if v.len() == b - a + 1 => ranges.extend((a..=b).zip(v).map(|(t, x)| (t, t, x.clone()))),
+                            v => bail!(
+                                "{}: conditional_forecast_paths: a vector of {} values for the {} periods {a}:{b}",
+                                first.loc,
+                                v.len(),
+                                b - a + 1
+                            ),
+                        }
+                    }
                 }
                 _ => bail!("{}: conditional_forecast_paths: expected var, periods or values", first.loc),
             }
@@ -2698,6 +3638,23 @@ impl<'a> Parser<'a> {
             let Some(c) = self.occbin_constraints.last_mut() else {
                 bail!("{}: occbin_constraints: '{key}' before any 'name'", kw.loc)
             };
+            // the preprocessor's OccbinConstraintsDataTree: an exogenous (or undeclared, which
+            // it declares exogenous) variable, or a variable with a lead or lag, is an error
+            for (k, t) in rest.iter().enumerate() {
+                let Some(n) = t.ident() else { continue };
+                let sym = self.b.symbol(n).map(|s| s.kind);
+                if rest.get(k + 1).is_some_and(|x| x.is("(")) {
+                    if matches!(sym, Some(SymbolKind::Endo | SymbolKind::Exo)) {
+                        let close = rest[k..].iter().position(|x| x.is(")")).map_or(k, |j| k + j);
+                        bail!(
+                            "{}: Leads and lags on variables are forbidden in 'occbin_constraints'. Note that you can achieve the same effect by introducing an auxiliary variable in the model.",
+                            span_text(t, &rest[close])
+                        );
+                    }
+                } else if matches!(sym, Some(SymbolKind::Exo)) || (sym.is_none() && !self.mf_locals.contains_key(n)) {
+                    bail!("{}: Exogenous variable {n} cannot be used in 'occbin_constraints'.", span_text(t, t));
+                }
+            }
             let e = slice_expr(rest)?;
             match key {
                 "bind" => c.bind = Some(e),
@@ -2824,34 +3781,6 @@ fn src_join(toks: &[Token]) -> String {
         .join(" ")
 }
 
-/// `periods 1:3 5, 7:8` -> `[[1,2,3],[5],[7,8]]` (one group per item, as `M_.det_shocks`).
-fn parse_period_list(toks: &[Token]) -> Result<Vec<Vec<i64>>> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    let int = |t: Option<&Token>| -> Result<i64> {
-        match t.map(|t| &t.tok) {
-            Some(Tok::Num(v)) if v.fract() == 0.0 => Ok(*v as i64),
-            _ => bail!("expected an integer period"),
-        }
-    };
-    while i < toks.len() {
-        if toks[i].is(",") {
-            i += 1;
-            continue;
-        }
-        let a = int(toks.get(i))?;
-        i += 1;
-        if toks.get(i).is_some_and(|t| t.is(":")) {
-            let b = int(toks.get(i + 1))?;
-            i += 2;
-            out.push((a..=b).collect());
-        } else {
-            out.push(vec![a]);
-        }
-    }
-    Ok(out)
-}
-
 /// `values 0.1 -0.2, (a*2) b` -> one token slice per value.
 fn split_value_items(toks: &[Token]) -> Vec<&[Token]> {
     let mut out = Vec::new();
@@ -2931,20 +3860,26 @@ impl<'a> Parser<'a> {
                 let mut pow = 1u32;
                 if toks.get(k).is_some_and(|t| t.is("^")) {
                     let x = match toks.get(k + 1).map(|t| &t.tok) {
-                        Some(Tok::Num(x)) if *x >= 1.0 && x.fract() == 0.0 => *x,
-                        _ => bail!("{}: matched_moments: the power must be a positive integer", t.loc),
+                        Some(Tok::Num(x)) if *x >= 0.0 && x.fract() == 0.0 => *x,
+                        _ => bail!("{}: matched_moments: the power must be a non-negative integer", t.loc),
                     };
                     pow = x as u32;
                     k += 2;
                 }
-                m.vars.push(v);
-                m.lags.push(lag);
-                m.powers.push(pow);
+                // a factor to the power 0 is dropped (`YGR^1*INFL^0` is `YGR`, as in Dynare)
+                if pow > 0 {
+                    m.vars.push(v);
+                    m.lags.push(lag);
+                    m.powers.push(pow);
+                }
                 match toks.get(k) {
                     None => break,
                     Some(t) if t.is("*") => k += 1,
                     Some(t) => bail!("{}: matched_moments: unexpected '{}'", t.loc, t.raw),
                 }
+            }
+            if m.vars.is_empty() {
+                bail!("{}: matched_moments: every factor has the power 0", toks[0].loc);
             }
             rows.push(m);
         }

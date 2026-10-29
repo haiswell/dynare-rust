@@ -49,7 +49,9 @@ pub(crate) struct SliceSetup {
 }
 
 impl SliceSetup {
-    pub fn new(so: &SamplerOptions, invhess: &Mat, bounds: &Bounds, npar: usize) -> Result<Self> {
+    /// `mh_cov_loaded`: `load_mh_file` with `use_mh_covariance_matrix` (`invhess` is then the
+    /// previous MCMC's posterior covariance).
+    pub fn new(so: &SamplerOptions, invhess: &Mat, bounds: &Bounds, npar: usize, mh_cov_loaded: bool) -> Result<Self> {
         if bounds.lb.iter().chain(&bounds.ub).any(|v| !v.is_finite()) {
             bail!(
                 "some priors are unbounded and prior_trunc is set to zero: the option \"slice\" is inconsistent with prior_trunc=0."
@@ -62,7 +64,9 @@ impl SliceSetup {
             }
             Rotation::Modes(s.modes.clone())
         } else if s.rotated {
-            if !s.initialize_with_mode {
+            // ~cova_compute && ~(load_mh_file && use_mh_covariance_matrix) (slice sets
+            // cova_compute = 0 unless slice_initialize_with_mode)
+            if !s.initialize_with_mode && !mh_cov_loaded {
                 bail!(
                     "check_posterior_sampler_options:: I cannot start rotated slice sampler because there is no previous \
                      MCMC to load or the Hessian at the mode is not computed (set slice_initialize_with_mode)."
@@ -533,6 +537,63 @@ impl Stepper for Slice<'_> {
     fn advance(&mut self, _max_steps: usize, on_step: &mut dyn FnMut(&[f64], f64, f64, usize)) -> Result<usize> {
         let ne = self.iterate()?;
         on_step(&self.theta, self.fx, 1.0, ne);
+        Ok(1)
+    }
+}
+
+/// The `maximize` branch of `posterior_sampler_iteration.m` for the slice sampler: each
+/// iteration is `dynare_minimize_objective` (the slice options' `mode_compute`, newrat by
+/// default, with the estimation's `optim`) of minus the log posterior from the last draw within
+/// `bounds` (the MCMC bounds, or those of `maximize_using_mh_bounds`); the optimum is the new
+/// draw, always accepted, one function evaluation counted.
+pub(crate) struct Maximize<'a> {
+    obj: &'a dyn Objective,
+    bounds: &'a Bounds,
+    so: &'a SamplerOptions,
+    rng: ChaCha8Rng,
+    last: Vec<f64>,
+    chain: usize,
+    iter: u64,
+}
+
+impl<'a> Maximize<'a> {
+    pub fn new(
+        obj: &'a dyn Objective,
+        bounds: &'a Bounds,
+        so: &'a SamplerOptions,
+        rng: ChaCha8Rng,
+        x: &[f64],
+        chain: usize,
+    ) -> Self {
+        Maximize { obj, bounds, so, rng, last: x.to_vec(), chain, iter: 0 }
+    }
+}
+
+impl Stepper for Maximize<'_> {
+    fn rng(&self) -> &ChaCha8Rng {
+        &self.rng
+    }
+
+    fn advance(&mut self, _max_steps: usize, on_step: &mut dyn FnMut(&[f64], f64, f64, usize)) -> Result<usize> {
+        let n = self.last.len();
+        let names: Vec<String> = (0..n).map(|i| format!("param_{}", i + 1)).collect();
+        let sd: Vec<f64> = match &self.so.priors {
+            Some(p) => p.iter().map(|p| p.sd).collect(),
+            None => vec![f64::NAN; n],
+        };
+        let ctx = crate::estimation::optim::MinimizeContext {
+            bounds: self.bounds,
+            names: &names,
+            prior_sd: &sd,
+            optim: self.so.slice.optim.as_ref(),
+            verbose: false,
+            seed: (self.chain as u64) << 48 ^ self.iter,
+            stream: 0,
+        };
+        let r = crate::estimation::optim::minimize(self.so.slice.mode_compute, self.obj, &self.last, &ctx)?;
+        self.last = r.x;
+        self.iter += 1;
+        on_step(&self.last, -r.fval, 1.0, 1);
         Ok(1)
     }
 }

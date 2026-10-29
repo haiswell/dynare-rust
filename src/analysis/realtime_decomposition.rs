@@ -601,6 +601,8 @@ impl PlotSpec {
             plot_end_date: date("plot_end_date")?,
             max_nrows: n("max_nrows").map_or(6, |v| v as usize),
             q4: crate::q4::decomp::PlotExtra::from_options(mf, o)?,
+            // `options_.initial_date = dates(...)` of the .mod file (a global option)
+            initial_date: date("initial_date")?,
             ..Default::default()
         })
     }
@@ -1120,7 +1122,19 @@ pub struct DecompositionState {
     pub sd_forecast: usize,
     /// epilogue steady state, `oo_.dr.ys`.
     pub q4: crate::q4::decomp::DecompExtra,
+    /// `options_.shock_decomp` fields set by shock_decomposition / realtime_shock_decomposition
+    /// (they persist between commands in Dynare).
+    pub shock_decomp: Options,
+    /// Options of the last shock_decomposition / realtime_shock_decomposition /
+    /// initial_condition_decomposition, for plot_shock_decomposition's recomputation.
+    pub last_sd: Option<Options>,
+    pub last_realtime: Option<Options>,
+    pub last_initval: Option<Options>,
 }
+
+/// The options of shock_decomposition / realtime_shock_decomposition that the preprocessor writes
+/// to `options_.shock_decomp` (persistent; `forecast` is kept in `sd_forecast`).
+const SHOCK_DECOMP_FIELDS: [&str; 5] = ["with_epilogue", "init_state", "save_realtime", "fast_realtime", "presample"];
 
 fn num(o: &Options, k: &str) -> Option<f64> {
     match opt(o, k) {
@@ -1141,6 +1155,24 @@ fn nums(o: &Options, k: &str) -> Option<Vec<usize>> {
 }
 
 impl DecompositionState {
+    /// Records the `options_.shock_decomp` fields of a command's options and returns the options
+    /// with the fields set by earlier commands added.
+    fn with_shock_decomp(&mut self, o: &Options) -> Options {
+        for k in SHOCK_DECOMP_FIELDS {
+            if let Some(v) = opt(o, k) {
+                self.shock_decomp.retain(|(n, _)| n != k);
+                self.shock_decomp.push((k.to_string(), v.clone()));
+            }
+        }
+        let mut o2 = o.clone();
+        for (k, v) in &self.shock_decomp {
+            if opt(o, k).is_none() {
+                o2.push((k.clone(), v.clone()));
+            }
+        }
+        o2
+    }
+
     fn check_not_squeezed(&self, who: &str) -> Result<()> {
         if self.squeezed.is_some()
             && (self.shock_decomposition.is_some()
@@ -1233,6 +1265,8 @@ pub fn shock_decomposition_command(
     out_dir: &Path,
 ) -> Result<()> {
     state.check_not_squeezed("shock_decomposition")?;
+    state.last_sd = Some(o.clone());
+    let o = &state.with_shock_decomp(o);
     let set = state.parameter_set(st, o, "shock_decomposition")?;
     if let Some(OptValue::Str(t)) = opt(o, "forecast_type") {
         return forecast_shock_decomposition(mf, st, o, vars, state, &set, t, dir, fname, out_dir);
@@ -1491,6 +1525,8 @@ pub fn realtime_shock_decomposition_command(
 ) -> Result<()> {
     let t0 = std::time::Instant::now();
     state.check_not_squeezed("realtime_shock_decomposition")?;
+    state.last_realtime = Some(o.clone());
+    let o = &state.with_shock_decomp(o);
     let set = state.parameter_set(st, o, "realtime_shock_decomposition")?;
     let mut own = None;
     let (dsge, data, dates) = smoother_inputs(mf, st, o, dir, &mut own)?;
@@ -1602,6 +1638,9 @@ pub fn plot_shock_decomposition_command(
 ) -> Result<()> {
     let mut spec = PlotSpec::from_options(mf, o)?;
     let (idx, names) = crate::q4::decomp::var_indices(mf, vars)?; // + epilogue variables
+    if idx.iter().any(|&v| state.row(v).is_none()) {
+        recompute_decompositions(mf, st, spec.realtime != 0, state, dir, fname, out_dir)?;
+    }
     crate::q4::decomp::prepare_plot(mf, st, o, &mut spec, state, &idx, dir)?;
     if state.squeezed.is_none() && !vars.is_empty() {
         state.plotted.extend(idx.iter().copied());
@@ -1625,18 +1664,12 @@ pub fn initial_condition_decomposition_command(
     fname: &str,
     out_dir: &Path,
 ) -> Result<()> {
+    state.last_initval = Some(o.clone());
     let set = state.parameter_set(st, o, "shock_decomposition")?;
     let mut own = None;
     let (dsge, data, dates) = smoother_inputs(mf, st, o, dir, &mut own)?;
     if state.initval.is_none() {
-        state.check_not_squeezed("initval_decomposition")?;
-        let x = smoother_point(st, dsge, &set)?;
-        let sm = dsge_smoother(dsge, data, &x, false)?;
-        let z = initial_condition_decomposition(sm.dr(), &sm.smoothed_deviation());
-        let n = z.n;
-        // with_epilogue (options_.initial_condition_decomp.with_epilogue)
-        let z = crate::q4::decomp::initval_with_epilogue(mf, st, o, z, sm.ys(), &mut state.q4)?;
-        state.initval = Some(Stored { z, parameter_set: set.clone(), nshocks: n, forecast_length: None });
+        compute_initval(mf, st, o, state, dsge, data, &set)?;
     }
     let (idx, names) = crate::q4::decomp::var_indices(mf, vars)?;
     let nobs = data.y.ncols();
@@ -1662,8 +1695,98 @@ pub fn initial_condition_decomposition_command(
     spec.realtime = 0;
     spec.groups = None;
     spec.init_cond = true;
+    // plot_shock_decomposition's steady_state: oo_.dr.ys (epilogue_steady_state for epilogue variables)
+    spec.q4.steady_state = if idx.iter().any(|&v| v >= mf.model.n_endo()) {
+        state.q4.epilogue_steady_state.clone()
+    } else {
+        state.q4.ys.clone()
+    };
     let g = graphs_for(o, st, dir, fname);
-    plot_rows(mf, st, &spec, state, &idx, &names, &g, fname, None, &date)?;
+    let p = plot_rows(mf, st, &spec, state, &idx, &names, &g, fname, None, &date)?;
+    if spec.q4.write_xls
+        && let Some(p) = p
+    {
+        let path = crate::q4::decomp::write_xls(&p, &spec, mf, out_dir, fname)?;
+        println!("plot_shock_decomposition: write_xls: {}", path.display());
+    }
+    Ok(())
+}
+
+/// initial_condition_decomposition.m's computation of `oo_.initval_decomposition`.
+fn compute_initval(
+    mf: &ModFile,
+    st: Option<&EstimationState>,
+    o: &Options,
+    state: &mut DecompositionState,
+    dsge: &DsgeModel,
+    data: &LikelihoodData,
+    set: &str,
+) -> Result<()> {
+    state.check_not_squeezed("initval_decomposition")?;
+    let x = smoother_point(st, dsge, set)?;
+    let sm = dsge_smoother(dsge, data, &x, false)?;
+    let z = initial_condition_decomposition(sm.dr(), &sm.smoothed_deviation());
+    let n = z.n;
+    // with_epilogue (options_.initial_condition_decomp.with_epilogue, by default
+    // options_.shock_decomp.with_epilogue: set_default_initial_condition_decomposition_options)
+    let mut o = o.clone();
+    if opt(&o, "with_epilogue").is_none()
+        && let Some(v) = opt(&state.shock_decomp, "with_epilogue")
+    {
+        o.push(("with_epilogue".into(), v.clone()));
+    }
+    let z = crate::q4::decomp::initval_with_epilogue(mf, st, &o, z, sm.ys(), &mut state.q4)?;
+    state.q4.ys = Some(sm.ys().to_vec()); // oo_.dr.ys: the steady state of the `steadystate` option
+    state.initval = Some(Stored { z, parameter_set: set.to_string(), nshocks: n, forecast_length: None });
+    Ok(())
+}
+
+/// plot_shock_decomposition.m's catch branch: a requested variable was squeezed out of the stored
+/// decompositions, so they are all recomputed for every variable (shock_decomposition, then
+/// realtime_shock_decomposition if it ran or `realtime` is asked, then the initval decomposition
+/// if it is stored), without graphs; `oo_.shock_decomposition_info.i_var` is dropped.
+#[allow(clippy::too_many_arguments)]
+fn recompute_decompositions(
+    mf: &ModFile,
+    st: Option<&EstimationState>,
+    realtime: bool,
+    state: &mut DecompositionState,
+    dir: &Path,
+    fname: &str,
+    out_dir: &Path,
+) -> Result<()> {
+    eprintln!("Warning: shock decomp results for some input variable was not stored: I recompute all decompositions");
+    state.squeezed = None;
+    let initval = state.initval.take().is_some();
+    let rerun_realtime = state.realtime.take().is_some() || realtime;
+    state.shock_decomposition = None;
+    state.forecast_sd.clear();
+    let nograph = |o: Option<&Options>| {
+        let mut o = o.cloned().unwrap_or_default();
+        o.retain(|(k, _)| k != "nograph");
+        o.push(("nograph".into(), OptValue::Flag)); // options_.no_graph.shock_decomposition = 1
+        o
+    };
+    println!("recomputing shock decomposition ...");
+    let o = nograph(state.last_sd.as_ref());
+    let last_sd = state.last_sd.clone();
+    shock_decomposition_command(mf, st, &o, &[], state, dir, fname, out_dir)?;
+    state.last_sd = last_sd;
+    if rerun_realtime {
+        println!("recomputing realtime shock decomposition ...");
+        let o = nograph(state.last_realtime.as_ref());
+        let last = state.last_realtime.clone();
+        realtime_shock_decomposition_command(mf, st, &o, &[], state, dir, fname, out_dir)?;
+        state.last_realtime = last;
+    }
+    if initval {
+        println!("recomputing initval shock decomposition ...");
+        let o = state.last_initval.clone().unwrap_or_default();
+        let set = state.parameter_set(st, &o, "shock_decomposition")?;
+        let mut own = None;
+        let (dsge, data, _) = smoother_inputs(mf, st, &o, dir, &mut own)?;
+        compute_initval(mf, st, &o, state, dsge, data, &set)?;
+    }
     Ok(())
 }
 

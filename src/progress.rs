@@ -85,6 +85,18 @@ fn with_state(f: impl FnOnce(&mut State)) {
     }
 }
 
+/// dynare-rust's own information lines (what was written where, timings, MCMC progress).
+/// Dynare's console output has none of them, so stdout stays identical to Dynare's; on an
+/// interactive terminal (or with `DYNARE_RS_VERBOSE` set, e.g. for the log mode of
+/// `dynare-progress`, which reads `chains x` and `chain 1:` lines) they go to stderr, the
+/// role of Dynare's waitbars.
+pub fn note(text: impl AsRef<str>) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() || std::env::var_os("DYNARE_RS_VERBOSE").is_some() {
+        eprintln!("{}", text.as_ref());
+    }
+}
+
 /// Starts a new phase: resets the detail line, the chains and the evaluation counter.
 pub fn phase(name: impl Into<String>) {
     let name = name.into();

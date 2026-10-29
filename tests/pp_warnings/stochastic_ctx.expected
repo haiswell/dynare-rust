@@ -1,0 +1,4 @@
+WARNING: stochastic_ctx.mod: line 13, cols 29-38: The 'aim_solver' option is deprecated. It has been superseded by the 'dr=aim' option.
+WARNING: You have more than one osr_params statement in the .mod file.
+WARNING: you are using a function (max, min, abs, sign) or an operator (<, >, <=, >=, ==, !=) which is unsuitable for a stochastic context; see the reference manual, section about "Expressions", for more details.
+WARNING: Parameter(s) p_unused  not used in the model

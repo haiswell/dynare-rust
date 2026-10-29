@@ -1,0 +1,21 @@
+// endogenous and exogenous variables in shocks expressions: oo_.steady_state(i) at the initval
+var y c;
+varexo e u;
+parameters a;
+a = 0.5;
+model;
+c = 0.4*c(-1) + 1 + u;
+y = a*y(-1) + c + e;
+end;
+initval;
+y = 1;
+c = 2;
+e = 0;
+u = 0.5;
+end;
+shocks;
+var e; stderr y+1;
+var u; stderr c/10;
+corr e, u = y/10;
+end;
+stoch_simul(order=1, irf=0, noprint, nograph);

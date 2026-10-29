@@ -82,6 +82,11 @@ dynare-rs [OPTIONS] model.mod [DYNARE_OPTIONS]...
 `-DNAME=VALUE`, `-I<path>`, ...). Extra options include `--seed N`, `--mh-replic N`,
 `--threads N`, `--blas accelerate|rust` and `--quiet`; `dynare-rs --help` lists them all.
 
+Standard output is Dynare's console output. dynare-rs's own notes (files written, timings, MCMC
+progress) go to stderr when it is a terminal; set `DYNARE_RS_VERBOSE=1` to keep them when the
+output is redirected to a log file. `dynare-progress <dir>` follows a run from its progress
+file either way.
+
 Long MCMC runs can be memory-bound. `--low-memory` stores the chains run-length encoded (a
 rejected proposal repeats the previous draw, so about the acceptance rate's share of the draws
 is kept), reads the MH files back one chain at a time and runs the post-MCMC statistics on four
@@ -107,11 +112,14 @@ This prints the steady state, eigenvalues, decision rules, moments and IRFs, as 
 
 ## Accuracy
 
-The test suite (about 750 tests) compares dynare-rust with Dynare 7.2 reference outputs
+The test suite (about 1,000 tests) compares dynare-rust with Dynare 7.2 reference outputs
 committed under `reference/`: decision rules, likelihoods, smoothers, forecasts and most other
 outputs agree to 1e-10 or better. Results that depend on random draws (MCMC, simulations,
 particle filters) use dynare-rust's seeded ChaCha8 streams instead of MATLAB's generators, so
 they agree statistically, and to rounding when fed the same draws.
+Dynare 7.2's own test suite (the 708 entries of its `tests/meson.build`) is run under both
+programs by `scripts/sweep/`; `scripts/sweep/triage.md` classifies every entry (agreeing, random
+draws, optimizer endpoints, MATLAB code in the .mod, examined differences).
 [docs/REFERENCES.md](docs/REFERENCES.md) describes the reference models, how the references
 are generated and the known differences from Dynare.
 
@@ -137,15 +145,18 @@ and Dynare 7.2; see the script header).
 - MATLAB code is not executed: `<fname>_steadystate.m` files are accepted only when they follow
   Dynare's template (they are translated into a `steady_state_model` block), external
   functions written in MATLAB work for simple scalar code only, and MATLAB statements and
-  `verbatim` blocks are interpreted for the common cases only.
+  `verbatim` blocks are interpreted for the common cases only (`options_.X = V`,
+  `if isoctave ... else ... end` with `isoctave` false, `load 'X.mat'` followed by a `for` loop
+  of `set_param_value(param, s.params.(param))` over `fieldnames(s.params)`).
 - MEX-only and code-generation features (`use_dll`, `bytecode`, ...) are not applicable;
   `mode_compute=13` (`lsqnonlin`) is replaced by a bounded Levenberg-Marquardt.
 - Random draws come from dynare-rust's own streams, not MATLAB's Mersenne twister.
 - A few results that Dynare decides by rounding (numerically multiple unit roots, forecast-error
   covariances near `kalman_tol`) can differ.
-- Some options are not read yet (e.g. the OccBin particle-filter and posterior importance
-  sampling options); [docs/COVERAGE.md](docs/COVERAGE.md) gives the status of every
-  option and [docs/REFERENCES.md](docs/REFERENCES.md) the known differences.
+- Options that Dynare 7.2 itself ignores (e.g. the OccBin particle-filter and posterior
+  importance sampling options) are accepted with a warning; [docs/COVERAGE.md](docs/COVERAGE.md)
+  gives the status of every option and [docs/REFERENCES.md](docs/REFERENCES.md) the known
+  differences.
 - The library API (`dynare::...`) is not stable; the command-line interface follows Dynare's.
 
 ## License and credits

@@ -506,7 +506,9 @@ pub fn calibrated_steady_state(mf: &ModFile, params: &[f64]) -> Result<Vec<f64>>
     let x = mf.exo_steady_state(); // oo_.exo_steady_state (initval)
     model.set_auxiliary_variables(&mut ys0, &x, params);
     let ssm = crate::deterministic::SteadyStateModel::from_modfile(mf)?; // stream D
-    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &crate::dsge::steady_options(mf), true)
+    // resol.m: evaluate_steady_state(..., ~options_.steadystate.nocheck)
+    let check = !crate::dsge::steady_flag(mf, "nocheck");
+    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &crate::dsge::steady_options(mf), check)
         .map(|(ys, _)| ys)
         .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))
 }
@@ -519,13 +521,18 @@ pub fn stochastic_histval_of(model: &Model, histval: &[(bool, usize, i32, f64)])
     if histval.is_empty() {
         return None;
     }
-    let at = |j: usize, lag: i32| -> f64 {
-        histval.iter().rev().find(|&&(e, i, l, _)| e && i == j && l == lag).map(|h| h.3).unwrap_or(0.0)
+    let at = |endo: bool, j: usize, lag: i32| -> f64 {
+        histval.iter().rev().find(|&&(e, i, l, _)| e == endo && i == j && l == lag).map(|h| h.3).unwrap_or(0.0)
     };
-    let mut y0: Vec<f64> = (0..model.n_endo()).map(|j| if j < model.orig_endo_nbr { at(j, 0) } else { 0.0 }).collect();
+    let mut y0: Vec<f64> =
+        (0..model.n_endo()).map(|j| if j < model.orig_endo_nbr { at(true, j, 0) } else { 0.0 }).collect();
+    // dynamic_set_auxiliary_series: AUX_ENDO_LAG (type 1) and AUX_EXO_LAG (type 3) carry their
+    // variable at the lag (e.g. histval's u(-1) for u(-2) in the model)
     for a in &model.aux_vars {
-        if let (1, Some(o), Some(l)) = (a.ty, a.orig_index, a.orig_lead_lag) {
-            y0[a.endo_index] = at(o, l);
+        match (a.ty, a.orig_index, a.orig_lead_lag) {
+            (1, Some(o), Some(l)) => y0[a.endo_index] = at(true, o, l),
+            (3, Some(o), Some(l)) => y0[a.endo_index] = at(false, o, l),
+            _ => {}
         }
     }
     // rows of auxiliary variables set directly (`smoother2histval` writes the AUX_EXO_LAG rows
@@ -740,7 +747,8 @@ pub fn calibrated_steady_state_params(
     if let Some(sa) = solve_algo {
         so.solve_algo = sa;
     }
-    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &so, true)
+    let check = !crate::dsge::steady_flag(mf, "nocheck");
+    crate::dsge::solve_steady_at(model, ssm.as_ref(), params, &ys0, &x, &so, check)
         .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))
 }
 // ---- end stoch_simul ----
@@ -1052,6 +1060,7 @@ fn write_results_json(model: &Model, r: &StochSimulResults, dr: &DecisionRule, c
         j["irfs"] = serde_json::Value::Object(irfs);
     }
     if let Some(t) = &r.theoretical {
+        j["mean"] = json!(t.mean(dr));
         j["var"] = json!(m2v(&t.gamma0));
         j["autocorr"] = json!(t.autocorr.iter().map(m2v).collect::<Vec<_>>());
         if let Some(v) = &t.vardec {
@@ -1763,7 +1772,7 @@ pub fn run_check_det(
                 &d.exo_steady_state,
                 &params,
                 &d.steady_opts,
-                true,
+                !crate::dsge::steady_flag(mf, "nocheck"),
             )
             .map_err(|e| anyhow!("steady state at the calibration failed (info {}: {})", e.info, describe(e.info)))?;
             (ys, d.exo_steady_state.clone())

@@ -91,7 +91,18 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
     if ro.cli.json.is_some() {
         crate::model::dtree::json_capture(); // json=...
     }
-    let mut mf = crate::modfile::parse_mod_file_opts(path, &crate::misc::cli::parse_options(ro))?;
+    let mut mf = match crate::modfile::parse_mod_file_opts(path, &crate::misc::cli::parse_options(ro)) {
+        Ok(mf) => mf,
+        Err(e) => {
+            for w in crate::modfile::take_error_warnings() {
+                println!("{w}"); // the preprocessor prints its warnings before the error
+            }
+            return Err(e);
+        }
+    };
+    for w in &mf.warnings {
+        println!("{w}"); // the preprocessor's output comes first
+    }
     if crate::q4::after_parse(&mf, &dir, &fname, ro)? {
         return Ok(()); // onlyjson
     }
@@ -122,7 +133,11 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
     // oo_.dr: the decision rules the last stoch_simul / estimation left (read by forecast)
     let mut oo_dr = fc::DecisionRules::Empty;
     let mut steady_params: Option<Vec<f64>> = None;
+    // oo_.steady_state as the commands leave it: initval, `steady`, the starting point of an
+    // estimation (stoch_simul does not store it); zeros before
+    let mut oo_ss: Vec<f64> = vec![0.0; mf.model.n_endo()];
     let mut last_endo_simul: Option<crate::linalg::Mat> = None; // oo_.endo_simul of stoch_simul
+    let mut last_exo_simul: Option<crate::linalg::Mat> = None; // oo_.exo_simul of stoch_simul (order 1)
     let ss_ctx = crate::analysis::OutputContext {
         dir: dir.clone(),
         fname: fname.clone(),
@@ -160,11 +175,15 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
     let ncommands = if ro.cli.onlymodel { 0 } else { mf.commands.len() }; // [stream X] onlymodel
     for ci in 0..ncommands {
         mf.options.write(&mf.commands[ci]); // the options this command writes into options_
+        if matches!(mf.commands[ci], Command::Estimation(..)) && mf.options.slice_prior_trunc_raised {
+            println!("\ndynare_estimation_init: slice requires bounded support. Setting options_.prior_trunc=1e-10.");
+        }
         // the shocks / initval / histval / perfect_foresight_controlled_paths blocks written
         // before this command (driver.m runs them in file order)
-        for b in mf.run_state_blocks(ci, &mut next_block) {
+        for b in mf.run_state_blocks(ci, &mut next_block, &mut oo_ss)? {
             apply_initval_to_det(&mut mf, det.as_mut(), &b)?;
         }
+        mf.resolve_learnt(ci, &oo_ss)?; // learnt_in values with endogenous variables
         while next_cp < controlled_paths_all.len() && mf.controlled_paths_pos[next_cp] <= ci {
             mf.ep.controlled_paths.push(controlled_paths_all[next_cp].clone());
             next_cp += 1;
@@ -259,6 +278,15 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             let o = mf.options.steady.clone();
             crate::misc::homotopy::before_steady(&mut mf, det.as_mut(), &o)?; // steady(homotopy_mode=...)
         }
+        if matches!(mf.commands[ci], Command::Estimation(..)) {
+            // dynare_estimation_init.m computes the steady state at the initial point
+            if let Ok(x0) = crate::dsge::initial_vector(&mf)
+                && let Ok(dm) = DsgeModel::new(&mf, Some(&x0))
+                && let Ok(ys) = crate::analysis::calibrated_steady_state(&mf, &dm.set_all_parameters_full(&x0).0)
+            {
+                oo_ss = ys;
+            }
+        }
         // an estimation sees the options earlier estimations left in options_
         let mut new_globals: Option<crate::dsge::GlobalState> = None; // M_ written by an estimation
         let est_opts: Option<Options> =
@@ -271,6 +299,9 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             policy.ss_opts = ss_opts.clone(); // options_ is shared with stoch_simul / estimation
             policy.run(&mf, c, Some((&out_dir, &fname)))?;
             ss_opts = policy.ss_opts.clone();
+            if let Some(y) = policy.endo_simul.take() {
+                last_endo_simul = Some(y); // oo_.endo_simul (datatomfile)
+            }
             if let Some(p) = policy.take_params() {
                 mf.model.params = p; // osr: M_.params with the optimized values
                 if let Some(d) = det.as_mut() {
@@ -303,6 +334,15 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             }
             Command::Deterministic(name, o, vars) => {
                 let d = det.as_mut().expect("deterministic command implies DetState");
+                // rplot plots the latest oo_.endo_simul / oo_.exo_simul, also those of stoch_simul
+                if name == "rplot"
+                    && let Some(e) = &last_endo_simul
+                {
+                    d.endo_simul = Some(e.clone());
+                    if let Some(x) = &last_exo_simul {
+                        d.exo_simul = Some(x.clone());
+                    }
+                }
                 // rplot after dsample (options_.smpl); the epilogue over the simulation
                 if !crate::q4::rplot_dsample(&mf, name, o, vars, d, &dir, &fname, xs.dsample)? {
                     d.command(&mf, name, o, vars, &dir, &fname)?;
@@ -310,6 +350,7 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
                 crate::q4::after_deterministic(&mf, name, d, &out_dir, &fname)?;
                 if let Some(e) = &d.endo_simul {
                     last_endo_simul = Some(e.clone()); // oo_.endo_simul of the perfect foresight solver
+                    last_exo_simul = d.exo_simul.clone();
                 }
             }
             // ---- stream B: BVAR, model comparison, LaTeX
@@ -369,8 +410,12 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
                 // dynare_estimation_init.m: options_.qz_criterium stays in options_
                 let lik_init = if flag(opts, "diffuse_filter") { 3.0 } else { num(opts, "lik_init").unwrap_or(1.0) };
                 ss_opts.qz_criterium = select_qz_criterium_value(ss_opts.qz_criterium, lik_init)?;
-                let (mut st, ctx, point) =
-                    estimation(&mf, &dir, &fname, &out_dir, opts, vars, ro, &ss_opts, &mut occbin)?;
+                let (mut st, ctx, point) = match crate::estimation::recursive::Recursive::new(opts, &fname)? {
+                    None => estimation(&mf, &dir, &fname, &out_dir, opts, vars, ro, &ss_opts, &mut occbin)?,
+                    Some(rec) => {
+                        recursive_estimation(&rec, &mf, &dir, &fname, &out_dir, opts, vars, ro, &ss_opts, &mut occbin)?
+                    }
+                };
                 // dynare_estimation_1.m:584-587: the mode / posterior mean becomes M_.params, M_.Sigma_e, M_.H
                 st.dsge.adopt_point(&point);
                 new_globals = Some(st.dsge.global_state());
@@ -395,6 +440,8 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             }
             Command::ShockDecomposition(o, v) => {
                 // stream C: dispatches to stream F's command or the forecast_type branch, keeps oo_
+                // options_.datafile of an earlier command, when no estimation supplies the data
+                let o = &if est_state.is_none() { mf.options.with_data_options(o) } else { o.clone() };
                 rtd::shock_decomposition_command(&mf, est_state.as_ref(), o, v, &mut sc, &dir, &fname, &out_dir)?
             }
             Command::CalibSmoother(o, v) if !mf.occbin_constraints.is_empty() => {
@@ -457,8 +504,10 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
                 if ss_opts.order >= 2 && !order1 {
                     // ---- stream K: stoch_simul at order >= 2 (Dynare's default order is 2);
                     // with the persistent options_ ----
-                    if let Some(y) = crate::solver::korder::stoch_simul::run_q2(&mf, &ss_opts, vars, &ss_ctx)? {
+                    let r = crate::solver::korder::stoch_simul::run_q2(&mf, &ss_opts, vars, &ss_ctx);
+                    if let Some(y) = noprint_info(r, ss_opts.noprint)?.flatten() {
                         last_endo_simul = Some(y); // oo_.endo_simul (datatomfile)
+                        last_exo_simul = None;
                     }
                 } else {
                     // ---- stoch_simul: order 1 (model(linear), Hessian equal to zero, partial_information)
@@ -469,10 +518,12 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
                         }
                         so.order = 1;
                     }
-                    if let Some(r) = crate::analysis::run_stoch_simul(&mf, &so, vars, &ss_ctx, None)?
+                    let r = crate::analysis::run_stoch_simul(&mf, &so, vars, &ss_ctx, None);
+                    if let Some(r) = noprint_info(r, so.noprint)?.flatten()
                         && r.endo_simul.is_some()
                     {
                         last_endo_simul = r.endo_simul;
+                        last_exo_simul = r.exo_simul;
                     }
                 }
                 ss_opts.partial_information = false; // stoch_simul.m: "temporary fix waiting for local options"
@@ -496,7 +547,10 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             }
             Command::Policy(..) => {} // [stream P] handled by policy::handles above
             // ---- stream C ----
-            Command::ConditionalForecastPaths(p) => sc.cond_paths = Some(cfc::ConstrainedPaths::from_block(&mf, p)?),
+            Command::ConditionalForecastPaths(p) => {
+                sc.cond_paths =
+                    Some(cfc::ConstrainedPaths::from_block(&mf, p, &|| Ok((oo_ss.clone(), mf.exo_steady_state())))?)
+            }
             Command::ConditionalForecast(o) => {
                 sc.conditional_forecast = Some(cfc::conditional_forecast_command(
                     &mf,
@@ -530,16 +584,20 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             Command::PlotShockDecomposition(o, v) => {
                 rtd::plot_shock_decomposition_command(&mf, est_state.as_ref(), o, v, &mut sc, &dir, &fname, &out_dir)?
             }
-            Command::InitialConditionDecomposition(o, v) => rtd::initial_condition_decomposition_command(
-                &mf,
-                est_state.as_ref(),
-                o,
-                v,
-                &mut sc,
-                &dir,
-                &fname,
-                &out_dir,
-            )?,
+            Command::InitialConditionDecomposition(o, v) => {
+                // options_.datafile of an earlier command, as for shock_decomposition
+                let o = &if est_state.is_none() { mf.options.with_data_options(o) } else { o.clone() };
+                rtd::initial_condition_decomposition_command(
+                    &mf,
+                    est_state.as_ref(),
+                    o,
+                    v,
+                    &mut sc,
+                    &dir,
+                    &fname,
+                    &out_dir,
+                )?
+            }
             Command::SqueezeShockDecomposition(v) => rtd::squeeze_shock_decomposition(&mf, v, &mut sc)?,
             // ---- end stream C ----
             // stream I: identification
@@ -571,9 +629,20 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
         if matches!(mf.commands[ci], Command::CalibSmoother(..)) {
             // DsgeSmoother.m: dynare_resolve stores oo_.dr at the calibration
             oo_dr = fc::DecisionRules::Computed { params: Some(mf.model.params.clone()), point: None };
+            // the driver writes options_.parameter_set = 'calibration' before
+            // evaluate_smoother, and it stays for the later decompositions
+            sc.parameter_set = Some("calibration".into());
         }
         if matches!(mf.commands[ci], Command::Steady(_)) {
             mf.options.steady_ran = true; // oo_.steady_state holds a computed steady state
+            match det.as_ref() {
+                Some(d) if d.steady_state.len() >= oo_ss.len() => oo_ss = d.steady_state[..oo_ss.len()].to_vec(),
+                _ => {
+                    if let Ok(ys) = crate::analysis::calibrated_steady_state(&mf, &mf.model.params) {
+                        oo_ss = ys;
+                    }
+                }
+            }
         }
         if let Some(g) = new_globals.take() {
             g.write(&mut mf); // M_ after the estimation (set_all_parameters)
@@ -585,7 +654,14 @@ fn run_on_this_thread(path: &Path, ro: &RunOptions) -> Result<()> {
             mf.model.params = p; // steady.m: M_.params from the steady_state_model block
         }
     }
-    println!("Total computing time : {}", hms(t0.elapsed().as_secs_f64()));
+    {
+        // the generated driver: fprintf("Total computing time : %dh%02dm%02ds\n", ...)
+        let s = t0.elapsed().as_secs();
+        println!("Total computing time : {}h{:02}m{:02}s", s / 3600, (s / 60) % 60, s % 60);
+    }
+    if !mf.warnings.is_empty() {
+        println!("Note: {} warning(s) encountered in the preprocessor", mf.warnings.len());
+    }
     crate::progress::finish(true, "");
     Ok(())
 }
@@ -740,6 +816,7 @@ const DISPLAY_ONLY: &[&str] = &[
 const SUPPORTED: &[&str] = &[
     "datafile",
     "first_obs",
+    "recursive_estimation_restart",
     "nobs",
     "presample",
     "diffuse_filter",
@@ -789,6 +866,12 @@ const SUPPORTED: &[&str] = &[
     "endogenous_prior",
     "posterior_sampling_method",
     "posterior_sampler_options",
+    // `options_.solve_tolf/solve_tolx = V;` before the command (GlobalOptions::write: the steady state)
+    "solve_tolf",
+    "solve_tolx",
+    // `options_.gradient_epsilon/gradient_method = V;` (the optimizers' numerical gradients)
+    "gradient_epsilon",
+    "gradient_method",
 ];
 
 // ---------------------------------------------------------------------------
@@ -822,6 +905,10 @@ fn estimation(
     let var_list_q3 = crate::estimation::q3::var_list(mf, o, var_list)?;
     let var_list = &var_list_q3[..];
     for (k, _) in o {
+        // `order=1` is the linear estimation (the default); higher orders are run elsewhere
+        if k == "order" {
+            continue;
+        }
         if !SUPPORTED.contains(&k.as_str()) && !DISPLAY_ONLY.contains(&k.as_str()) && !mh_session::OPTIONS.contains(&k.as_str())
             && !crate::estimation::q3::OPTIONS.contains(&k.as_str())
             && !crate::estimation::est_completion::OPTIONS.contains(&k.as_str()) // ---- estimation completion
@@ -875,7 +962,7 @@ fn estimation(
     }
     let mut data = LikelihoodData::new(&sample, kopts.clone());
     data.first_obs = first_obs; // [stream X] observation_trends
-    crate::estimation::q3::attach(mf, o, &mut data, first_obs)?; // heteroskedastic_filter
+    crate::estimation::q3::attach(mf, o, &mut data, first_obs, ds.init)?; // heteroskedastic_filter
     if num(o, "prefilter").unwrap_or(0.0) == 1.0 {
         data.prefilter();
     }
@@ -889,14 +976,14 @@ fn estimation(
     data.calib_restrictions = crate::gsa::calibration::restrictions_at_options(mf, o)?;
     // ---- end calibration restrictions ----
     let missing = data.missing.any_missing;
-    println!(
-        "\nData: {} ({} observables, {} observations from first_obs = {}{}).",
+    crate::progress::note(format!(
+        "Data: {} ({} observables, {} observations from first_obs = {}{}).",
         datapath.display(),
         mf.varobs.len(),
         nobs,
         first_obs,
         if missing { ", with missing values" } else { "" }
-    );
+    ));
 
     // ---- initial values ----------------------------------------------------
     let mode_file = string(o, "mode_file");
@@ -915,6 +1002,32 @@ fn estimation(
         None => crate::dsge::initial_vector(mf)?,
     };
     let dsge = crate::estimation::est_completion::with_solver_options(DsgeModel::new(mf, Some(&x_init))?, ss_opts)?; // ---- estimation completion: dr=, qz_zero_threshold
+    // set_prior.m: beta priors first, then gamma priors
+    for k in 0..dsge.priors.len() {
+        let p = &dsge.priors[k];
+        if p.shape.code() == 1 && !(p.p6.is_nan() || p.p7.is_nan()) {
+            if p.p6 < 1.0 || p.p7 < 1.0 {
+                println!("Prior distribution for parameter {} has unbounded density!", dsge.estimated_names[k]);
+            }
+            if p.p6 < 1.0 && p.p7 < 1.0 {
+                println!("Prior distribution for parameter {} has two modes!", dsge.estimated_names[k]);
+            }
+        }
+    }
+    for k in 0..dsge.priors.len() {
+        let p = &dsge.priors[k];
+        if p.shape.code() == 2 && p.p6 < 1.0 {
+            println!("Prior distribution for parameter {} has unbounded density!", dsge.estimated_names[k]);
+        }
+    }
+    if mode_file.is_some() {
+        println!(); // check_mode_file.m (after set_prior.m) ends with skipline()
+    }
+    // initial_estimation_checks.m: check_prior_stderr_corr_skew
+    let kinds_dyn: Vec<_> = mf.estimated_params_dynare_order().iter().map(|e| e.kind).collect();
+    for w in crate::estimation::prior::check_prior_stderr_corr_skew(&kinds_dyn, &dsge.priors) {
+        println!("Warning: {w}");
+    }
     // dynare_estimation_init.m: prefiltered data need zero-mean measurement equations
     if data.prefilter_mean.is_some()
         && dsge.varobs.iter().any(|&v| dsge.level_constant(v, &dsge.ys_guess).abs() >= 1e-9)
@@ -976,13 +1089,24 @@ fn estimation(
     if gopts.enabled && num(o, "plot_priors").unwrap_or(1.0) != 0.0 {
         let figs = crate::estimation::plots::priors_figures(&dsge.priors, &dsge.estimated_names);
         let k = crate::estimation::plots::save_figures(&figs, fname, &gopts)?;
-        println!("plot_priors: {k} figures ({fname}_Priors*) written to {}.", gopts.dir.display());
+        crate::progress::note(format!(
+            "plot_priors: {k} figures ({fname}_Priors*) written to {}.",
+            gopts.dir.display()
+        ));
     }
 
     // ---- estimation completion: initial_estimation_checks.m (stochastic singularity, no_init_estimation_check_first_obs)
     crate::estimation::est_completion::initial_estimation_checks(mf, &dsge, &sample, &x_init, o, data.hetero.as_ref())?;
     let _huge =
         crate::estimation::optim::minimize::HugeNumberGuard::set(crate::estimation::est_completion::huge_number(o));
+    // `options_.gradient_epsilon = V;` / `options_.gradient_method = V;` before the command
+    let _grad = {
+        let d = crate::estimation::optim::minimize::GradientOptions::default();
+        crate::estimation::optim::minimize::GradientGuard::set(crate::estimation::optim::minimize::GradientOptions {
+            method: num(o, "gradient_method").unwrap_or(d.method),
+            epsilon: num(o, "gradient_epsilon").unwrap_or(d.epsilon),
+        })
+    };
     // ---- end estimation completion
     // initial_estimation_checks.m
     let t = Instant::now();
@@ -996,11 +1120,11 @@ fn estimation(
         }
         bail!("initial_estimation_checks: the posterior is not finite at the initial values (info {info0}).");
     }
-    println!(
-        "Initial value of the log posterior (or likelihood): {:.6}  ({:.2} ms per evaluation)",
-        -f0,
-        t.elapsed().as_secs_f64() * 1e3
-    );
+    // initial_estimation_checks.m: disp(['Initial value of the log posterior (or likelihood): ' num2str(-fval)])
+    if num(o, "mode_compute").unwrap_or(5.0) as i32 != 11 {
+        println!("Initial value of the log posterior (or likelihood): {}", crate::gsa::stats::num2str(-f0));
+    }
+    crate::progress::note(format!("({:.2} ms per evaluation)", t.elapsed().as_secs_f64() * 1e3));
 
     // ---- mode finding (dynare_estimation_1.m) -------------------------------
     let mode_compute = num(o, "mode_compute").unwrap_or(5.0) as i32;
@@ -1008,9 +1132,6 @@ fn estimation(
     // replaces it with its tuned Scale.
     let mut mh_jscale = num(o, "mh_jscale").unwrap_or(2.38 / (n as f64).sqrt());
     let mut gmh_scale: Option<f64> = None;
-    // dynare_estimation_1.m: mode_compute=0 without a mode file only runs the smoother at
-    // the initial values.
-    let smoother_only = mode_compute == 0 && mode_file.is_none() && flag(o, "smoother");
     // stream PF: posterior_sampling_method = 'dsmh' (dynare_estimation_1.m: issmc -> no mode
     // finding, no MCMC), on the linear (Kalman) posterior
     if crate::nonlinear::smc_run::smc_method(o).is_some() {
@@ -1019,6 +1140,7 @@ fn estimation(
             json!({ "model": fname, "parameter_names": dsge.estimated_names, "initial_minus_log_posterior": f0 });
         let online = crate::nonlinear::smc_run::online_model(mf, &x_init, o, &sample, ro.seed)?;
         let means = crate::nonlinear::smc_run::run_smc(
+            mf,
             post,
             &dsge,
             nobs,
@@ -1041,12 +1163,14 @@ fn estimation(
             posterior_median: None,
             graphs: fc::graph_options(o, dir, fname),
             mean_forecast: None,
+            point_forecast: None,
+            forecast: None,
             smoothed_mean: None,
         };
         return Ok((st, None, means));
     }
     // [stream O] posterior_sampling_method / posterior_sampler_options (check_posterior_sampler_options.m).
-    let sampler =
+    let mut sampler =
         SamplerOptions::from_options(opt(o, "posterior_sampling_method"), opt(o, "posterior_sampler_options"))?
             .with_estimation_optim(opt(o, "optim"))
             .with_priors(&dsge.priors);
@@ -1056,9 +1180,13 @@ fn estimation(
     }
     // ---- MCMC files (load_mh_file, mh_recover, mh_initialize_from_previous_mcmc, ...) ----
     let mfo = mh_session::MhFileOptions::from_options(o, &sampler, dir)?;
+    crate::estimation::samplers::check_maximize(&sampler, mfo.load_mh_file, mfo.mh_recover)?;
     // Slice without slice_initialize_with_mode, or mh_posterior_mode_estimation: no mode
     // finding, no Hessian; the MCMC starts at the prior mode (dynare_estimation_1.m).
     let mode_estim = sampler.mh_posterior_mode_estimation() || (mfo.mh_posterior_mode_estimation && !dsge.ml);
+    // dynare_estimation_1.m: mode_compute=0 without a mode file only runs the smoother at
+    // the initial values (not with mh_posterior_mode_estimation, e.g. the slice sampler's default)
+    let smoother_only = mode_compute == 0 && mode_file.is_none() && flag(o, "smoother") && !mode_estim;
     let (xmode, fmode, hh) = if mode_estim {
         println!("No posterior maximization (mh_posterior_mode_estimation); the MCMC starts from the prior mode.");
         let x = prior_mode_start(&dsge.priors, &dsge.bounds);
@@ -1116,18 +1244,18 @@ fn estimation(
                     gopts.apply_optim(v)?;
                 }
                 let res = gmhmaxlik(post, &x, hh.as_ref(), mh_jscale, &dsge.bounds, &prior_sd, &gopts)?;
-                println!(
-                    "\nmode_compute = 6: Optimization successful. ({} function evaluations, {} per round, {}).",
+                crate::progress::note(format!(
+                    "mode_compute = 6: Optimization successful. ({} function evaluations, {} per round, {}).",
                     res.func_count,
                     res.prefetch,
                     hms(t.elapsed().as_secs_f64())
-                );
+                ));
                 // dynare_estimation_1.m: save the scale, use it as mh_jscale; hh is
                 // gmhmaxlik's (no hessian.m for optimizer 6).
                 std::fs::create_dir_all(out_dir)?;
                 let scale_path = out_dir.join(format!("{fname}_optimal_mh_scale_parameter.mat"));
                 matfile::write(&scale_path, &[("Scale", MatOut::Scalar(res.scale))])?;
-                println!("Optimal mh_jscale {:.6} saved to {}", res.scale, scale_path.display());
+                crate::progress::note(format!("Optimal mh_jscale {:.6} saved to {}", res.scale, scale_path.display()));
                 mh_jscale = res.scale;
                 gmh_scale = Some(res.scale);
                 x = res.x;
@@ -1164,26 +1292,30 @@ fn estimation(
                     };
                     minimize(optimizer, obj, &x, &ctx)?
                 };
-                println!(
-                    "\nmode_compute = {optimizer}: {} ({} iterations, {} function evaluations, {}).",
+                crate::progress::note(format!(
+                    "mode_compute = {optimizer}: {} ({} iterations, {} function evaluations, {}).",
                     res.message,
                     res.iterations,
                     res.func_count,
                     hms(t.elapsed().as_secs_f64())
-                );
+                ));
                 let t = Instant::now();
                 crate::progress::phase(format!("Hessian at the mode (mode_compute = {optimizer})"));
                 // ---- estimation completion: dynare_estimation_1.m's Hessian at the mode
                 let optimizer_hh = if optimizer == 5 { res.hessian.clone() } else { None };
                 let h = mode_hessian.compute(optimizer, &res.x, res.fval, optimizer_hh)?;
                 if h.is_some() && cova_compute {
-                    println!("Hessian at the mode computed in {}.", hms(t.elapsed().as_secs_f64()));
+                    crate::progress::note(format!(
+                        "Hessian at the mode computed in {}.",
+                        hms(t.elapsed().as_secs_f64())
+                    ));
                 }
                 x = res.x;
                 fval = res.fval;
                 hh = h;
             }
-            println!("Final value of minus the log posterior (or likelihood): {fval:.6}");
+            // dynare_estimation_1.m: fprintf('\nFinal value of minus the log posterior (or likelihood):%f \n', fval)
+            println!("\nFinal value of minus the log posterior (or likelihood):{fval:.6} ");
         }
         std::fs::create_dir_all(out_dir)?;
         let mode_path = out_dir.join(format!("{fname}_mode.mat"));
@@ -1215,7 +1347,7 @@ fn estimation(
             }
         };
         // ---- end estimation completion
-        println!("Mode saved to {}", mode_path.display());
+        crate::progress::note(format!("Mode saved to {}", mode_path.display()));
         (x, fval, hh)
     };
 
@@ -1260,6 +1392,8 @@ fn estimation(
     // ---- mode table + Laplace -------------------------------------------------
     let invhess = inverse_hessian(&hh);
     let sd_mode: Vec<f64> = match &invhess {
+        // dynare_estimation_1.m: `if ~options_.cova_compute, stdh = NaN(length(xparam1),1)`
+        _ if !cova_compute => vec![f64::NAN; n],
         // (NaN stays NaN, as MATLAB's sqrt: a non-finite Hessian gives NaN standard deviations)
         Some(v) => (0..n).map(|i| if v[(i, i)].is_nan() { f64::NAN } else { v[(i, i)].max(0.0).sqrt() }).collect(),
         None => vec![f64::NAN; n],
@@ -1324,6 +1458,7 @@ fn estimation(
                 d.endogenous_prior = data.endogenous_prior;
                 d.hetero = data.hetero.clone();
                 d.filter_initial_state = data.filter_initial_state.clone();
+                d.filter_initial_state_expr = data.filter_initial_state_expr.clone();
                 d.calib_restrictions = data.calib_restrictions.clone(); // ---- calibration restrictions ----
                 d.skewed = data.skewed.clone(); // ---- estimation completion ----
                 d
@@ -1336,6 +1471,8 @@ fn estimation(
             posterior_median: pmed,
             graphs: fc::graph_options(o, dir, fname),
             mean_forecast: None,
+            point_forecast: None,
+            forecast: None,
             smoothed_mean: None,
         })
     };
@@ -1347,6 +1484,7 @@ fn estimation(
         || crate::modfile::opt(o, "filter_step_ahead").is_some()
         || fc::forecast_horizon(o) > 0;
     let mut mean_forecast: Option<crate::forecast::Forecast> = None; // oo_.MeanForecast
+    let mut point_forecast: Option<crate::forecast::Forecast> = None; // oo_.PointForecast
     let mut smoothed_mean: Option<(Mat, Mat)> = None; // oo_.SmoothedVariables.Mean, ...
     let has_mcmc = !dsge.ml && !smoother_only && (mh_replic > 0 || mfo.load_mh_file);
     if has_mcmc {
@@ -1372,8 +1510,11 @@ fn estimation(
             invhess.ok_or_else(|| anyhow!("the Hessian at the mode is not invertible: cannot start the MCMC"))?
         };
         let invhess = crate::estimation::q3::jumping_covariance(o, invhess, &dsge.priors, dir)?; // mcmc_jumping_covariance
-        let prior_trunc = num(o, "prior_trunc").unwrap_or(0.0);
+        let prior_trunc = crate::dsge::prior_trunc(mf);
         let mh_bounds = mcmc_bounds(&xmode, &dsge.priors, prior_trunc)?;
+        // slice sampler's maximize_using_mh_bounds (check_posterior_sampler_options.m)
+        let mh_drop_now = num(o, "mh_drop").unwrap_or(0.5);
+        crate::estimation::samplers::maximize_bounds(&mut sampler, &dname, fname, mh_drop_now, &mh_bounds)?;
         let mh_lin = DsgePosterior { dsge: &dsge, data: &data, bounds: &mh_bounds };
         let mh_occ = occ.as_ref().map(|oe| crate::occbin::estimation::OccbinPosterior {
             dsge: &dsge,
@@ -1419,10 +1560,9 @@ fn estimation(
                 &mh_bounds,
                 &TuneOptions { target, guess: Some(guess), seed: ro.seed, prefetch: ro.prefetch, ..Default::default() },
             )?;
-            println!("mh_jscale has been set equal to {jscale:.5} ({}).", hms(t.elapsed().as_secs_f64()));
-        }
-        if gmh_scale.is_some() && !flag(o, "mh_tune_jscale") {
-            println!("mh_jscale set to the scale tuned by mode_compute = 6: {jscale:.6}");
+            // dynare_estimation_1.m: fprintf('mh_jscale has been set equal to %s\n', num2str(options_.mh_jscale))
+            println!("mh_jscale has been set equal to {}", crate::gsa::stats::num2str(jscale));
+            crate::progress::note(format!("mh_jscale tuned in {}.", hms(t.elapsed().as_secs_f64())));
         }
         mh.mh_jscale = jscale;
         // bayestopt_.jscale: per-parameter estimated_params scale (set_prior.m); NaN entries
@@ -1435,31 +1575,32 @@ fn estimation(
                 _ => jscale,
             })
             .collect();
-        println!(
+        crate::progress::note(format!(
             "Estimation::mcmc ({}): {} chains x {} draws, running in parallel on {} threads.",
             sampler.title(),
             mh.nblocks,
             mh.replic,
             rayon::current_num_threads()
-        );
+        ));
         crate::progress::phase(format!("MCMC: {} chains x {} draws", mh.nblocks, mh.replic));
         crate::progress::chains(mh.nblocks, mh.replic);
         let t = Instant::now();
         let progress = |p: &MhProgress| {
             crate::progress::chain(p.chain, p.draws_done, p.acceptance);
             if p.chain == 0 && p.draws_done.is_multiple_of(print_every) {
-                println!(
+                crate::progress::note(format!(
                     "  chain 1: {:>9}/{} draws, acceptance {:5.2}%  [{}]",
                     p.draws_done,
                     p.total,
                     100.0 * p.acceptance,
                     hms(t.elapsed().as_secs_f64())
-                );
+                ));
             }
         };
         // posterior_sampler.m with Dynare's mh files (<fname>/metropolis/)
         let res = mh_session::run(
             mh_session::SessionInputs {
+                disp: "Estimation::mcmc",
                 obj: mh_post,
                 xparam1: &xmode,
                 invhess: &invhess,
@@ -1477,14 +1618,11 @@ fn estimation(
             &mfo,
         )?;
         let mcmc_secs = t.elapsed().as_secs_f64();
-        println!(
-            "Estimation::mcmc: done in {} ({} posterior evaluations per chain round). Acceptance ratio per chain:",
+        crate::progress::note(format!(
+            "Estimation::mcmc: done in {} ({} posterior evaluations per chain round).",
             hms(mcmc_secs),
             res.prefetch
-        );
-        for (k, a) in res.acceptance.iter().enumerate() {
-            println!("{:>60}Chain {:2}: {:.4}%", "", k + 1, 100.0 * a);
-        }
+        ));
         // mh_posterior_mode_estimation: the posterior mode from the MCMC, then stop
         if mfo.mh_posterior_mode_estimation {
             let (m, sd, kernel) = mh_session::posterior_mode_from_mcmc(&dname, fname, out_dir, &dsge.estimated_names)?;
@@ -1513,16 +1651,37 @@ fn estimation(
         let post_opts =
             PosteriorOptions { mh_drop, mh_conf_sig: num(o, "mh_conf_sig").unwrap_or(0.9), ..Default::default() };
         let stats = crate::estimation::mcmc::bounded(|| posterior_stats(&res.chains, &post_opts))?;
+        let diagnostics = !flag(o, "nodiagnostic") && previous_results.is_none();
+        let conv = crate::estimation::convergence::ConvergenceOptions {
+            // options_.convergence
+            last_file_lines: Some(res.record.last_line_number),
+            ..crate::estimation::convergence::ConvergenceOptions::from_options(o)
+        };
         if previous_results.is_none() {
-            println!(
-                "\nESTIMATION RESULTS\n\nLog data density (Modified Harmonic Mean) is {:.6}.",
-                stats.mhm.log_marginal
-            );
+            // dynare_estimation_1.m: mcmc_diagnostics (inefficiency factors, Geweke, Brooks-Gelman),
+            // then marginal_density and GetPosteriorParametersStatistics
+            if diagnostics {
+                print_ifac(mf, &dsge, &stats.ifac);
+                crate::estimation::mcmc::bounded(|| {
+                    crate::estimation::plots::mcmc_diagnostics(
+                        &res.chains,
+                        &dsge.estimated_names,
+                        mh_drop,
+                        fname,
+                        &gopts,
+                        &conv,
+                    )
+                })?;
+            }
+            print_marginal_density_messages(&stats.mhm);
+            // marginal_density.m: with the slice sampler, oo_.posterior_mode is the MCMC's best draw
+            // (fill_mh_mode with NaN standard deviations)
+            if mh_replic > 0 && sampler.method == crate::estimation::samplers::SamplingMethod::Slice {
+                let (m, _, _) = mh_session::posterior_mode_from_mcmc(&dname, fname, out_dir, &dsge.estimated_names)?;
+                results["mode"] = json!(m);
+                results["mode_sd"] = json!(vec![f64::NAN; n]);
+            }
             print_posterior_table(mf, &dsge, &stats);
-        } else {
-            println!(
-                "\nload_results_after_load_mh: posterior statistics and marginal density loaded from {fname}_results.json."
-            );
         }
         if flag(o, "tex") {
             // stream B: TeX tables (GetPosteriorParametersStatistics.m)
@@ -1535,24 +1694,27 @@ fn estimation(
                 fname,
             )?;
         }
-        print_ifac(&dsge, &stats.ifac);
         // stream S: bayesian_irf / moments_varendo (PosteriorIRF.m, compute_moments_varendo.m)
         // ---- estimation completion: posterior_nograph (PosteriorIRF.m: ~options_.no_graph.posterior)
         let ss_post = crate::analysis::StochSimulOptions {
             nograph: ss_opts.nograph || crate::estimation::est_completion::no_graph_posterior(o),
             ..ss_opts.clone()
         };
-        crate::analysis::posterior::run(&dsge, &res.chains, &ss_post, var_list, dir, fname, out_dir, ro.seed)?;
+        crate::analysis::posterior::run(
+            &dsge,
+            &res.chains,
+            &ss_post,
+            var_list,
+            dir,
+            fname,
+            out_dir,
+            ro.seed,
+            q3x.dsge_var.is_some(),
+        )?;
         q3x.posterior_irf(&dsge, &mh_bounds, &res.chains, ss_opts, out_dir, fname, ro.seed)?; // DSGE-VAR IRFs
         write_posterior_csv(out_dir, fname, &dsge, &xmode, &sd_mode, &stats)?;
         // [graphics] mcmc_diagnostics.m (unless nodiagnostic), PlotPosteriorDistributions.m
-        let diagnostics = !flag(o, "nodiagnostic") && previous_results.is_none();
-        let conv = crate::estimation::convergence::ConvergenceOptions {
-            // options_.convergence
-            last_file_lines: Some(res.record.last_line_number),
-            ..crate::estimation::convergence::ConvergenceOptions::from_options(o)
-        };
-        crate::progress::phase("MCMC diagnostics and posterior densities");
+        crate::progress::phase("posterior densities");
         crate::estimation::mcmc::bounded(|| {
             crate::estimation::plots::mcmc_figures(
                 &res.chains,
@@ -1560,7 +1722,7 @@ fn estimation(
                 &dsge.priors,
                 &dsge.estimated_names,
                 mh_drop,
-                diagnostics,
+                false, // the diagnostics ran before the posterior table
                 fname,
                 &gopts,
                 &conv,
@@ -1616,7 +1778,7 @@ fn estimation(
         } else if post_stats {
             crate::progress::phase("posterior distributions of smoothed objects / forecasts");
             let st = state(posterior_mean.clone(), posterior_median.clone())?;
-            (mean_forecast, smoothed_mean) = fc::posterior_objects(
+            let pf = fc::posterior_objects(
                 mf,
                 &st,
                 o,
@@ -1627,6 +1789,7 @@ fn estimation(
                 out_dir,
                 fname,
             )?;
+            (mean_forecast, point_forecast, smoothed_mean) = (pf.mean_forecast, pf.point_forecast, pf.smoothed_mean);
         }
         // ---- end stream F ----
         // [graphics] kept for generate_trace_plots
@@ -1636,7 +1799,7 @@ fn estimation(
             gopts: gopts.clone(),
             trace_plot_ma: 200,
         });
-        println!("(Smoothed variables below are evaluated at the posterior mean.)");
+        crate::progress::note("(Smoothed variables below are evaluated at the posterior mean.)");
     }
 
     // ---- smoother -----------------------------------------------------------------
@@ -1652,7 +1815,13 @@ fn estimation(
                 occbin.smoother_regimes = Some(rh);
                 sm
             }
-            None => run_smoother(&dsge, &data, &point_for_smoother, flag(o, "smoothed_state_uncertainty"))?,
+            None => {
+                // Dynare runs no classical smoother after an MCMC: keep its console quiet
+                crate::kalman::SMOOTHER_QUIET.store(has_mcmc, std::sync::atomic::Ordering::Relaxed);
+                let r = run_smoother(&dsge, &data, &point_for_smoother, flag(o, "smoothed_state_uncertainty"));
+                crate::kalman::SMOOTHER_QUIET.store(false, std::sync::atomic::Ordering::Relaxed);
+                r?
+            }
         };
         let dates = table.dates.as_ref().map(|d| d[first_obs - 1..first_obs - 1 + nobs].to_vec());
         write_series_csv(
@@ -1686,12 +1855,12 @@ fn estimation(
                 dates.as_deref(),
             )?;
         }
-        println!(
+        crate::progress::note(format!(
             "Smoother: smoothed variables/shocks{} written to {} ({:.0} ms).",
             if flag(o, "filtered_vars") { " and one-step-ahead filtered variables" } else { "" },
             out_dir.display(),
             t.elapsed().as_secs_f64() * 1e3
-        );
+        ));
         // [graphics] plot_classical_smoother_results.m: only without an MCMC, as in Dynare
         if crate::estimation::est_completion::plot_classical_smoother(o, has_mcmc) {
             // ---- estimation completion: frequentist_smoother
@@ -1708,12 +1877,13 @@ fn estimation(
                 &gopts,
             )?;
         }
+        // (dynare-rust's list of the last smoothed values is in the results json, not on the console)
         let show: Vec<&String> = if var_list.is_empty() { vec![] } else { var_list.iter().collect() };
         if !show.is_empty() {
-            println!("\nLast smoothed values of the requested variables:");
+            crate::progress::note("Last smoothed values of the requested variables:");
             for v in show {
                 if let Some(i) = mf.model.endo_index(v).filter(|&i| i < mf.model.orig_endo_nbr) {
-                    println!("  {:<24} {:>12.4}", v, sm.smoothed[(nobs - 1, i)]);
+                    crate::progress::note(format!("  {:<24} {:>12.4}", v, sm.smoothed[(nobs - 1, i)]));
                 }
             }
         }
@@ -1722,20 +1892,84 @@ fn estimation(
     // ---- stream F: forecasts.run(..., 'smoother') at the mode (mh_replic = 0) ----
     let mut st = state(posterior_mean, posterior_median)?;
     st.mean_forecast = mean_forecast;
+    st.point_forecast = point_forecast;
     st.smoothed_mean = smoothed_mean;
     let horizon = fc::forecast_horizon(o);
     if horizon > 0 && !has_mcmc && occ.is_some() {
         println!("WARNING: OccBin: the forecast after the OccBin smoother is not ported; skipped."); // stream OE
     } else if horizon > 0 && !has_mcmc {
-        fc::forecast_at_mode(mf, &st, &xmode, horizon, num(o, "conf_sig").unwrap_or(0.9), out_dir, fname)?;
+        st.forecast =
+            Some(fc::forecast_at_mode(mf, &st, &xmode, horizon, num(o, "conf_sig").unwrap_or(0.9), out_dir, fname)?);
     }
     // ---- end stream F ----
 
     std::fs::create_dir_all(out_dir)?;
     let rpath = out_dir.join(format!("{fname}_results.json"));
     std::fs::write(&rpath, serde_json::to_string_pretty(&results)?)?;
-    println!("Results written to {}", rpath.display());
+    crate::progress::note(format!("Results written to {}", rpath.display()));
     Ok((st, mcmc_plots, point_for_smoother))
+}
+
+/// Port of the sample loop of dynare_estimation.m (`nobs` or `first_obs` vectors): one
+/// estimation per sample in `<dirname>_<k>`, then `oo_.RecursiveForecast` (see
+/// [`crate::estimation::recursive`]). Returns the last estimation, as `oo_` after the loop.
+#[allow(clippy::too_many_arguments)]
+fn recursive_estimation(
+    rec: &crate::estimation::recursive::Recursive,
+    mf: &ModFile,
+    dir: &Path,
+    fname: &str,
+    out_dir: &Path,
+    o: &Options,
+    var_list: &[String],
+    ro: &RunOptions,
+    ss_opts: &crate::analysis::StochSimulOptions,
+    occbin: &mut crate::occbin::Session,
+) -> Result<(fc::EstimationState, Option<crate::estimation::plots::McmcPlotContext>, Vec<f64>)> {
+    use crate::estimation::recursive::SampleForecast;
+    let horizon = fc::forecast_horizon(o);
+    let mut last = None;
+    let mut forecasts = Vec::new();
+    for i in 0..rec.keys.len() {
+        for run in rec.runs(o, i, fname) {
+            last = Some(estimation(mf, dir, fname, out_dir, &run, var_list, ro, ss_opts, occbin)?);
+        }
+        let st = &last.as_ref().unwrap().0;
+        if rec.by_nobs && horizon > 0 {
+            // mh_replic > 0: oo_recursive_{k}.MeanForecast / PointForecast, else .forecast
+            let f = match (&st.mean_forecast, &st.point_forecast, &st.forecast) {
+                (Some(m), Some(p), _) => Some(SampleForecast { mean: m.clone(), point: Some(p.clone()) }),
+                (_, _, Some(f)) => Some(SampleForecast { mean: f.clone(), point: None }),
+                _ => None,
+            };
+            forecasts.extend(f);
+        }
+    }
+    let last = last.expect("at least one sample");
+    if rec.by_nobs && horizon > 0 && forecasts.len() == rec.keys.len() {
+        let st = &last.0;
+        // dataset_info.rawdata of the last sample (before prefilter)
+        let mut raw = st.data.y.transpose();
+        if let Some(m) = &st.data.prefilter_mean {
+            for (j, mj) in m.iter().enumerate() {
+                raw.column_mut(j).add_scalar_mut(*mj);
+            }
+        }
+        let n = mf.model.orig_endo_nbr;
+        crate::estimation::recursive::recursive_forecast(
+            rec,
+            &forecasts,
+            &st.var_list,
+            &mf.model.endo_names[..n],
+            &mf.varobs,
+            &raw,
+            horizon,
+            &dir.join(rec.dname(rec.keys.len() - 1)).join("Output"),
+            fname,
+            &st.graphs,
+        )?;
+    }
+    Ok(last)
 }
 
 /// [graphics] mode_check.m: slices of the posterior kernel around the mode (parallel
@@ -1784,11 +2018,11 @@ fn mode_check_step(
     let p = gopts.dir.join(format!("{fname}_check_plot_data.json"));
     std::fs::write(&p, serde_json::to_string(&data)?)?;
     let npts: usize = slices.iter().map(|s| s.z.len()).sum();
-    println!(
+    crate::progress::note(format!(
         "mode_check: {npts} evaluations, {k} figures ({fname}_CheckPlots*) and {} written ({}).",
         p.display(),
         hms(t.elapsed().as_secs_f64())
-    );
+    ));
     Ok(())
 }
 
@@ -1860,12 +2094,6 @@ pub(crate) fn read_mode_file(
         let hh = hh
             .filter(|h| h.nrows() == file_names.len())
             .map(|h| Mat::from_fn(pos.len(), pos.len(), |i, j| h[(pos[i], pos[j])]));
-        println!(
-            "Mode file {} loaded ({} parameters{}).",
-            p.display(),
-            names.len(),
-            if hh.is_some() { ", with Hessian" } else { "" }
-        );
         return Ok((xm, hh));
     }
     println!(
@@ -1912,123 +2140,285 @@ fn prior_name(code: u8) -> &'static str {
     }
 }
 
+/// `prior_dist_names.m`: the `pnames` of the console tables (`gamm`, `weibl`).
+fn pnames(code: u8) -> &'static str {
+    match code {
+        1 => "beta",
+        2 => "gamm",
+        3 => "norm",
+        4 => "invg",
+        5 => "unif",
+        6 => "invg2",
+        8 => "weibl",
+        _ => "",
+    }
+}
+
+/// The names of the rows of the console tables (`display_estimation_results_table.m`,
+/// `GetPosteriorParametersStatistics.m`): correlations are `x,y` without a space.
 fn short_name(mf: &ModFile, dsge: &DsgeModel, k: usize) -> String {
     match dsge.estimated[k].kind {
         EstimatedKind::StdErr(i) => mf.model.exo_names[i].clone(),
-        EstimatedKind::Corr(i, j) => format!("{}, {}", mf.model.exo_names[i], mf.model.exo_names[j]),
+        EstimatedKind::Corr(i, j) => format!("{},{}", mf.model.exo_names[i], mf.model.exo_names[j]),
         EstimatedKind::Param(i) => mf.model.param_names[i].clone(),
         EstimatedKind::MeStdErr(i) => mf.model.endo_names[i].clone(),
-        EstimatedKind::MeCorr(i, j) => format!("{}, {}", mf.model.endo_names[i], mf.model.endo_names[j]),
+        EstimatedKind::MeCorr(i, j) => format!("{},{}", mf.model.endo_names[i], mf.model.endo_names[j]),
         EstimatedKind::Skew(i) => mf.model.exo_names[i].clone(),
         EstimatedKind::InitState(i) => mf.model.endo_names[i].clone(), // ---- estimation completion
     }
 }
 
-pub(crate) fn print_mode_table(mf: &ModFile, dsge: &DsgeModel, x: &[f64], sd: &[f64]) {
-    println!("\nRESULTS FROM POSTERIOR ESTIMATION");
-    let mut header = false;
-    for (section, pick) in [
-        ("parameters", 2),
-        ("standard deviation of shocks", 0),
-        ("correlation of shocks", 1),
-        ("standard deviation of measurement errors", 3),
-        ("correlation of measurement errors", 4),
-        ("skewness of shocks", 5),
-        ("initial states", 6), // ---- estimation completion
-    ] {
-        let idx: Vec<usize> = (0..x.len())
-            .filter(|&k| match dsge.estimated[k].kind {
-                EstimatedKind::Param(_) => pick == 2,
-                EstimatedKind::StdErr(_) => pick == 0,
-                EstimatedKind::Corr(..) => pick == 1,
-                EstimatedKind::MeStdErr(_) => pick == 3,
-                EstimatedKind::MeCorr(..) => pick == 4,
-                EstimatedKind::Skew(_) => pick == 5,
-                EstimatedKind::InitState(_) => pick == 6, // ---- estimation completion
-            })
-            .collect();
+/// `row_header_width.m`.
+fn row_header_width(mf: &ModFile, dsge: &DsgeModel) -> usize {
+    let mut w = 0;
+    if dsge.estimated.iter().any(|e| matches!(e.kind, EstimatedKind::Param(_))) {
+        w = dsge.estimated_names.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    }
+    let m = &mf.model;
+    for e in &dsge.estimated {
+        let l = match e.kind {
+            EstimatedKind::StdErr(i) | EstimatedKind::Skew(i) => m.exo_names[i].chars().count(),
+            EstimatedKind::MeStdErr(i) => m.endo_names[i].chars().count(),
+            EstimatedKind::Corr(i, j) => m.exo_names[i].chars().count() + m.exo_names[j].chars().count(),
+            EstimatedKind::MeCorr(i, j) => m.endo_names[i].chars().count() + m.endo_names[j].chars().count(),
+            _ => 0,
+        };
+        w = w.max(l);
+    }
+    w
+}
+
+/// The blocks of the tables in the order of `display_estimation_results_table.m` and
+/// `GetPosteriorParametersStatistics.m`: parameters, shocks' standard deviations, measurement
+/// errors' standard deviations, shocks' correlations, measurement errors' correlations,
+/// skewness, initial states.
+fn table_sections(dsge: &DsgeModel, init_title: &'static str) -> Vec<(&'static str, Vec<usize>)> {
+    let pick = |f: fn(&EstimatedKind) -> bool| -> Vec<usize> {
+        (0..dsge.estimated.len()).filter(|&k| f(&dsge.estimated[k].kind)).collect()
+    };
+    vec![
+        ("parameters", pick(|k| matches!(k, EstimatedKind::Param(_)))),
+        ("standard deviation of shocks", pick(|k| matches!(k, EstimatedKind::StdErr(_)))),
+        ("standard deviation of measurement errors", pick(|k| matches!(k, EstimatedKind::MeStdErr(_)))),
+        ("correlation of shocks", pick(|k| matches!(k, EstimatedKind::Corr(..)))),
+        ("correlation of measurement errors", pick(|k| matches!(k, EstimatedKind::MeCorr(..)))),
+        ("skewness of shocks", pick(|k| matches!(k, EstimatedKind::Skew(_)))),
+        (init_title, pick(|k| matches!(k, EstimatedKind::InitState(_)))),
+    ]
+}
+
+/// `display_estimation_results_table.m`: the posterior mode table (`bayes`) or the maximum
+/// likelihood table.
+fn print_estimates_table(mf: &ModFile, dsge: &DsgeModel, x: &[f64], sd: &[f64], bayes: bool) {
+    use crate::analysis::table::fmt_f;
+    println!("\nRESULTS FROM {} ESTIMATION", if bayes { "POSTERIOR" } else { "MAXIMUM LIKELIHOOD" });
+    let w = row_header_width(mf, dsge);
+    let tit1 = if bayes {
+        format!("{:<w$} {:>10} {:>8} {:>7} {:>6} {:>6}", "", "prior mean", "mode", "s.d.", "prior", "pstdev")
+    } else {
+        format!("{:<w$} {:>10} {:>7} {:>6}", "", "Estimate", "s.d.", "t-stat")
+    };
+    for (title, idx) in table_sections(dsge, "initial states") {
         if idx.is_empty() {
             continue;
         }
-        println!("{section}");
-        if !header {
-            header = true;
-        }
-        println!("{:<36} {:>9} {:>8} {:>8} {:>6} {:>8}", "", "prior mean", "mode", "s.d.", "prior", "pstdev");
+        println!("{title}");
+        println!("{tit1}\n");
         for k in idx {
-            let p = &dsge.priors[k];
-            println!(
-                "{:<36} {:>9.4} {:>8.4} {:>8.4} {:>6} {:>8.4}",
-                short_name(mf, dsge, k),
-                p.mean,
-                x[k],
-                sd[k],
-                prior_name(p.shape.code()),
-                p.sd
-            );
+            let name = short_name(mf, dsge, k);
+            if bayes {
+                let p = &dsge.priors[k];
+                println!(
+                    "{name:<w$} {} {} {} {:>6} {} ",
+                    fmt_f(p.mean, 10, 4),
+                    fmt_f(x[k], 8, 4),
+                    fmt_f(sd[k], 7, 4),
+                    pnames(p.shape.code()),
+                    fmt_f(p.sd, 6, 4)
+                );
+            } else {
+                println!(
+                    "{name:<w$} {} {} {} ",
+                    fmt_f(x[k], 10, 4),
+                    fmt_f(sd[k], 7, 4),
+                    fmt_f(x[k].abs() / sd[k], 7, 4)
+                );
+            }
         }
         println!();
     }
+}
+
+pub(crate) fn print_mode_table(mf: &ModFile, dsge: &DsgeModel, x: &[f64], sd: &[f64]) {
+    print_estimates_table(mf, dsge, x, sd, true);
 }
 
 /// display_estimation_results_table.m, 'Maximum Likelihood' / 'mle'.
 fn print_ml_table(mf: &ModFile, dsge: &DsgeModel, x: &[f64], sd: &[f64]) {
-    println!("\nRESULTS FROM MAXIMUM LIKELIHOOD ESTIMATION");
-    let groups: [(&str, fn(&EstimatedKind) -> bool); 5] = [
-        ("parameters", |k| matches!(k, EstimatedKind::Param(_))),
-        ("standard deviation of shocks", |k| matches!(k, EstimatedKind::StdErr(_))),
-        ("correlation of shocks", |k| matches!(k, EstimatedKind::Corr(..))),
-        ("standard deviation of measurement errors", |k| matches!(k, EstimatedKind::MeStdErr(_))),
-        ("correlation of measurement errors", |k| matches!(k, EstimatedKind::MeCorr(..))),
-    ];
-    for (section, pick) in groups {
-        let idx: Vec<usize> = (0..x.len()).filter(|&k| pick(&dsge.estimated[k].kind)).collect();
+    print_estimates_table(mf, dsge, x, sd, false);
+}
+
+/// `GetPosteriorParametersStatistics.m`: the `ESTIMATION RESULTS` block with the log data
+/// density (modified harmonic mean) and the posterior moments.
+pub(crate) fn print_posterior_table(mf: &ModFile, dsge: &DsgeModel, s: &crate::estimation::PosteriorStats) {
+    let sig = num(&mf.options.estimation_options(), "mh_conf_sig").unwrap_or(0.9);
+    let short: Vec<String> = (0..dsge.estimated.len()).map(|k| short_name(mf, dsge, k)).collect();
+    let spec = TableSpec {
+        ifac_names: crate::gsa::gsa_param_names(mf, dsge),
+        short,
+        sections: table_sections(dsge, "initial state variables"),
+        width: row_header_width(mf, dsge),
+    };
+    print_posterior_table_spec(&spec, &dsge.priors, sig, s);
+}
+
+/// The row names and blocks of the console tables of the posterior (`GetPosteriorParametersStatistics.m`,
+/// `mcmc_diagnostics.m`) for estimations that have no [`DsgeModel`] (`method_of_moments`).
+pub struct TableSpec {
+    /// Names of the inefficiency factors' rows (`SE_ez`, `CC_a_b`, parameters).
+    pub ifac_names: Vec<String>,
+    /// Row names of the posterior table.
+    pub short: Vec<String>,
+    /// Blocks of the posterior table: title and indices.
+    pub sections: Vec<(&'static str, Vec<usize>)>,
+    /// `row_header_width`.
+    pub width: usize,
+}
+
+pub(crate) fn print_posterior_table_spec(
+    spec: &TableSpec,
+    priors: &[crate::estimation::Prior],
+    mh_conf_sig: f64,
+    s: &crate::estimation::PosteriorStats,
+) {
+    let line = format!(
+        "Log data density (Modified Harmonic Mean) is {:.6}.
+",
+        s.mhm.log_marginal
+    );
+    print_posterior_rows(spec, priors, mh_conf_sig, &line, &s.params);
+}
+
+/// `GetPosteriorParametersStatistics.m` for the SMC samplers (`hssmc`, `dsmh`, `dime_mcmc`,
+/// `online`): `density` is `oo_.MarginalDensity.<sampler>`, `None` where Dynare prints no
+/// log data density line.
+pub(crate) fn print_smc_posterior_table(
+    mf: &ModFile,
+    dsge: &DsgeModel,
+    params: &[crate::estimation::posterior::ParamMoments],
+    mh_conf_sig: f64,
+    density: Option<f64>,
+) {
+    let short: Vec<String> = (0..dsge.estimated.len()).map(|k| short_name(mf, dsge, k)).collect();
+    let spec = TableSpec {
+        ifac_names: Vec::new(),
+        short,
+        sections: table_sections(dsge, "initial state variables"),
+        width: row_header_width(mf, dsge),
+    };
+    let line = density
+        .map(|d| {
+            format!(
+                "Log data density is {d:.6}.
+
+"
+            )
+        })
+        .unwrap_or_else(|| {
+            "
+"
+            .to_string()
+        });
+    print_posterior_rows(&spec, &dsge.priors, mh_conf_sig, &line, params);
+}
+
+fn print_posterior_rows(
+    spec: &TableSpec,
+    priors: &[crate::estimation::Prior],
+    mh_conf_sig: f64,
+    density_line: &str,
+    params: &[crate::estimation::posterior::ParamMoments],
+) {
+    use crate::analysis::table::fmt_f;
+    // num2str(options_.mh_conf_sig*100), '% HPD interval'
+    let sig = mh_conf_sig * 100.0;
+    let hpd = format!("{}% HPD interval", crate::gsa::stats::num2str((sig * 1e10).round() / 1e10));
+    let w = spec.width;
+    println!("\n\nESTIMATION RESULTS\n");
+    print!("{density_line}");
+    let tit2 =
+        format!("{:<w$} {:>12} {:>12} {:>23} {:>8} {:>12}", "", "prior mean", "post. mean", hpd, "prior", "pstdev");
+    let mut first = true;
+    for (title, idx) in spec.sections.iter().cloned() {
         if idx.is_empty() {
             continue;
         }
-        println!("{section}");
-        println!("{:<36} {:>10} {:>8} {:>8}", "", "Estimate", "s.d.", "t-stat");
+        if !first {
+            println!();
+        }
+        first = false;
+        println!("{title}");
+        println!("{tit2}\n");
         for k in idx {
-            println!("{:<36} {:>10.4} {:>8.4} {:>8.4}", short_name(mf, dsge, k), x[k], sd[k], x[k] / sd[k]);
+            let (p, pm) = (&priors[k], &params[k]);
+            println!(
+                "{:<w$} {} {} {} {} {:>8} {}",
+                spec.short[k],
+                fmt_f(p.mean, 12, 3),
+                fmt_f(pm.mean, 12, 4),
+                fmt_f(pm.hpd.0, 11, 4),
+                fmt_f(pm.hpd.1, 11, 4),
+                pnames(p.shape.code()),
+                fmt_f(p.sd, 12, 4)
+            );
         }
+    }
+}
+
+/// The console output of `marginal_density.m`, rebuilt from the final variance inflation of
+/// the weighting density (each failed coverage check inflates it by 20%).
+pub(crate) fn print_marginal_density_messages(m: &crate::estimation::posterior::MhmResult) {
+    println!("marginal density: I'm computing the posterior mean and covariance...  Done!");
+    print!("marginal density: I'm computing the posterior log marginal density (modified harmonic mean)... ");
+    let failures = (m.increase.ln() / 1.2f64.ln()).round() as usize;
+    for i in 0..failures {
         println!();
+        if i == 0 {
+            println!("marginal density: The support of the weighting density function is not large enough...");
+            println!("marginal density: I increase the variance of this distribution.");
+        } else {
+            println!("marginal density: Let me try again.");
+        }
+    }
+    if m.increase > 20.0 {
+        println!("marginal density: There's probably a problem with the modified harmonic mean estimator.");
+    } else {
+        println!("Done!");
     }
 }
 
-pub(crate) fn print_posterior_table(mf: &ModFile, dsge: &DsgeModel, s: &crate::estimation::PosteriorStats) {
-    // GetPosteriorParametersStatistics.m: num2str(options_.mh_conf_sig*100), '% HPD interval'
-    let sig = num(&mf.options.estimation_options(), "mh_conf_sig").unwrap_or(0.9) * 100.0;
-    let hpd = format!("{}% HPD interval", (sig * 1e4).round() / 1e4);
-    println!("{:<36} {:>10} {:>11} {:>22} {:>7} {:>9}", "", "prior mean", "post. mean", hpd, "prior", "pstdev");
-    for (k, pm) in s.params.iter().enumerate() {
-        let p = &dsge.priors[k];
-        println!(
-            "{:<36} {:>10.4} {:>11.4} {:>10.4} {:>11.4} {:>7} {:>9.4}",
-            short_name(mf, dsge, k),
-            p.mean,
-            pm.mean,
-            pm.hpd.0,
-            pm.hpd.1,
-            prior_name(p.shape.code()),
-            p.sd
-        );
-    }
+/// `mcmc_diagnostics.m`: the inefficiency factors per block (`dyntable`).
+pub(crate) fn print_ifac(mf: &ModFile, dsge: &DsgeModel, ifac: &Mat) {
+    print_ifac_names(&crate::gsa::gsa_param_names(mf, dsge), ifac);
 }
 
-pub(crate) fn print_ifac(dsge: &DsgeModel, ifac: &Mat) {
-    println!("\nMCMC Inefficiency factors per block");
-    print!("{:<36}", "Parameter");
-    for b in 0..ifac.nrows() {
-        print!(" {:>10}", format!("Block {}", b + 1));
-    }
+pub(crate) fn print_ifac_names(names: &[String], ifac: &Mat) {
+    let mut headers = vec!["Parameter".to_string()];
+    headers.extend((0..ifac.nrows()).map(|b| format!("Block {}", b + 1)));
+    let lh = crate::analysis::table::max_len(names) + 2;
+    print!(
+        "{}",
+        crate::analysis::table::dyntable(
+            "MCMC Inefficiency factors per block",
+            &headers,
+            names,
+            &ifac.transpose(),
+            lh,
+            12,
+            3
+        )
+    );
     println!();
-    for k in 0..ifac.ncols() {
-        print!("{:<36}", dsge.estimated_names[k].replace("stderr ", "SE_"));
-        for b in 0..ifac.nrows() {
-            print!(" {:>10.3}", ifac[(b, k)]);
-        }
-        println!();
-    }
 }
 
 pub(crate) fn write_posterior_csv(
@@ -2137,4 +2527,23 @@ fn write_series_csv(path: &Path, names: &[String], m: &Mat, dates: Option<&[Stri
 pub(crate) fn hms(secs: f64) -> String {
     let s = secs.round() as u64;
     if secs < 60.0 { format!("{secs:.1}s") } else { format!("{}h{:02}m{:02}s", s / 3600, (s / 60) % 60, s % 60) }
+}
+
+/// stoch_simul.m: `if info(1), print_info(info, options_.noprint, options_); return; end`
+/// (`print_info` raises the error only without `noprint`): with `noprint`, a failure of the
+/// steady state or of the decision rule (a Dynare info code) ends the command silently.
+fn noprint_info<T>(r: Result<T>, noprint: bool) -> Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e)
+            if noprint
+                && e.chain().any(|c| {
+                    c.downcast_ref::<crate::solver::SolveError>().is_some()
+                        || c.to_string().starts_with("steady state at the calibration failed (info ")
+                }) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }

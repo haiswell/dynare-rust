@@ -603,6 +603,47 @@ pub fn prior_draw<R: Rng + ?Sized>(priors: &[Prior], bounds: &Bounds, rng: &mut 
     out
 }
 
+/// Port of `check_prior_stderr_corr_skew.m`: the warnings (without the "Warning: " prefix)
+/// when a prior allows negative standard deviations, correlations beyond +-1 or skewness
+/// beyond the bound of the skew normal distribution. `kinds` and `priors` are in Dynare's
+/// order (shocks, measurement errors, correlations, ...).
+pub fn check_prior_stderr_corr_skew(kinds: &[crate::modfile::EstimatedKind], priors: &[Prior]) -> Vec<String> {
+    use crate::modfile::EstimatedKind as K;
+    let sel = |f: &dyn Fn(&K) -> bool| -> Vec<&Prior> {
+        kinds.iter().zip(priors).filter(|(k, _)| f(k)).map(|(_, p)| p).collect()
+    };
+    let neg_sd = |what: &str| {
+        format!(
+            "Your prior allows for negative standard deviations for {what}. Due to working with variances, Dynare will be able to continue, but it is recommended to change your prior!"
+        )
+    };
+    let corr = |what: &str| {
+        format!(
+            "Your prior allows for correlations between {what} larger than +-1 and will not integrate to 1 due to truncation. Please change your prior!"
+        )
+    };
+    let mut out = Vec::new();
+    if sel(&|k| matches!(k, K::StdErr(_))).iter().any(|p| p.p3 < 0.0) {
+        out.push(neg_sd("structural shocks"));
+    }
+    if sel(&|k| matches!(k, K::MeStdErr(_))).iter().any(|p| p.p3 < 0.0) {
+        out.push(neg_sd("measurement error"));
+    }
+    if sel(&|k| matches!(k, K::Corr(..))).iter().any(|p| p.p3 < -1.0 || p.p4 > 1.0) {
+        out.push(corr("structural shocks"));
+    }
+    if sel(&|k| matches!(k, K::MeCorr(..))).iter().any(|p| p.p3 < -1.0 || p.p4 > 1.0) {
+        out.push(corr("measurement errors"));
+    }
+    let bound = ((2f64.sqrt() * (std::f64::consts::PI - 4.0)) / (std::f64::consts::PI - 2.0).powf(1.5)).abs();
+    if sel(&|k| matches!(k, K::Skew(_))).iter().any(|p| p.p3 < -bound || p.p4 > bound) {
+        out.push(format!(
+            "Your prior allows for skewness parameters larger than +-{bound:.6}, which is outside the theoretical bound of the skew normal distribution, and thus will not integrate to 1 due to truncation. Please change your prior!"
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

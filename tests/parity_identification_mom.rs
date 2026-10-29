@@ -29,7 +29,9 @@ fn smm_with_measurement_errors_writes_results() {
         [("measurement_errors_std", "yo"), ("measurement_errors_std", "co"), ("measurement_errors_corr", "yo_co")]
     {
         assert!(mode[g][n].as_f64().is_some_and(f64::is_finite), "{g}.{n} missing in mode");
-        assert!(std[g][n].is_number(), "{g}.{n} missing in std_at_mode");
+        // NaN (null) when the 5-iteration mode sits on a bound and the Hessian is singular,
+        // which depends on the platform's BLAS
+        assert!(std[g].get(n).is_some_and(|v| v.is_number() || v.is_null()), "{g}.{n} missing in std_at_mode");
     }
     assert!(mode["shocks_std"]["ez"].is_number() && mode["parameters"]["psi"].is_number());
 }
