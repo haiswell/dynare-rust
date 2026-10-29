@@ -198,7 +198,12 @@ fn run_and_compare(name: &str, files: &[&str], modfile: &str) {
     let out =
         Command::new(env!("CARGO_BIN_EXE_dynare-rs")).arg(modfile).arg("nograph").current_dir(&work).output().unwrap();
     assert!(out.status.success(), "{name} failed:\n{}", String::from_utf8_lossy(&out.stderr));
-    let got = estimation_lines(&String::from_utf8_lossy(&out.stdout));
+    let mut stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    if cfg!(windows) {
+        // paths in the messages use the platform's separator, as MATLAB's filesep does
+        stdout = stdout.replace('\\', "/");
+    }
+    let got = estimation_lines(&stdout);
     let expected = estimation_lines(&common::read_ref(dir.join(format!("{stem}.matlab.txt"))));
     assert!(
         expected.len() > 3 && got.len() > 3,

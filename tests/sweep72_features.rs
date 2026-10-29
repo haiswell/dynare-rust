@@ -110,8 +110,11 @@ fn check_samples(fname: &str) -> (PathBuf, Value) {
         log.lines().filter_map(|l| l.strip_prefix("Initial value of the log posterior (or likelihood): ")).collect();
     let want_init: Vec<f64> = floats(&want["initial_log_posterior"]);
     assert_eq!(init.len(), want_init.len());
+    // printed with 4 decimals; the last one can round the other way with OpenBLAS on Linux
+    let tol = if cfg!(target_os = "macos") { 0.0 } else { 1.5e-4 };
     for (g, w) in init.iter().zip(&want_init) {
-        assert_eq!(g.trim().parse::<f64>().unwrap(), *w, "initial log posterior");
+        let g = g.trim().parse::<f64>().unwrap();
+        assert!((g - w).abs() <= tol, "initial log posterior: {g} vs {w}");
     }
     for k in floats(&want["keys"]) {
         let w = &want[format!("sample_{k}")];
