@@ -1,6 +1,6 @@
 //! VAR / trend component models whose variables are expressions of variables, and the
 //! auxiliary variables of the PAC models, against Dynare 7.2 (tests/pac of Dynare,
-//! reference/pac/aux: the .mod files cut after the parameter update; ref_aux.json: `M_` and
+//! reference/pac/aux_vars: the .mod files cut after the parameter update; ref_aux.json: `M_` and
 //! `oo_` of MATLAB):
 //! - `diff(diff(x))`, `diff(log(x))`, `log(x)` left-hand sides (unary-op `AUX_UOP_<n>` and nested
 //!   `AUX_DIFF_<n>` variables: the companion matrix and the `h` parameters named after them);
@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 fn refdir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/pac/aux")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/pac/aux_vars")
 }
 
 fn reference(name: &str) -> Value {

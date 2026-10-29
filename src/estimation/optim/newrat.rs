@@ -1084,7 +1084,12 @@ mod tests {
                     let ihh_m = hm(&s["ihh"], 4);
                     let scale = ihh_m.iter().fold(0.0f64, |a, v| a.max(v.abs()));
                     let d = (ihh - &ihh_m).iter().fold(0.0f64, |a, v| a.max(v.abs()));
-                    assert!(d <= 1e-9 * scale, "{tag}: ihh {d:e}");
+                    // a solve is accurate to eps * cond (cond up to 4e7 here: 1.7e-9 relative
+                    // with OpenBLAS on Linux)
+                    let sv = ihh_m.clone().singular_values();
+                    let cond = sv.max() / sv.min();
+                    let tol = 1e-9f64.max(64.0 * f64::EPSILON * cond);
+                    assert!(d <= tol * scale, "{tag}: ihh {d:e} (cond {cond:e})");
                 } else {
                     assert!(m.hessian_mat.is_none() && hx(&s["hessian_mat"]).is_empty(), "{tag}: no OPG");
                 }
